@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import numpy as np
 import trimesh
 
-from .fit import Cylinder, Plane, fit_cylinder, fit_plane
+from .fit import Cylinder, Plane, fit_cylinder, fit_plane, refine_cylinder
 
 
 @dataclass
@@ -89,7 +89,7 @@ def segment(m: trimesh.Trimesh, tol: float, angle_deg: float = 20.0,
         if rest:
             left = np.concatenate([r.faces for r in rest])
             out += _cylinder_regions(m, sm, nb, left, tol, cylinders)
-    for _ in range(2):
+    for _ in range(3):
         out = _merge_cylinders(m, out, tol)
         out = _absorb(m, nb, out, tol)
         out = _dissolve_small(m, nb, out, tol)
@@ -117,13 +117,20 @@ def _strip_chains(m, sm, regs, tol, frac=0.05):
     for comp in nx.connected_components(g):
         if len(comp) < 3:
             continue
-        faces = np.concatenate([regs[i].faces for i in comp])
-        cyl = fit_cylinder(m.triangles_center[faces], sm.face_normals[faces])
-        if cyl is None or cyl.radius > 0.5 * m.scale:
-            continue
-        vp = m.vertices[np.unique(m.faces[faces])]
-        if np.percentile(cyl.distance(vp), 90) < 3 * tol:
-            moved |= comp
+        comp = set(comp)
+        for _ in range(5):
+            if len(comp) < 3:
+                break
+            faces = np.concatenate([regs[i].faces for i in comp])
+            cyl = fit_cylinder(m.triangles_center[faces], sm.face_normals[faces])
+            if cyl is None or cyl.radius > 0.5 * m.scale:
+                break
+            fit = {i for i in comp if np.percentile(
+                cyl.distance(m.vertices[np.unique(m.faces[regs[i].faces])]), 90) < 3 * tol}
+            if fit == comp:
+                moved |= comp
+                break
+            comp = fit
     return ([r for i, r in enumerate(regs) if i not in moved],
             [r for i, r in enumerate(regs) if i in moved])
 
@@ -176,7 +183,10 @@ def _merge_cylinders(m, regs, tol):
     for r in cyl:
         for g in groups:
             c = g[0].surface
-            if np.percentile(c.distance(m.triangles_center[r.faces]), 90) < 3 * tol:
+            same_axis = (abs(r.surface.axis @ c.axis) > 0.98
+                         and abs(r.surface.radius - c.radius) < 0.15 * c.radius
+                         and np.linalg.norm(np.cross(r.surface.point - c.point, c.axis)) < 0.15 * c.radius)
+            if same_axis or np.percentile(c.distance(m.triangles_center[r.faces]), 90) < 3 * tol:
                 g.append(r)
                 break
         else:
@@ -184,14 +194,12 @@ def _merge_cylinders(m, regs, tol):
     out = []
     for g in groups:
         faces = np.concatenate([r.faces for r in g])
-        surf = g[0].surface
-        if len(g) > 1:
-            surf = fit_cylinder(m.triangles_center[faces], m.face_normals[faces]) or surf
+        surf = refine_cylinder(g[0].surface, m.vertices[np.unique(m.faces[faces])])
         out.append(Region(faces, surf, float(m.area_faces[faces].sum())))
     return rest + out
 
 
-def _dissolve_small(m, nb, regs, tol, frac=0.015):
+def _dissolve_small(m, nb, regs, tol, frac=0.05):
     """Small fitted regions that neighbours explain anyway get absorbed."""
     for i in np.argsort([r.area for r in regs]):
         r = regs[i]
@@ -200,12 +208,14 @@ def _dissolve_small(m, nb, regs, tol, frac=0.015):
         trial = list(regs)
         trial[i] = Region(r.faces, None, r.area)
         trial = _absorb(m, nb, trial, tol)
+        if 0 < len(trial[i].faces) < 0.15 * len(r.faces) or r.area < 0.002 * m.area:
+            trial = _absorb(m, nb, trial, tol, max_d=np.inf)
         if len(trial[i].faces) == 0:
             regs = trial
     return regs
 
 
-def _absorb(m, nb, regs, tol, rounds=50, force_frac=0.0):
+def _absorb(m, nb, regs, tol, rounds=50, force_frac=0.0, max_d=None):
     """Give faceted faces to an adjacent fitted region when they fit it."""
     label = -np.ones(len(m.faces), int)
     for i, r in enumerate(regs):
@@ -234,7 +244,7 @@ def _absorb(m, nb, regs, tol, rounds=50, force_frac=0.0):
                     d = regs[j].surface.distance(tri[f]).max()
                     if d < bd:
                         best, bd = j, d
-            if best is not None and (bd < 5 * tol or force_frac > 0):
+            if best is not None and (bd < (5 * tol if max_d is None else max_d) or force_frac > 0):
                 label[f] = best
                 changed = True
         if not changed:
@@ -277,5 +287,11 @@ def _cylinder_regions(m, sm, nb, faces, tol, cylinders):
                 if (cyl.radius < 0.5 * m.scale and a >= 0.002 * m.area
                         and np.percentile(cyl.distance(pts), 95) < max(4 * tol, 0.02 * cyl.radius)):
                     surf = cyl
+        if surf is None and len(comp) >= 3:
+            pl = fit_plane(m.triangles[comp].reshape(-1, 3))
+            if np.percentile(pl.distance(m.vertices[np.unique(m.faces[comp])]), 90) < 2.5 * tol:
+                if pl.normal @ m.face_normals[comp].mean(0) < 0:
+                    pl = Plane(-pl.normal, -pl.d)
+                surf = pl
         regs.append(Region(comp, surf, a))
     return regs
