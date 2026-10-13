@@ -226,6 +226,14 @@ def _runs(loop, min_run):
     return [r[0] for r in runs]
 
 
+def _inside(poly, p):
+    """Even-odd point-in-polygon test (2D)."""
+    x, y = poly[:, 0], poly[:, 1]
+    x2, y2 = np.roll(x, -1), np.roll(y, -1)
+    c = ((y > p[1]) != (y2 > p[1])) & (p[0] < (x2 - x) * (p[1] - y) / (y2 - y + 1e-300) + x)
+    return bool(c.sum() % 2)
+
+
 def build_planar(m: trimesh.Trimesh, regions: list[Region], tol: float):
     """Exact planar B-rep: polygon corners = triple-plane intersections.
     Returns None when the topology can't be resolved (caller falls back)."""
@@ -278,7 +286,12 @@ def build_planar(m: trimesh.Trimesh, regions: list[Region], tol: float):
             sew.Add(mf.Face())
             continue
         wires = []
+        u, v = _plane_basis(r.surface.normal)
         for loop in loops:
+            lp = m.vertices[[a for a, _, _ in loop]]
+            q2 = np.c_[lp @ u, lp @ v]
+            # signed area of the mesh loop: >0 outer boundary, <0 hole (u,v,n right-handed)
+            sa = 0.5 * np.sum(q2[:, 0] * np.roll(q2[:, 1], -1) - np.roll(q2[:, 0], -1) * q2[:, 1])
             seq = _runs(loop, min_run=3)
             if len(seq) == 1 and isinstance(regions[seq[0]].surface, Cylinder):
                 cyl = regions[seq[0]].surface
@@ -287,7 +300,7 @@ def build_planar(m: trimesh.Trimesh, regions: list[Region], tol: float):
                     return None
                 circ = gp_Circ(gp_Ax2(gp_Pnt(*map(float, cc[0])), gp_Dir(*map(float, cc[1]))), float(cyl.radius))
                 w = BRepBuilderAPI_MakeWire(BRepBuilderAPI_MakeEdge(circ).Edge()).Wire()
-                wires.append((np.pi * cyl.radius ** 2, w))
+                wires.append((sa, q2, w))
                 continue
             if len(seq) < 3 or any(not isinstance(regions[k].surface, Plane) for k in seq):
                 return None
@@ -297,30 +310,37 @@ def build_planar(m: trimesh.Trimesh, regions: list[Region], tol: float):
                 if c is None:
                     return None
                 pts.append(c)
-            u, v = _plane_basis(r.surface.normal)
-            q = np.array([[p @ u, p @ v] for p in pts])
-            area = 0.5 * np.sum(q[:, 0] * np.roll(q[:, 1], -1) - np.roll(q[:, 0], -1) * q[:, 1])
             poly = BRepBuilderAPI_MakePolygon()
             for p in pts:
                 poly.Add(gp_Pnt(*map(float, p)))
             poly.Close()
             if not poly.IsDone():
                 return None
-            wires.append((abs(area), poly.Wire()))
-        wires.sort(key=lambda w: -w[0])
+            wires.append((sa, q2, poly.Wire()))
+        from OCP.ShapeFix import ShapeFix_Face
+        outers = [w for w in wires if w[0] > 0]
+        holes = [w for w in wires if w[0] <= 0]
+        if not outers:
+            return None
         n = r.surface.normal
         o = n * r.surface.d
         pln = gp_Pln(gp_Pnt(*map(float, o)), gp_Dir(*map(float, n)))
-        mf = BRepBuilderAPI_MakeFace(pln, wires[0][1], True)
-        for _, w in wires[1:]:
-            mf.Add(w)
-        if not mf.IsDone():
-            return None
-        from OCP.ShapeFix import ShapeFix_Face
-        fx = ShapeFix_Face(mf.Face())
-        fx.FixOrientation()
-        fx.Perform()
-        sew.Add(fx.Face())
+        groups = {id(w): [] for w in outers}
+        for h in holes:
+            host = [w for w in outers if _inside(w[1], h[1][0])]
+            if not host:
+                return None
+            groups[id(min(host, key=lambda w: w[0]))].append(h)
+        for w in outers:
+            mf = BRepBuilderAPI_MakeFace(pln, w[2], True)
+            for h in groups[id(w)]:
+                mf.Add(h[2])
+            if not mf.IsDone():
+                return None
+            fx = ShapeFix_Face(mf.Face())
+            fx.FixOrientation()
+            fx.Perform()
+            sew.Add(fx.Face())
     sew.Perform()
     shape = sew.SewedShape()
     exp = TopExp_Explorer(shape, TopAbs_SHELL)
