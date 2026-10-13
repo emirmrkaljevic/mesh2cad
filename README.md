@@ -23,23 +23,23 @@ Ground-truth cadquery parts → tessellated + subdivided (≤2 mm edges) → Gau
 
 | part | noise σ (mm) | exact | faces (plane/cyl) | Hausdorff (mm) | RMS (mm) | vol err % | time s |
 |---|---|---|---|---|---|---|---|
-| cube | 0.0 | 3/3 | 6/0 | 0.000 | 0.000 | 0.00 | 0.8 |
-| cube | 0.05 | 3/3 | 6/0 | 0.019 | 0.006 | 0.07 | 0.9 |
+| cube | 0.0 | 3/3 | 6/0 | 0.000 | 0.000 | 0.00 | 0.9 |
+| cube | 0.05 | 3/3 | 6/0 | 0.019 | 0.006 | 0.07 | 0.8 |
 | cube | 0.2 | 3/3 | 6/0 | 0.079 | 0.026 | 0.34 | 0.8 |
-| l_bracket | 0.0 | 3/3 | 8/0 | 0.000 | 0.000 | 0.00 | 1.1 |
-| l_bracket | 0.05 | 2/3 | 301/0, 8/0 | 0.137 | 0.007 | 0.03 | 6.3 |
-| l_bracket | 0.2 | 3/3 | 8/0 | 0.216 | 0.026 | 0.15 | 1.2 |
-| stepped_block | 0.0 | 3/3 | 11/0 | 0.000 | 0.000 | 0.00 | 1.4 |
+| l_bracket | 0.0 | 3/3 | 8/0 | 0.000 | 0.000 | 0.00 | 1.2 |
+| l_bracket | 0.05 | 3/3 | 8/0 | 0.039 | 0.006 | 0.03 | 1.1 |
+| l_bracket | 0.2 | 3/3 | 8/0 | 0.216 | 0.026 | 0.15 | 1.1 |
+| stepped_block | 0.0 | 3/3 | 11/0 | 0.000 | 0.000 | 0.00 | 1.1 |
 | stepped_block | 0.05 | 3/3 | 11/0 | 0.032 | 0.006 | 0.02 | 1.5 |
 | stepped_block | 0.2 | 3/3 | 11/0 | 0.136 | 0.022 | 0.07 | 1.1 |
-| plate_with_hole | 0.0 | 3/3 | 6/1 | 0.021 | 0.003 | 0.00 | 2.6 |
-| plate_with_hole | 0.05 | 3/3 | 6/1 | 0.043 | 0.007 | 0.04 | 2.5 |
-| plate_with_hole | 0.2 | 3/3 | 6/1 | 0.078 | 0.022 | 0.20 | 2.5 |
-| boss | 0.0 | 3/3 | 7/1 | 0.030 | 0.006 | 0.01 | 2.5 |
-| boss | 0.05 | 3/3 | 7/1 | 0.070 | 0.010 | 0.02 | 2.1 |
-| boss | 0.2 | 0/3 | 2193/0, 2244/0, 2681/0 | 5.600 | 0.752 | 0.92 | 24.3 |
+| plate_with_hole | 0.0 | 3/3 | 6/1 | 0.015 | 0.002 | 0.00 | 2.5 |
+| plate_with_hole | 0.05 | 3/3 | 6/1 | 0.028 | 0.006 | 0.05 | 2.2 |
+| plate_with_hole | 0.2 | 3/3 | 6/1 | 0.078 | 0.023 | 0.18 | 2.1 |
+| boss | 0.0 | 3/3 | 7/1 | 0.027 | 0.006 | 0.01 | 2.1 |
+| boss | 0.05 | 3/3 | 7/1 | 0.031 | 0.007 | 0.04 | 2.0 |
+| boss | 0.2 | 3/3 | 7/1 | 0.090 | 0.016 | 0.07 | 2.3 |
 
-"exact" = clean B-rep with the true face count. Known limits: small cylinders under heavy noise (σ ≥ 0.2 mm on r = 8 mm) fall back to a faceted solid; no cones/spheres/fillets yet; cylinders must end on planes perpendicular to their axis.
+"exact" = clean B-rep with the true face count. Known limits: no cones/spheres/fillets yet; cylinders must end on planes perpendicular to their axis.
 
 ## Development
 ```

@@ -8,12 +8,13 @@ from parts import PLANAR, to_mesh
 EXPECTED_FACES = {"cube": 6, "l_bracket": 8, "stepped_block": 11}
 
 
+@pytest.mark.parametrize("seed", [0, 1, 2])
 @pytest.mark.parametrize("sigma", [0.0, 0.05, 0.2])
 @pytest.mark.parametrize("name", list(PLANAR))
-def test_planar_roundtrip(name, sigma):
+def test_planar_roundtrip(name, sigma, seed):
     ref = to_mesh(PLANAR[name]())
     tol = max(sigma, 0.01)
-    r = convert_mesh(add_noise(ref, sigma, seed=1), tol=tol, ref=ref).report
+    r = convert_mesh(add_noise(ref, sigma, seed=seed), tol=tol, ref=ref).report
     assert r["method"] == "exact"
     assert r["output"]["valid_solid"]
     assert r["output"]["faces"] == {"plane": EXPECTED_FACES[name]}
@@ -27,14 +28,13 @@ from parts import CURVED
 CURVED_FACES = {"plate_with_hole": {"plane": 6, "cylinder": 1}, "boss": {"plane": 7, "cylinder": 1}}
 
 
-@pytest.mark.parametrize("sigma", [
-    0.0, 0.05,
-    pytest.param(0.2, marks=pytest.mark.xfail(reason="M2: heavy noise on small cylinders", strict=False))])
+@pytest.mark.parametrize("seed", [0, 1, 2])
+@pytest.mark.parametrize("sigma", [0.0, 0.05, 0.2])
 @pytest.mark.parametrize("name", list(CURVED))
-def test_cylinder_roundtrip(name, sigma):
+def test_cylinder_roundtrip(name, sigma, seed):
     ref = to_mesh(CURVED[name]())
     tol = max(sigma, 0.01)
-    r = convert_mesh(add_noise(ref, sigma, seed=1), tol=tol, ref=ref).report
+    r = convert_mesh(add_noise(ref, sigma, seed=seed), tol=tol, ref=ref).report
     assert r["method"] == "exact"
     assert r["output"]["valid_solid"]
     assert r["output"]["faces"] == CURVED_FACES[name]
