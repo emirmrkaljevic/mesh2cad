@@ -23,7 +23,7 @@ from OCP.TopAbs import TopAbs_SHELL
 from OCP.TopExp import TopExp_Explorer
 from OCP.TopoDS import TopoDS, TopoDS_Shape
 
-from .fit import Plane
+from .fit import Cylinder, Plane
 from .segment import Region
 
 
@@ -257,7 +257,10 @@ def build_planar(m: trimesh.Trimesh, regions: list[Region], tol: float):
     Returns None when the topology can't be resolved (caller falls back)."""
     from OCP.Geom import Geom_Plane
     from OCP.gp import gp_Dir, gp_Pln
-    if any(not isinstance(r.surface, Plane) for r in regions):
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire
+    from OCP.Geom import Geom_CylindricalSurface
+    from OCP.gp import gp_Ax2, gp_Ax3, gp_Circ
+    if any(r.surface is None for r in regions):
         return None
     label = -np.ones(len(m.faces), int)
     for i, r in enumerate(regions):
@@ -265,14 +268,54 @@ def build_planar(m: trimesh.Trimesh, regions: list[Region], tol: float):
     if (label < 0).any():
         return None
     sew = BRepBuilderAPI_Sewing(max(tol, 1e-6) * 2)
+    def circle_on(plane, cyl):
+        """plane ∩ cylinder when the axis is parallel to the plane normal."""
+        if abs(plane.normal @ cyl.axis) < 0.995:
+            return None
+        n = plane.normal
+        c = cyl.point + cyl.axis * ((plane.d - n @ cyl.point) / (n @ cyl.axis))
+        return c, n
+
     for rid, r in enumerate(regions):
         loops = _loops(m, label, rid)
         if not loops:
             return None
+        if isinstance(r.surface, Cylinder):
+            # cylinder bounded by exactly two planar circular loops
+            if len(loops) != 2:
+                return None
+            hs = []
+            for loop in loops:
+                seq = _runs(loop, min_run=3)
+                if len(seq) != 1 or not isinstance(regions[seq[0]].surface, Plane):
+                    return None
+                cc = circle_on(regions[seq[0]].surface, r.surface)
+                if cc is None:
+                    return None
+                hs.append(cc[0])
+            a = hs[1] - hs[0]
+            h = np.linalg.norm(a)
+            a = a / h
+            ax = gp_Ax3(gp_Pnt(*map(float, hs[0])), gp_Dir(*map(float, a)))
+            surf = Geom_CylindricalSurface(ax, float(r.surface.radius))
+            mf = BRepBuilderAPI_MakeFace(surf, 0.0, 2 * np.pi, 0.0, float(h), 1e-7)
+            if not mf.IsDone():
+                return None
+            sew.Add(mf.Face())
+            continue
         wires = []
         for loop in loops:
             seq = _runs(loop, min_run=3)
-            if len(seq) < 3:
+            if len(seq) == 1 and isinstance(regions[seq[0]].surface, Cylinder):
+                cyl = regions[seq[0]].surface
+                cc = circle_on(r.surface, cyl)
+                if cc is None:
+                    return None
+                circ = gp_Circ(gp_Ax2(gp_Pnt(*map(float, cc[0])), gp_Dir(*map(float, cc[1]))), float(cyl.radius))
+                w = BRepBuilderAPI_MakeWire(BRepBuilderAPI_MakeEdge(circ).Edge()).Wire()
+                wires.append((np.pi * cyl.radius ** 2, w))
+                continue
+            if len(seq) < 3 or any(not isinstance(regions[k].surface, Plane) for k in seq):
                 return None
             pts = []
             for i in range(len(seq)):
