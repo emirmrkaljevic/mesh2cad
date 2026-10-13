@@ -36,6 +36,16 @@ def _report(a) -> int:
     return 0
 
 
+def _mcp(a) -> int:
+    try:
+        from .mcp_server import run
+    except ImportError:
+        print("MCP support needs: pip install 'mesh2cad[mcp]'", file=sys.stderr)
+        return 1
+    run()
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="mesh2cad", description="Convert STL/OBJ/PLY meshes to STEP B-rep CAD")
     ap.add_argument("--version", action="version", version=f"mesh2cad {__version__}")
@@ -54,6 +64,8 @@ def main(argv=None) -> int:
     r.add_argument("--tol", type=float, default=None)
     r.add_argument("--json", action="store_true")
     r.set_defaults(fn=_report)
+    mm = sub.add_parser("mcp", help="run the MCP server (stdio) for AI agents")
+    mm.set_defaults(fn=_mcp)
     a = ap.parse_args(argv)
     return a.fn(a)
 

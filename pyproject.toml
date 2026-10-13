@@ -13,7 +13,7 @@ dependencies = ["trimesh", "rtree", "networkx", "numpy", "scipy", "cadquery-ocp"
 
 [project.optional-dependencies]
 mcp = ["mcp"]
-dev = ["pytest", "cadquery"]
+dev = ["pytest", "cadquery", "mcp"]
 
 [project.scripts]
 mesh2cad = "mesh2cad.cli:main"
