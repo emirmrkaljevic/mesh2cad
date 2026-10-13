@@ -25,7 +25,7 @@ def convert_mesh(m: trimesh.Trimesh, tol: float | None = None, cylinders: bool =
         tol = 1e-3 * m.scale
     regions = segment(m, tol, angle_deg=angle_deg, cylinders=cylinders)
     shape, method = None, "faceted-hybrid"
-    if all(r.surface is not None and r.surface.kind == "plane" for r in regions):
+    if all(r.surface is not None for r in regions):
         shape = brep.build_planar(m, regions, tol)
         if shape is not None:
             from .report import volume
@@ -33,11 +33,15 @@ def convert_mesh(m: trimesh.Trimesh, tol: float | None = None, cylinders: bool =
             if not brep.is_valid(shape) or (vm and abs(volume(shape) - vm) > 0.05 * vm):
                 shape = None
             else:
-                method = "planar-exact"
+                method = "exact"
     if shape is None:
         verts = brep.snap_vertices(m, regions, tol)
         shape = brep.build_solid(m, verts, sew_tol=max(tol, 1e-6))
         shape = brep.unify(shape, lin_tol=max(tol * 0.05, 1e-6))
+        if not brep.is_valid(shape):
+            # snapping tangled triangles: export the raw mesh as a faithful faceted solid
+            shape = brep.unify(brep.build_solid(m, m.vertices, sew_tol=1e-6), lin_tol=1e-6)
+            method = "faceted"
     valid = brep.is_valid(shape)
     r = rep.build_report(m, shape, regions, valid, ref=ref) if with_report else {}
     if r:
