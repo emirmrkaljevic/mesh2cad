@@ -9,7 +9,7 @@ description = "Convert STL/OBJ/PLY meshes into B-rep CAD (STEP) with primitive f
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
-dependencies = ["trimesh", "numpy", "scipy", "cadquery-ocp"]
+dependencies = ["trimesh", "rtree", "networkx", "numpy", "scipy", "cadquery-ocp"]
 
 [project.optional-dependencies]
 mcp = ["mcp"]
