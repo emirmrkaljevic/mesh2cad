@@ -25,8 +25,14 @@ def boss():
     return cq.Workplane().box(40, 40, 5).faces(">Z").workplane().circle(8).extrude(15)
 
 
+def ribbed_plate():
+    return (cq.Workplane().box(50, 30, 6).faces(">Z").workplane()
+            .pushPoints([(-15, 0), (15, 0)]).hole(8)
+            .faces(">Z").workplane().center(0, 0).rect(14, 30).extrude(10))
+
+
 PLANAR = {"cube": cube, "l_bracket": l_bracket, "stepped_block": stepped_block}
-CURVED = {"plate_with_hole": plate_with_hole, "boss": boss}
+CURVED = {"plate_with_hole": plate_with_hole, "boss": boss, "ribbed_plate": ribbed_plate}
 
 
 def to_mesh(wp, tol=0.05, ang=0.2, max_edge=2.0):

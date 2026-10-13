@@ -25,7 +25,8 @@ def test_planar_roundtrip(name, sigma, seed):
 
 from parts import CURVED
 
-CURVED_FACES = {"plate_with_hole": {"plane": 6, "cylinder": 1}, "boss": {"plane": 7, "cylinder": 1}}
+CURVED_FACES = {"plate_with_hole": {"plane": 6, "cylinder": 1}, "boss": {"plane": 7, "cylinder": 1},
+                "ribbed_plate": {"plane": 10, "cylinder": 2}}
 
 
 @pytest.mark.parametrize("seed", [0, 1, 2])
