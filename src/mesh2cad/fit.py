@@ -71,3 +71,32 @@ def fit_cylinder(pts, normals) -> Cylinder | None:
     if r2 <= 0:
         return None
     return Cylinder(axis, cx * u + cy * v, float(np.sqrt(r2)))
+
+
+def refine_cylinder(cyl: Cylinder, pts) -> Cylinder:
+    """Nonlinear least-squares refinement of a cylinder on points."""
+    from scipy.optimize import least_squares
+    a = cyl.axis / np.linalg.norm(cyl.axis)
+    p0 = cyl.point - a * (cyl.point @ a)  # closest axis point to origin-ish
+    if len(pts) > 4000:
+        pts = pts[np.random.default_rng(0).choice(len(pts), 4000, replace=False)]
+
+    def unpack(x):
+        ax = x[:3] / np.linalg.norm(x[:3])
+        return ax, x[3:6], x[6]
+
+    def res(x):
+        ax, p, r = unpack(x)
+        v = pts - p
+        rad = v - np.outer(v @ ax, ax)
+        return np.linalg.norm(rad, axis=1) - r
+
+    try:
+        sol = least_squares(res, np.r_[a, p0, cyl.radius], loss="soft_l1",
+                            f_scale=max(1e-3, 0.02 * cyl.radius), max_nfev=200)
+    except Exception:
+        return cyl
+    ax, p, r = unpack(sol.x)
+    if not np.isfinite(r) or r <= 0:
+        return cyl
+    return Cylinder(ax, p, float(abs(r)))
