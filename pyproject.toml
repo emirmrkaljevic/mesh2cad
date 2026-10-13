@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mesh2cad"
-version = "0.0.1"
+version = "0.1.0"
 description = "Convert STL/OBJ/PLY meshes into B-rep CAD (STEP) with primitive fitting"
 readme = "README.md"
 license = "MIT"
