@@ -31,3 +31,24 @@ def test_cli_convert(tmp_path):
     assert out.read_text().startswith("ISO-10303-21")
     r = json.loads(rep.read_text())
     assert r["output"]["faces"] == {"plane": 6} and r["output"]["valid_solid"]
+
+
+def test_snap_and_fallback():
+    from mesh2cad import brep
+    from mesh2cad.convert import convert_mesh
+    from mesh2cad.io import add_noise, clean
+    from mesh2cad.segment import segment
+    from parts import plate_with_hole
+    m = clean(add_noise(to_mesh(cube()), 0.05))
+    regs = segment(m, 0.05)
+    x = brep.snap_vertices(m, regs, 0.05)
+    import numpy as np
+    for r in regs:
+        if r.surface is None:
+            continue
+        vs = np.unique(m.faces[r.faces])
+        assert r.surface.distance(x[vs]).max() < 1e-6
+    ref = to_mesh(plate_with_hole())
+    r = convert_mesh(ref, tol=0.01, cylinders=False, ref=ref).report
+    assert r["method"] in ("faceted-hybrid", "faceted")
+    assert r["deviation"]["hausdorff"] < 0.5
