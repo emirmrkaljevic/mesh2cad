@@ -70,8 +70,13 @@ def segment(m: trimesh.Trimesh, tol: float, angle_deg: float = 20.0,
     total = area.sum()
     keep, leftover = [], []
     for r in regions:
-        ok = r.area >= min_area_frac * total and _minor_extent(m, r) > 0.05 * m.scale
+        vp = m.vertices[np.unique(m.faces[r.faces])]
+        ok = (r.area >= min_area_frac * total and _minor_extent(m, r) > 0.05 * m.scale
+              and np.percentile(r.surface.distance(vp), 90) < 2.5 * tol)
         (keep if ok else leftover).append(r)
+
+    keep, more = _strip_chains(m, sm, keep, tol)
+    leftover += more
 
     # --- leftovers: first try to give them to planes, then fit cylinders
     out = _merge_planes(m, keep, tol)
@@ -84,10 +89,43 @@ def segment(m: trimesh.Trimesh, tol: float, angle_deg: float = 20.0,
         if rest:
             left = np.concatenate([r.faces for r in rest])
             out += _cylinder_regions(m, sm, nb, left, tol, cylinders)
-    out = _absorb(m, nb, out, tol)
-    out = _dissolve_small(m, nb, out, tol)
+    for _ in range(2):
+        out = _merge_cylinders(m, out, tol)
+        out = _absorb(m, nb, out, tol)
+        out = _dissolve_small(m, nb, out, tol)
+        out = [r for r in out if len(r.faces)]
     out = _absorb(m, nb, out, tol, force_frac=0.005)
     return [r for r in out if len(r.faces)]
+
+
+def _strip_chains(m, sm, regs, tol, frac=0.05):
+    """Chains of small adjacent planes that together form a cylinder
+    (a faceted / scanned cylinder segmented as strips)."""
+    lab = -np.ones(len(m.faces), int)
+    for i, r in enumerate(regs):
+        lab[r.faces] = i
+    small = {i for i, r in enumerate(regs) if r.area < frac * m.area}
+    pairs = set()
+    for a, b in lab[m.face_adjacency]:
+        if a != b and a in small and b in small:
+            pairs.add((min(a, b), max(a, b)))
+    import networkx as nx
+    g = nx.Graph()
+    g.add_nodes_from(small)
+    g.add_edges_from(pairs)
+    moved = set()
+    for comp in nx.connected_components(g):
+        if len(comp) < 3:
+            continue
+        faces = np.concatenate([regs[i].faces for i in comp])
+        cyl = fit_cylinder(m.triangles_center[faces], sm.face_normals[faces])
+        if cyl is None or cyl.radius > 0.5 * m.scale:
+            continue
+        vp = m.vertices[np.unique(m.faces[faces])]
+        if np.percentile(cyl.distance(vp), 90) < 3 * tol:
+            moved |= comp
+    return ([r for i, r in enumerate(regs) if i not in moved],
+            [r for i, r in enumerate(regs) if i in moved])
 
 
 def _minor_extent(m, r):
@@ -128,6 +166,29 @@ def _merge_planes(m, regs, tol, ang_deg=3.0):
         surf = g[0].surface if len(g) == 1 else _refit(m.triangles, m.area_faces, faces, g[0].surface)
         out.append(Region(faces, surf, float(m.area_faces[faces].sum())))
     return out + rest
+
+
+def _merge_cylinders(m, regs, tol):
+    cyl = [r for r in regs if isinstance(r.surface, Cylinder)]
+    rest = [r for r in regs if not isinstance(r.surface, Cylinder)]
+    cyl.sort(key=lambda r: -r.area)
+    groups = []
+    for r in cyl:
+        for g in groups:
+            c = g[0].surface
+            if np.percentile(c.distance(m.triangles_center[r.faces]), 90) < 3 * tol:
+                g.append(r)
+                break
+        else:
+            groups.append([r])
+    out = []
+    for g in groups:
+        faces = np.concatenate([r.faces for r in g])
+        surf = g[0].surface
+        if len(g) > 1:
+            surf = fit_cylinder(m.triangles_center[faces], m.face_normals[faces]) or surf
+        out.append(Region(faces, surf, float(m.area_faces[faces].sum())))
+    return rest + out
 
 
 def _dissolve_small(m, nb, regs, tol, frac=0.015):
