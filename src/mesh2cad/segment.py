@@ -90,6 +90,7 @@ def segment(m: trimesh.Trimesh, tol: float, angle_deg: float = 20.0,
             left = np.concatenate([r.faces for r in rest])
             out += _cylinder_regions(m, sm, nb, left, tol, cylinders)
     for _ in range(3):
+        out = _merge_planes(m, out, tol)
         out = _merge_cylinders(m, out, tol)
         out = _absorb(m, nb, out, tol)
         out = _dissolve_small(m, nb, out, tol)
