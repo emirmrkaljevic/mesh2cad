@@ -28,94 +28,68 @@ from .segment import Region
 
 
 def snap_vertices(m: trimesh.Trimesh, regions: list[Region], tol: float, iters: int = 10):
+    """Move vertices onto the fitted surfaces of every region they touch.
+    Plane-only vertices are solved in one batched least-squares step;
+    vertices touching a cylinder use a few linearised iterations."""
     nv = len(m.vertices)
-    vregs = [[] for _ in range(nv)]
+    x0 = m.vertices.copy()
+    lam = 1e-6
+    rows_v, rows_r = [], []
     for i, r in enumerate(regions):
         if r.surface is None:
             continue
-        for v in np.unique(m.faces[r.faces]):
-            vregs[v].append(i)
-    x0 = m.vertices.copy()
+        vs = np.unique(m.faces[r.faces])
+        rows_v.append(vs)
+        rows_r.append(np.full(len(vs), i))
+    if not rows_v:
+        return x0
+    rv, rr = np.concatenate(rows_v), np.concatenate(rows_r)
+    is_plane = np.array([isinstance(r.surface, Plane) for r in regions])
+    has_cyl = np.zeros(nv, bool)
+    has_cyl[rv[~is_plane[rr]]] = True
+    touched = np.zeros(nv, bool)
+    touched[rv] = True
+
+    def solve(p, N, D, idx):
+        # accumulate N^T N and N^T D per vertex
+        A = np.zeros((nv, 3, 3))
+        b = np.zeros((nv, 3))
+        np.add.at(A, idx, N[:, :, None] * N[:, None, :])
+        np.add.at(b, idx, N * D[:, None])
+        A += lam * np.eye(3)
+        b += lam * p
+        return np.linalg.solve(A, b[..., None])[..., 0]
+
+    pl = is_plane[rr]
+    Np = np.array([regions[i].surface.normal if is_plane[i] else np.zeros(3) for i in range(len(regions))])
+    Dp = np.array([regions[i].surface.d if is_plane[i] else 0.0 for i in range(len(regions))])
     x = x0.copy()
-    lam = 1e-6
-    for v in range(nv):
-        rs = vregs[v]
-        if not rs:
-            continue
-        surfs = [regions[i].surface for i in rs]
-        planes = [s for s in surfs if isinstance(s, Plane)]
-        others = [s for s in surfs if not isinstance(s, Plane)]
-        p = x0[v]
-        for _ in range(iters if others else 1):
-            # linearize every surface at the current point as a plane
-            N, D = [], []
-            for s in planes:
-                N.append(s.normal); D.append(s.d)
-            for s in others:
-                q = s.project(p[None])[0]
-                n = p - q
-                ln = np.linalg.norm(n)
-                if ln < 1e-12:
-                    r = s._radial(p[None])[0]
-                    n = r / max(np.linalg.norm(r), 1e-12)
-                else:
-                    n = n / ln
-                N.append(n); D.append(n @ q)
-            N, D = np.array(N), np.array(D)
-            A = N.T @ N + lam * np.eye(3)
-            b = N.T @ D + lam * p
-            pn = np.linalg.solve(A, b)
-            # guard against wildly ill-conditioned (near-parallel) solves
-            if np.linalg.norm(pn - x0[v]) > 4 * tol + 1e-9 and len(N) > 1:
-                pn = surfs[0].project(x0[v][None])[0]
-            if np.linalg.norm(pn - p) < 1e-10:
-                p = pn
-                break
-            p = pn
-        x[v] = p
-    return x
-
-
-def relax(m, x, vregs, regions, tol, iters=60):
-    """Untangle triangles: move vertices toward neighbour mean while keeping
-    them on their constraint surfaces (linearised as planes at the snapped
-    point). Corners (3+ independent planes) stay put; interior vertices are
-    irrelevant to the final faces, so smoothing them is free."""
-    nv = len(x)
-    lam = 1.0
-    P = np.zeros((nv, 3, 3))
-    C = np.zeros((nv, 3))
-    active = np.zeros(nv, bool)
-    for v in range(nv):
-        if not vregs[v]:
-            continue
-        N, D = [], []
-        for i in vregs[v]:
-            sfc = regions[i].surface
-            if isinstance(sfc, Plane):
-                n, d = sfc.normal, sfc.d
-            else:
-                r = sfc._radial(x[v][None])[0]
-                n = r / max(np.linalg.norm(r), 1e-12)
-                d = n @ x[v]
-            N.append(n); D.append(d)
-        N, D = np.array(N), np.array(D)
-        # cap rank: drop near-duplicate constraints
-        A = N.T @ N * 1e6 + lam * np.eye(3)
-        Ai = np.linalg.inv(A)
-        P[v] = Ai * lam
-        C[v] = Ai @ (N.T @ D * 1e6)
-        active[v] = True
-    edges = m.edges_unique
-    deg = np.bincount(edges.ravel(), minlength=nv).astype(float)
-    deg[deg == 0] = 1
-    idx = np.where(active)[0]
-    for _ in range(iters):
-        s = np.zeros_like(x)
-        np.add.at(s, edges[:, 0], x[edges[:, 1]])
-        np.add.at(s, edges[:, 1], x[edges[:, 0]])
-        mean = s / deg[:, None]
-        x[idx] = np.einsum("nij,nj->ni", P[idx], mean[idx]) + C[idx]
+    for _ in range(iters if has_cyl.any() else 1):
+        N = np.zeros((len(rv), 3))
+        D = np.zeros(len(rv))
+        N[pl], D[pl] = Np[rr[pl]], Dp[rr[pl]]
+        for i in np.unique(rr[~pl]):
+            sel = (rr == i)
+            c = regions[i].surface
+            p = x[rv[sel]]
+            q = c.project(p)
+            rad = c._radial(p)
+            n = rad / np.maximum(np.linalg.norm(rad, axis=1, keepdims=True), 1e-12)
+            N[sel], D[sel] = n, np.einsum("ij,ij->i", n, q)
+        xn = solve(x0, N, D, rv)
+        xn[~touched] = x0[~touched]
+        # guard against ill-conditioned (near-parallel) solves
+        bad = np.linalg.norm(xn - x0, axis=1) > 4 * tol + 1e-9
+        if bad.any():
+            first = {}
+            for v, i in zip(rv, rr):
+                first.setdefault(v, i)
+            for v in np.where(bad)[0]:
+                xn[v] = regions[first[v]].surface.project(x0[v][None])[0]
+        done = np.abs(xn - x).max() < 1e-10
+        x = xn
+        if done:
+            break
     return x
 
 
