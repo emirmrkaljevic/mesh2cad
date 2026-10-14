@@ -4,16 +4,18 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass
 
+import networkx as nx
 import numpy as np
 import trimesh
 
-from .fit import Cylinder, Plane, fit_cylinder, fit_plane, refine_cylinder
+from .fit import (Cylinder, Plane, Sphere, fit_cylinder, fit_plane, fit_sphere,
+                  refine_cylinder, refine_sphere)
 
 
 @dataclass
 class Region:
     faces: np.ndarray
-    surface: Plane | Cylinder | None  # None = faceted fallback
+    surface: Plane | Cylinder | Sphere | None  # None = faceted fallback
     area: float
 
 
@@ -26,7 +28,8 @@ def _neighbors(m: trimesh.Trimesh):
 
 
 def segment(m: trimesh.Trimesh, tol: float, angle_deg: float = 20.0,
-            min_area_frac: float = 0.002, cylinders: bool = True) -> list[Region]:
+            min_area_frac: float = 0.002, cylinders: bool = True,
+            spheres: bool = True) -> list[Region]:
     nb = _neighbors(m)
     # segmentation runs on a denoised copy; fits use original geometry
     sm = m.copy()
@@ -78,7 +81,7 @@ def segment(m: trimesh.Trimesh, tol: float, angle_deg: float = 20.0,
     keep, more = _strip_chains(m, sm, keep, tol)
     leftover += more
 
-    # --- leftovers: first try to give them to planes, then fit cylinders
+    # --- leftovers: give them to planes, then fit cylinders or spheres
     out = _merge_planes(m, keep, tol)
     if leftover:
         left = np.concatenate([r.faces for r in leftover])
@@ -88,10 +91,13 @@ def segment(m: trimesh.Trimesh, tol: float, angle_deg: float = 20.0,
         out = [r for r in out if r.surface is not None]
         if rest:
             left = np.concatenate([r.faces for r in rest])
-            out += _cylinder_regions(m, sm, nb, left, tol, cylinders)
+            out += _cylinder_regions(m, sm, nb, left, tol, cylinders, spheres)
     for _ in range(3):
         out = _merge_planes(m, out, tol)
         out = _merge_cylinders(m, out, tol)
+        if spheres:
+            out = _promote_spheres(m, sm, out, tol)
+            out = _merge_spheres(m, out, tol)
         out = _absorb(m, nb, out, tol)
         out = _dissolve_small(m, nb, out, tol)
         out = [r for r in out if len(r.faces)]
@@ -110,7 +116,6 @@ def _strip_chains(m, sm, regs, tol, frac=0.05):
     for a, b in lab[m.face_adjacency]:
         if a != b and a in small and b in small:
             pairs.add((min(a, b), max(a, b)))
-    import networkx as nx
     g = nx.Graph()
     g.add_nodes_from(small)
     g.add_edges_from(pairs)
@@ -174,6 +179,106 @@ def _merge_planes(m, regs, tol, ang_deg=3.0):
         surf = g[0].surface if len(g) == 1 else _refit(m.triangles, m.area_faces, faces, g[0].surface)
         out.append(Region(faces, surf, float(m.area_faces[faces].sum())))
     return out + rest
+
+
+def _merge_spheres(m, regs, tol):
+    sph = [r for r in regs if isinstance(r.surface, Sphere)]
+    rest = [r for r in regs if not isinstance(r.surface, Sphere)]
+    sph.sort(key=lambda r: -r.area)
+    groups = []
+    for r in sph:
+        for g in groups:
+            s = g[0].surface
+            same = (abs(r.surface.radius - s.radius) < 0.15 * s.radius
+                    and np.linalg.norm(r.surface.center - s.center) < 0.15 * s.radius)
+            if same or np.percentile(s.distance(m.triangles_center[r.faces]), 90) < 3 * tol:
+                g.append(r)
+                break
+        else:
+            groups.append([r])
+    out = []
+    for g in groups:
+        faces = np.concatenate([r.faces for r in g])
+        surf = refine_sphere(g[0].surface, m.vertices[np.unique(m.faces[faces])])
+        out.append(Region(faces, surf, float(m.area_faces[faces].sum())))
+    return rest + out
+
+
+def _accept_sphere(m, sm, faces, tol) -> Sphere | None:
+    """Fit a sphere to faces and accept it only when it beats a plane or cylinder."""
+    if len(faces) < 8 or m.area_faces[faces].sum() < 0.002 * m.area:
+        return None
+    cen = m.triangles_center[faces]
+    nrm = sm.face_normals[faces]
+    sph = fit_sphere(cen, nrm)
+    if sph is None:
+        return None
+    pts = m.vertices[np.unique(m.faces[faces])]
+    sph = refine_sphere(sph, pts)
+    if not np.isfinite(sph.radius) or sph.radius <= 0:
+        return None
+    ext = float(np.linalg.norm(pts - pts.mean(0), axis=1).max())
+    if ext < 1e-9 or sph.radius > max(8.0 * ext, 2.0 * m.scale):
+        return None
+    rho = min(ext, sph.radius * 0.999)
+    sag = sph.radius - float(np.sqrt(max(sph.radius ** 2 - rho ** 2, 0.0)))
+    if sag < max(3.0 * tol, 0.015 * sph.radius):
+        return None
+    err = float(np.percentile(sph.distance(pts), 95))
+    if err > max(5.0 * tol, 0.04 * sph.radius):
+        return None
+    radial = cen - sph.center
+    radial /= np.maximum(np.linalg.norm(radial, axis=1, keepdims=True), 1e-12)
+    if float(np.mean(np.abs(np.sum(nrm * radial, axis=1)))) < 0.8:
+        return None
+    cyl = fit_cylinder(cen, nrm)
+    if cyl is not None and 0 < cyl.radius < 0.5 * m.scale:
+        cerr = float(np.percentile(cyl.distance(pts), 95))
+        if cerr < max(4.0 * tol, 0.02 * cyl.radius) and cerr < err * 0.75:
+            return None
+    return sph
+
+
+def _promote_spheres(m, sm, regs, tol, frac=0.05):
+    """Merge a connected cluster of small regions when they lie on one sphere.
+
+    Clean caps arrive as a single unfitted component (handled in
+    _cylinder_regions). Noisy / faceted caps are split into small planes
+    (and sometimes a spurious cylinder); those clusters are promoted here.
+    """
+    lab = -np.ones(len(m.faces), int)
+    for i, r in enumerate(regs):
+        if len(r.faces):
+            lab[r.faces] = i
+    small = {i for i, r in enumerate(regs) if 0 < r.area < frac * m.area}
+    if len(small) < 1:
+        return regs
+    pairs = set()
+    for a, b in lab[m.face_adjacency]:
+        a, b = int(a), int(b)
+        if a != b and a in small and b in small:
+            pairs.add((min(a, b), max(a, b)))
+    g = nx.Graph()
+    g.add_nodes_from(small)
+    g.add_edges_from(pairs)
+    drop = set()
+    extra = []
+    for comp in nx.connected_components(g):
+        comp = set(comp)
+        kinds = [regs[i].surface for i in comp]
+        if len(comp) < 2 and not (len(comp) == 1 and kinds[0] is None):
+            continue
+        if len(comp) == 1 and isinstance(kinds[0], Sphere):
+            continue
+        faces = np.concatenate([regs[i].faces for i in comp])
+        sph = _accept_sphere(m, sm, faces, tol)
+        if sph is None:
+            continue
+        drop |= comp
+        extra.append(Region(faces, sph, float(m.area_faces[faces].sum())))
+    if not drop:
+        return regs
+    return [r for i, r in enumerate(regs) if i not in drop] + extra
 
 
 def _merge_cylinders(m, regs, tol):
@@ -262,7 +367,7 @@ def _refit(tri, area, members, plane):
     return p
 
 
-def _cylinder_regions(m, sm, nb, faces, tol, cylinders):
+def _cylinder_regions(m, sm, nb, faces, tol, cylinders, spheres=True):
     fset = set(faces.tolist())
     seen = set()
     regs = []
@@ -288,6 +393,12 @@ def _cylinder_regions(m, sm, nb, faces, tol, cylinders):
                 if (cyl.radius < 0.5 * m.scale and a >= 0.002 * m.area
                         and np.percentile(cyl.distance(pts), 95) < max(4 * tol, 0.02 * cyl.radius)):
                     surf = cyl
+        if spheres:
+            sph = _accept_sphere(m, sm, comp, tol)
+            if sph is not None and (surf is None or np.percentile(
+                    sph.distance(m.vertices[np.unique(m.faces[comp])]), 95)
+                    < 0.75 * np.percentile(surf.distance(m.vertices[np.unique(m.faces[comp])]), 95)):
+                surf = sph
         if surf is None and len(comp) >= 3:
             pl = fit_plane(m.triangles[comp].reshape(-1, 3))
             if np.percentile(pl.distance(m.vertices[np.unique(m.faces[comp])]), 90) < 2.5 * tol:

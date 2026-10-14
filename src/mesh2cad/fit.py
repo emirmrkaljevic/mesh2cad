@@ -1,4 +1,4 @@
-"""Primitive fitting: planes and cylinders."""
+"""Primitive fitting: planes, cylinders, and spheres."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -38,6 +38,22 @@ class Cylinder:
         n = np.linalg.norm(r, axis=1, keepdims=True)
         n[n < 1e-12] = 1e-12
         return pts - r + r / n * self.radius
+
+
+@dataclass
+class Sphere:
+    center: np.ndarray
+    radius: float
+    kind: str = field(default="sphere", init=False)
+
+    def distance(self, pts):
+        return np.abs(np.linalg.norm(pts - self.center, axis=1) - self.radius)
+
+    def project(self, pts):
+        v = pts - self.center
+        n = np.linalg.norm(v, axis=1, keepdims=True)
+        n = np.maximum(n, 1e-12)
+        return self.center + v / n * self.radius
 
 
 def fit_plane(pts, weights=None) -> Plane:
@@ -100,3 +116,91 @@ def refine_cylinder(cyl: Cylinder, pts) -> Cylinder:
     if not np.isfinite(r) or r <= 0:
         return cyl
     return Cylinder(ax, p, float(abs(r)))
+
+
+def _sphere_from_normals(pts, normals):
+    """Center = least-squares intersection of normal rays; radius = median distance."""
+    n = np.asarray(normals, float)
+    ln = np.linalg.norm(n, axis=1, keepdims=True)
+    n = n / np.maximum(ln, 1e-12)
+    P = np.eye(3) - n[:, :, None] * n[:, None, :]
+    A = P.sum(axis=0)
+    ev = np.linalg.eigvalsh(A)
+    if ev[0] <= 1e-8 * max(ev[-1], 1e-12):
+        return None
+    b = np.einsum("mij,mj->i", P, pts)
+    try:
+        center = np.linalg.solve(A, b)
+    except np.linalg.LinAlgError:
+        return None
+    if not np.isfinite(center).all():
+        return None
+    radius = float(np.median(np.linalg.norm(pts - center, axis=1)))
+    if not np.isfinite(radius) or radius <= 0:
+        return None
+    return center, radius
+
+
+def _sphere_algebraic(pts):
+    """Linearized (x-c)^2 = r^2 fit. Unstable on tiny caps; caller compares candidates."""
+    A = np.c_[pts, np.ones(len(pts))]
+    rhs = -np.sum(pts * pts, axis=1)
+    sol, *_ = np.linalg.lstsq(A, rhs, rcond=None)
+    center = -0.5 * sol[:3]
+    r2 = float(center @ center - sol[3])
+    if not np.isfinite(r2) or r2 <= 0:
+        return None
+    return center, float(np.sqrt(r2))
+
+
+def fit_sphere(pts, normals=None) -> Sphere | None:
+    """Fit a sphere from points, using normal rays when normals are available.
+
+    Both the normal-ray center and the algebraic fit are tried; the candidate
+    with the smaller median residual is kept. Call refine_sphere afterwards.
+    """
+    pts = np.asarray(pts, float)
+    if len(pts) < 6:
+        return None
+    cands = []
+    if normals is not None:
+        hit = _sphere_from_normals(pts, normals)
+        if hit is not None:
+            cands.append(hit)
+    hit = _sphere_algebraic(pts)
+    if hit is not None:
+        cands.append(hit)
+    ext = float(np.linalg.norm(pts - pts.mean(0), axis=1).max())
+    best = None
+    for center, radius in cands:
+        if ext > 0 and radius > max(1e6, 1e4 * ext):
+            continue
+        err = float(np.median(np.abs(np.linalg.norm(pts - center, axis=1) - radius)))
+        if best is None or err < best[0]:
+            best = (err, center, radius)
+    if best is None:
+        return None
+    return Sphere(np.asarray(best[1], float), float(best[2]))
+
+
+def refine_sphere(sph: Sphere, pts) -> Sphere:
+    """Nonlinear least-squares refinement of a sphere on points."""
+    from scipy.optimize import least_squares
+    pts = np.asarray(pts, float)
+    if len(pts) < 4:
+        return sph
+    if len(pts) > 4000:
+        pts = pts[np.random.default_rng(0).choice(len(pts), 4000, replace=False)]
+
+    def res(x):
+        return np.linalg.norm(pts - x[:3], axis=1) - x[3]
+
+    try:
+        sol = least_squares(res, np.r_[sph.center, sph.radius], loss="soft_l1",
+                            f_scale=max(1e-3, 0.02 * sph.radius), max_nfev=200)
+    except Exception:
+        return sph
+    center, radius = sol.x[:3], float(abs(sol.x[3]))
+    if not np.isfinite(center).all() or not np.isfinite(radius) or radius <= 0:
+        return sph
+    return Sphere(center, radius)
