@@ -1,7 +1,7 @@
 import json
 
 from mesh2cad.cli import main
-from mesh2cad.fit import fit_cylinder, fit_plane
+from mesh2cad.fit import fit_cylinder, fit_plane, fit_sphere, refine_sphere
 from parts import cube, to_mesh
 import numpy as np
 
@@ -22,6 +22,20 @@ def test_fit_cylinder():
     assert abs(c.radius - 4) < 1e-6 and abs(abs(c.axis[2]) - 1) < 1e-6
 
 
+def test_fit_sphere():
+    rng = np.random.default_rng(0)
+    phi = rng.uniform(0.2, 1.2, 300)
+    th = rng.uniform(0, 2 * np.pi, 300)
+    nrm = np.c_[np.sin(phi) * np.cos(th), np.sin(phi) * np.sin(th), np.cos(phi)]
+    center = np.array([1.0, -2.0, 0.5])
+    pts = center + 5.0 * nrm
+    sph = refine_sphere(fit_sphere(pts, nrm), pts)
+    assert np.linalg.norm(sph.center - center) < 1e-6
+    assert abs(sph.radius - 5.0) < 1e-6
+    assert sph.distance(pts).max() < 1e-6
+    assert np.linalg.norm(sph.project(pts) - pts, axis=1).max() < 1e-6
+
+
 def test_cli_convert(tmp_path):
     stl = tmp_path / "cube.stl"
     to_mesh(cube()).export(stl)
@@ -31,6 +45,22 @@ def test_cli_convert(tmp_path):
     assert out.read_text().startswith("ISO-10303-21")
     r = json.loads(rep.read_text())
     assert r["output"]["faces"] == {"plane": 6} and r["output"]["valid_solid"]
+
+
+def test_snap_sphere():
+    from mesh2cad import brep
+    from mesh2cad.fit import Sphere
+    from mesh2cad.io import clean
+    from mesh2cad.segment import segment
+    from parts import spherical_dome
+    m = clean(to_mesh(spherical_dome()))
+    regs = segment(m, 0.01)
+    assert any(isinstance(r.surface, Sphere) for r in regs)
+    x = brep.snap_vertices(m, regs, 0.01)
+    for r in regs:
+        if isinstance(r.surface, Sphere):
+            vs = np.unique(m.faces[r.faces])
+            assert r.surface.distance(x[vs]).max() < 1e-5
 
 
 def test_snap_and_fallback():

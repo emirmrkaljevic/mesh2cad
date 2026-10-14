@@ -1,14 +1,14 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
   "name": "io.github.emirmrkaljevic/mesh2cad",
-  "description": "Convert STL/OBJ/PLY meshes to editable STEP CAD with fitted planes/cylinders + fidelity report",
+  "description": "Convert STL/OBJ/PLY meshes to editable STEP CAD with fitted planes, cylinders, and spheres + fidelity report",
   "repository": {"url": "https://github.com/emirmrkaljevic/mesh2cad", "source": "github"},
-  "version": "0.1.0",
+  "version": "0.2.0",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "mesh2cad",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "transport": {"type": "stdio"},
       "packageArguments": [{"type": "positional", "value": "mcp"}]
     }

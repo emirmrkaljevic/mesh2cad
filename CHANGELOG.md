@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.0 — 2026-10-14
+- Sphere primitive: `Sphere`, `fit_sphere` (normal rays + algebraic fit), `refine_sphere`.
+- Segmentation emits `Region(surface=Sphere)` for leftover caps and for clusters of small patches that tile a sphere (noisy or faceted ball ends).
+- Exact B-rep spherical faces when the region is bounded by plane ∩ sphere circles (cap or zone). Hybrid fallback snaps vertices onto the sphere.
+- Fidelity report counts `sphere` faces. CLI `--no-spheres` and MCP `spheres` flag (default on).
+- Synthetic roundtrip: hemispherical dome, spherical pocket, and a sphere clipped to a zone between two planes.
+
 ## 0.1.0 — 2026-10-14
 First release.
 - Mesh loading/cleaning for STL, OBJ, PLY (trimesh).

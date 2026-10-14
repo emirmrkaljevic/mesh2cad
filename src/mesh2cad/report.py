@@ -10,7 +10,7 @@ from OCP.BRep import BRep_Tool
 from OCP.BRepAdaptor import BRepAdaptor_Surface
 from OCP.BRepGProp import BRepGProp
 from OCP.BRepMesh import BRepMesh_IncrementalMesh
-from OCP.GeomAbs import GeomAbs_Cylinder, GeomAbs_Plane
+from OCP.GeomAbs import GeomAbs_Cylinder, GeomAbs_Plane, GeomAbs_Sphere
 from OCP.GProp import GProp_GProps
 from OCP.TopAbs import TopAbs_FACE, TopAbs_REVERSED
 from OCP.TopExp import TopExp_Explorer
@@ -23,7 +23,8 @@ def face_types(shape) -> dict:
     exp = TopExp_Explorer(shape, TopAbs_FACE)
     while exp.More():
         t = BRepAdaptor_Surface(TopoDS.Face_s(exp.Current())).GetType()
-        c["plane" if t == GeomAbs_Plane else "cylinder" if t == GeomAbs_Cylinder else "other"] += 1
+        kind = {GeomAbs_Plane: "plane", GeomAbs_Cylinder: "cylinder", GeomAbs_Sphere: "sphere"}.get(t, "other")
+        c[kind] += 1
         exp.Next()
     return dict(c)
 

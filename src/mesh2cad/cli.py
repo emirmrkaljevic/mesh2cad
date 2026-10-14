@@ -13,7 +13,8 @@ def _convert(a) -> int:
     from .convert import convert_file
     from .report import dumps, to_markdown
     out = a.output or str(Path(a.input).with_suffix(".step"))
-    res = convert_file(a.input, out, tol=a.tol, cylinders=not a.no_cylinders)
+    res = convert_file(a.input, out, tol=a.tol, cylinders=not a.no_cylinders,
+                       spheres=not a.no_spheres)
     r = res.report
     if a.report:
         p = Path(a.report)
@@ -31,7 +32,8 @@ def _report(a) -> int:
     from .convert import convert_mesh
     from .io import load_mesh
     from .report import dumps, to_markdown
-    r = convert_mesh(load_mesh(a.input), tol=a.tol).report
+    r = convert_mesh(load_mesh(a.input), tol=a.tol, cylinders=not a.no_cylinders,
+                     spheres=not a.no_spheres).report
     print(dumps(r) if a.json else to_markdown(r), end="")
     return 0
 
@@ -58,11 +60,14 @@ def main(argv=None) -> int:
     c.add_argument("--report", help="write fidelity report (.json or .md)")
     c.add_argument("--json", action="store_true", help="print full report as JSON")
     c.add_argument("--no-cylinders", action="store_true")
+    c.add_argument("--no-spheres", action="store_true")
     c.set_defaults(fn=_convert)
     r = sub.add_parser("report", help="analyze a mesh and print a fidelity report without writing STEP")
     r.add_argument("input")
     r.add_argument("--tol", type=float, default=None)
     r.add_argument("--json", action="store_true")
+    r.add_argument("--no-cylinders", action="store_true")
+    r.add_argument("--no-spheres", action="store_true")
     r.set_defaults(fn=_report)
     mm = sub.add_parser("mcp", help="run the MCP server (stdio) for AI agents")
     mm.set_defaults(fn=_mcp)
