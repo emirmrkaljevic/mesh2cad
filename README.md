@@ -3,9 +3,9 @@
 
 Turn 3D meshes (STL/OBJ/PLY) into **real, editable CAD (STEP)** — fitted planes and cylinders instead of triangle soup. CLI + MCP server for AI agents. MIT, pure Python on top of OpenCascade.
 
-![demo](docs/demo.gif)
+![demo](https://raw.githubusercontent.com/emirmrkaljevic/mesh2cad/main/docs/demo.gif)
 
-![before/after](docs/before_after.png)
+![before/after](https://raw.githubusercontent.com/emirmrkaljevic/mesh2cad/main/docs/before_after.png)
 
 *Left: 21k-triangle mesh with 0.1 mm noise. Right: the STEP mesh2cad writes — 10 planes + 2 cylinders, max deviation 0.05 mm from the true part.*
 
@@ -74,3 +74,5 @@ python docs/make_demo.py   # regenerate images (needs matplotlib, pillow)
 ```
 
 License: MIT
+
+<!-- mcp-name: io.github.emirmrkaljevic/mesh2cad -->
