@@ -2,6 +2,7 @@
 
 ## Unreleased
 - Benchmark (`benchmarks/run.py`) now includes the cone parts (countersunk plate, tapered boss, chamfered boss) and a cone face column; README table refreshed.
+- Docs: Limits and `server.json` description now list cones; Glama score badge and MCP directory links in the README.
 
 ## 0.3.0 — 2026-10-15
 - Cone primitive: `Cone`, `fit_cone` (constant normal-to-axis angle + tangent planes through the apex), `refine_cone`.
