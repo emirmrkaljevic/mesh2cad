@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0 — 2026-10-15
+- Cone primitive: `Cone`, `fit_cone` (constant normal-to-axis angle + tangent planes through the apex), `refine_cone`.
+- Segmentation fits cones for chamfers, countersinks and tapered bosses; a coaxial cylinder + cone component is split by normal-to-axis angle before fitting. Cones win over sphere/cylinder fits only when clearly better.
+- Exact B-rep conical frustum faces between two planes perpendicular to the axis, with plane ∩ cone circles on the planar faces. Hybrid fallback snaps vertices onto the cone.
+- Fidelity report counts `cone` faces. CLI `--no-cones` and MCP `cones` flag (default on).
+- Synthetic roundtrip: countersunk plate, 10° tapered boss, chamfered boss.
+
 ## 0.2.0 — 2026-10-14
 - Sphere primitive: `Sphere`, `fit_sphere` (normal rays + algebraic fit), `refine_sphere`.
 - Segmentation emits `Region(surface=Sphere)` for leftover caps and for clusters of small patches that tile a sphere (noisy or faceted ball ends).

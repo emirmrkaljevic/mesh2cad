@@ -1,7 +1,7 @@
 # mesh2cad
 [![ci](https://github.com/emirmrkaljevic/mesh2cad/actions/workflows/ci.yml/badge.svg)](https://github.com/emirmrkaljevic/mesh2cad/actions/workflows/ci.yml)
 
-Turn 3D meshes (STL/OBJ/PLY) into **real, editable CAD (STEP)** — fitted planes, cylinders, and spheres instead of triangle soup. CLI + MCP server for AI agents. MIT, pure Python on top of OpenCascade.
+Turn 3D meshes (STL/OBJ/PLY) into **real, editable CAD (STEP)** — fitted planes, cylinders, spheres, and cones instead of triangle soup. CLI + MCP server for AI agents. MIT, pure Python on top of OpenCascade.
 
 ![demo](https://raw.githubusercontent.com/emirmrkaljevic/mesh2cad/main/docs/demo.gif)
 
@@ -28,12 +28,12 @@ Output: STEP + fidelity report — method (`exact` / `faceted-hybrid` / `faceted
 ```json
 { "mcpServers": { "mesh2cad": { "command": "mesh2cad", "args": ["mcp"] } } }
 ```
-Tools: `convert(input_path, output_path?, tol?, cylinders?, spheres?)`, `analyze(input_path, tol?, cylinders?, spheres?)`, `report(input_path, tol?, cylinders?, spheres?)`. `spheres` defaults on.
+Tools: `convert(input_path, output_path?, tol?, cylinders?, spheres?, cones?)`, `analyze(input_path, tol?, cylinders?, spheres?, cones?)`, `report(input_path, tol?, cylinders?, spheres?, cones?)`. `spheres` and `cones` default on.
 
 ## How it works
 1. Load + clean mesh (trimesh); Taubin-smoothed copy for normals.
-2. Region growing into planes; strip chains and leftovers are fitted as cylinders or spheres (normal-ray / algebraic fit, robust nonlinear refinement). Small noisy patches that tile a sphere are merged into one spherical region. Split/redundant regions are merged and absorbed.
-3. Exact B-rep (OCP / OpenCascade): plane polygons from triple-plane intersections, circles from plane ∩ cylinder and plane ∩ sphere, cylindrical faces, spherical caps and zones, sewn into a solid and validated.
+2. Region growing into planes; strip chains and leftovers are fitted as cylinders, spheres, or cones (normal-ray / algebraic / constant-normal-angle fits, robust nonlinear refinement). A coaxial cylinder + cone component (countersink, chamfered pin) is split by normal-to-axis angle first. Small noisy patches that tile a sphere are merged into one spherical region. Split/redundant regions are merged and absorbed.
+3. Exact B-rep (OCP / OpenCascade): plane polygons from triple-plane intersections, circles from plane ∩ cylinder and plane ∩ sphere, plane ∩ cone, cylindrical faces, spherical caps and zones, conical frustums, sewn into a solid and validated.
 4. Fallbacks: hybrid faceted solid (vertices snapped to fitted surfaces, coplanar triangles merged), then raw faceted solid.
 5. Fidelity report against the input mesh.
 
@@ -70,7 +70,7 @@ Ground-truth cadquery parts → tessellated + subdivided (≤ 2 mm edges) → Ga
 "exact" = valid B-rep with the true face count. Plane and cylinder rows are the 0.1.0 measurements (accuracy unchanged). Sphere rows are the worst of 3 seeds from `python benchmarks/run.py`.
 
 ## Limits (v0.2)
-Planes, cylinders, and spheres. Cylinders must end on planes perpendicular to their axis (through-holes, bosses, pins). Spheres are exact when each boundary loop is a single plane ∩ sphere circle (domes, spherical bosses, spherical pockets, and zones between two parallel planes). A sphere that runs into an edge or a cylinder falls back to the hybrid solid — vertices are still snapped onto the fitted sphere, but the face stays faceted. No cones, fillets, or free-form yet.
+Planes, cylinders, and spheres. Cylinders must end on planes perpendicular to their axis (through-holes, bosses, pins). Spheres are exact when each boundary loop is a single plane ∩ sphere circle (domes, spherical bosses, spherical pockets, and zones between two parallel planes). A sphere that runs into an edge or a cylinder falls back to the hybrid solid — vertices are still snapped onto the fitted sphere, but the face stays faceted. Cones are exact when they run between two planes perpendicular to their axis: countersinks, chamfered holes and bosses, drafted/tapered bosses. Cones may also meet a coaxial cylinder (countersunk hole, chamfered pin). A cone that ends in its apex falls back to the hybrid solid, and countersinks are reliable up to ~0.05 mm noise, narrow chamfers on clean meshes only for now (wide drafted walls up to 0.2 mm). No fillets or free-form yet.
 
 ## Development
 ```
