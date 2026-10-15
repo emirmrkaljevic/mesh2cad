@@ -1,5 +1,6 @@
 # mesh2cad
 [![ci](https://github.com/emirmrkaljevic/mesh2cad/actions/workflows/ci.yml/badge.svg)](https://github.com/emirmrkaljevic/mesh2cad/actions/workflows/ci.yml)
+[![emirmrkaljevic/mesh2cad MCP server](https://glama.ai/mcp/servers/emirmrkaljevic/mesh2cad/badges/score.svg)](https://glama.ai/mcp/servers/emirmrkaljevic/mesh2cad)
 
 Turn 3D meshes (STL/OBJ/PLY) into **real, editable CAD (STEP)** — fitted planes, cylinders, spheres, and cones instead of triangle soup. CLI + MCP server for AI agents. MIT, pure Python on top of OpenCascade.
 
@@ -29,6 +30,8 @@ Output: STEP + fidelity report — method (`exact` / `faceted-hybrid` / `faceted
 { "mcpServers": { "mesh2cad": { "command": "mesh2cad", "args": ["mcp"] } } }
 ```
 Tools: `convert(input_path, output_path?, tol?, cylinders?, spheres?, cones?)`, `analyze(input_path, tol?, cylinders?, spheres?, cones?)`, `report(input_path, tol?, cylinders?, spheres?, cones?)`. `spheres` and `cones` default on.
+
+Listed on [Glama](https://glama.ai/mcp/servers/emirmrkaljevic/mesh2cad) and the [TensorBlock MCP catalog](https://tensorblock.co/mcp/servers/github-emirmrkaljevic-mesh2cad-0f1c0e66).
 
 ## How it works
 1. Load + clean mesh (trimesh); Taubin-smoothed copy for normals.
@@ -79,7 +82,7 @@ Ground-truth cadquery parts → tessellated + subdivided (≤ 2 mm edges) → Ga
 "exact" = valid B-rep with the true face count. All rows are the worst of 3 seeds from `python benchmarks/run.py` (v0.3.0). Rows with fewer than 3/3 exact fell back to a faceted solid (face count = triangles): noisy narrow countersink/chamfer bands don't constrain a cone yet, so CI checks those parts only where they are exact.
 
 ## Limits (v0.3)
-Planes, cylinders, and spheres. Cylinders must end on planes perpendicular to their axis (through-holes, bosses, pins). Spheres are exact when each boundary loop is a single plane ∩ sphere circle (domes, spherical bosses, spherical pockets, and zones between two parallel planes). A sphere that runs into an edge or a cylinder falls back to the hybrid solid — vertices are still snapped onto the fitted sphere, but the face stays faceted. Cones are exact when they run between two planes perpendicular to their axis: countersinks, chamfered holes and bosses, drafted/tapered bosses. Cones may also meet a coaxial cylinder (countersunk hole, chamfered pin). A cone that ends in its apex falls back to the hybrid solid, and countersinks are reliable up to ~0.05 mm noise, narrow chamfers on clean meshes only for now (wide drafted walls up to 0.2 mm). No fillets or free-form yet.
+Planes, cylinders, spheres, and cones. Cylinders must end on planes perpendicular to their axis (through-holes, bosses, pins). Spheres are exact when each boundary loop is a single plane ∩ sphere circle (domes, spherical bosses, spherical pockets, and zones between two parallel planes). A sphere that runs into an edge or a cylinder falls back to the hybrid solid — vertices are still snapped onto the fitted sphere, but the face stays faceted. Cones are exact when they run between two planes perpendicular to their axis: countersinks, chamfered holes and bosses, drafted/tapered bosses. Cones may also meet a coaxial cylinder (countersunk hole, chamfered pin). A cone that ends in its apex falls back to the hybrid solid, and countersinks are reliable up to ~0.05 mm noise, narrow chamfers on clean meshes only for now (wide drafted walls up to 0.2 mm). No fillets or free-form yet.
 
 ## Development
 ```
