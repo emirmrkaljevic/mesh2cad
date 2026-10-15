@@ -8,7 +8,7 @@ import sys
 import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "tests"))
-from parts import CURVED, PLANAR, SPHERES, to_mesh  # noqa: E402
+from parts import CONES, CURVED, PLANAR, SPHERES, to_mesh  # noqa: E402
 
 from mesh2cad.convert import convert_mesh  # noqa: E402
 from mesh2cad.io import add_noise  # noqa: E402
@@ -16,19 +16,21 @@ from mesh2cad.io import add_noise  # noqa: E402
 ap = argparse.ArgumentParser()
 ap.add_argument("--seeds", type=int, default=3)
 a = ap.parse_args()
-print("| part | noise σ (mm) | exact | faces (plane/cyl[/sph]) | Hausdorff (mm) | RMS (mm) | vol err % | time s |")
+print("| part | noise σ (mm) | exact | faces (plane/cyl[/sph[/cone]]) | Hausdorff (mm) | RMS (mm) | vol err % | time s |")
 print("|---|---|---|---|---|---|---|---|")
 
 
 def _faces(f):
     parts = [str(f.get("plane", 0)), str(f.get("cylinder", 0))]
-    if f.get("sphere") or f.get("other"):
+    if f.get("sphere") or f.get("cone") or f.get("other"):
         parts.append(str(f.get("sphere", 0)))
+    if f.get("cone"):
+        parts.append(str(f.get("cone", 0)))
     s = "/".join(parts)
     return s + ("+" if f.get("other") else "")
 
 
-for name, fn in {**PLANAR, **CURVED, **SPHERES}.items():
+for name, fn in {**PLANAR, **CURVED, **SPHERES, **CONES}.items():
     ref = to_mesh(fn())
     for sigma in (0.0, 0.05, 0.2):
         ok, H, R, V, T, F = 0, [], [], [], [], set()
