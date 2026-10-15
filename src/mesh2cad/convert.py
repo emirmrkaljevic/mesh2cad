@@ -18,12 +18,12 @@ class Result:
 
 
 def convert_mesh(m: trimesh.Trimesh, tol: float | None = None, cylinders: bool = True,
-                 spheres: bool = True, angle_deg: float = 20.0, ref: trimesh.Trimesh | None = None,
+                 spheres: bool = True, cones: bool = True, angle_deg: float = 20.0, ref: trimesh.Trimesh | None = None,
                  with_report: bool = True) -> Result:
     m = clean(m)
     if tol is None:
         tol = 1e-3 * m.scale
-    regions = segment(m, tol, angle_deg=angle_deg, cylinders=cylinders, spheres=spheres)
+    regions = segment(m, tol, angle_deg=angle_deg, cylinders=cylinders, spheres=spheres, cones=cones)
     shape, method = None, "faceted-hybrid"
     if all(r.surface is not None for r in regions):
         shape = brep.build_planar(m, regions, tol)

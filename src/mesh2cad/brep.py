@@ -27,12 +27,14 @@ from OCP.TopAbs import TopAbs_SHELL
 from OCP.TopExp import TopExp_Explorer
 from OCP.TopoDS import TopoDS, TopoDS_Shape
 
-from .fit import Cylinder, Plane, Sphere
+from .fit import Cone, Cylinder, Plane, Sphere
 from .segment import Region
 
 
 def _curved_normal(surface, pts):
     """Unit surface normal used to linearise a cylinder or sphere constraint."""
+    if isinstance(surface, Cone):
+        return surface.normal(pts)
     if isinstance(surface, Cylinder):
         rad = surface._radial(pts)
     elif isinstance(surface, Sphere):
@@ -331,6 +333,64 @@ def _make_sphere_face(sphere, planes, pts, normals):
     return face
 
 
+def _plane_cone_circle(plane, cone):
+    """plane ∩ cone for a plane perpendicular to the axis → (center, normal, radius)."""
+    n, d = _unit_plane(plane)
+    if n is None or abs(float(n @ cone.axis)) < 0.995:
+        return None
+    h = (d - float(n @ cone.apex)) / float(n @ cone.axis)
+    if h <= 0:
+        return None
+    rho = float(cone.radius_at(h))
+    if rho <= 1e-9:
+        return None
+    return cone.apex + cone.axis * h, n, rho
+
+
+def _cyl_cone_circle(cyl, cone):
+    """Coaxial cylinder ∩ cone → (center, axis, radius)."""
+    if abs(float(cyl.axis @ cone.axis)) < 0.995:
+        return None
+    off = cone.apex - cyl.point
+    if np.linalg.norm(off - cyl.axis * (off @ cyl.axis)) > 0.05 * cyl.radius:
+        return None
+    h = float(cyl.radius / np.tan(cone.half_angle))
+    return cone.apex + cone.axis * h, cone.axis, float(cyl.radius)
+
+
+def _ring(surface, other):
+    """Circle where a cone/cylinder region meets a neighbouring region."""
+    if isinstance(surface, Cone):
+        if isinstance(other, Plane):
+            return _plane_cone_circle(other, surface)
+        if isinstance(other, Cylinder):
+            return _cyl_cone_circle(other, surface)
+    if isinstance(surface, Cylinder) and isinstance(other, Cone):
+        return _cyl_cone_circle(surface, other)
+    return None
+
+
+def _make_cone_face(cone, hits):
+    """Conical frustum face between two coaxial circles."""
+    from OCP.Geom import Geom_ConicalSurface
+    from OCP.gp import gp_Ax3, gp_Dir
+    if len(hits) != 2 or any(h is None for h in hits):
+        return None
+    (c1, _, r1), (c2, _, r2) = hits
+    z = c2 - c1
+    H = float(np.linalg.norm(z))
+    if H < 1e-9:
+        return None
+    z = z / H
+    semi = float(np.arctan2(r2 - r1, H))
+    try:
+        surf = Geom_ConicalSurface(gp_Ax3(gp_Pnt(*map(float, c1)), gp_Dir(*map(float, z))), semi, float(r1))
+        mf = BRepBuilderAPI_MakeFace(surf, 0.0, 2 * np.pi, 0.0, H / np.cos(semi), 1e-7)
+        return mf.Face() if mf.IsDone() else None
+    except Exception:
+        return None
+
+
 def build_planar(m: trimesh.Trimesh, regions: list[Region], tol: float):
     """Exact B-rep: plane polygons, cylindrical walls, spherical caps/zones.
     Returns None when the topology can't be resolved (caller falls back)."""
@@ -366,9 +426,10 @@ def build_planar(m: trimesh.Trimesh, regions: list[Region], tol: float):
             hs = []
             for loop in loops:
                 seq = _runs(loop, min_run=3)
-                if len(seq) != 1 or not isinstance(regions[seq[0]].surface, Plane):
+                if len(seq) != 1:
                     return None
-                cc = circle_on(regions[seq[0]].surface, r.surface)
+                o = regions[seq[0]].surface
+                cc = (circle_on(o, r.surface) if isinstance(o, Plane) else _ring(r.surface, o))
                 if cc is None:
                     return None
                 hs.append(cc[0])
@@ -398,6 +459,18 @@ def build_planar(m: trimesh.Trimesh, regions: list[Region], tol: float):
                 return None
             sew.Add(face)
             continue
+        if isinstance(r.surface, Cone):
+            hits = []
+            for loop in loops:
+                seq = _runs(loop, min_run=3)
+                if len(seq) != 1:
+                    return None
+                hits.append(_ring(r.surface, regions[seq[0]].surface))
+            face = _make_cone_face(r.surface, hits)
+            if face is None:
+                return None
+            sew.Add(face)
+            continue
         wires = []
         u, v = _plane_basis(r.surface.normal)
         for loop in loops:
@@ -415,8 +488,10 @@ def build_planar(m: trimesh.Trimesh, regions: list[Region], tol: float):
                 w = BRepBuilderAPI_MakeWire(BRepBuilderAPI_MakeEdge(circ).Edge()).Wire()
                 wires.append((sa, q2, w))
                 continue
-            if len(seq) == 1 and isinstance(regions[seq[0]].surface, Sphere):
-                hit = _plane_sphere_circle(r.surface, regions[seq[0]].surface)
+            if len(seq) == 1 and isinstance(regions[seq[0]].surface, (Sphere, Cone)):
+                o = regions[seq[0]].surface
+                hit = (_plane_sphere_circle(r.surface, o) if isinstance(o, Sphere)
+                       else _plane_cone_circle(r.surface, o))
                 if hit is None:
                     return None
                 cc, nrm, rho = hit

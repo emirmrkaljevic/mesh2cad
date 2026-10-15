@@ -8,14 +8,14 @@ import networkx as nx
 import numpy as np
 import trimesh
 
-from .fit import (Cylinder, Plane, Sphere, fit_cylinder, fit_plane, fit_sphere,
-                  refine_cylinder, refine_sphere)
+from .fit import (Cone, Cylinder, Plane, Sphere, fit_cylinder, fit_plane, fit_sphere,
+                  refine_cylinder, refine_sphere, fit_cone, refine_cone)
 
 
 @dataclass
 class Region:
     faces: np.ndarray
-    surface: Plane | Cylinder | Sphere | None  # None = faceted fallback
+    surface: Plane | Cylinder | Sphere | Cone | None  # None = faceted fallback
     area: float
 
 
@@ -29,7 +29,7 @@ def _neighbors(m: trimesh.Trimesh):
 
 def segment(m: trimesh.Trimesh, tol: float, angle_deg: float = 20.0,
             min_area_frac: float = 0.002, cylinders: bool = True,
-            spheres: bool = True) -> list[Region]:
+            spheres: bool = True, cones: bool = True) -> list[Region]:
     nb = _neighbors(m)
     # segmentation runs on a denoised copy; fits use original geometry
     sm = m.copy()
@@ -91,13 +91,16 @@ def segment(m: trimesh.Trimesh, tol: float, angle_deg: float = 20.0,
         out = [r for r in out if r.surface is not None]
         if rest:
             left = np.concatenate([r.faces for r in rest])
-            out += _cylinder_regions(m, sm, nb, left, tol, cylinders, spheres)
+            out += _cylinder_regions(m, sm, nb, left, tol, cylinders, spheres, cones)
     for _ in range(3):
         out = _merge_planes(m, out, tol)
         out = _merge_cylinders(m, out, tol)
         if spheres:
             out = _promote_spheres(m, sm, out, tol)
             out = _merge_spheres(m, out, tol)
+        if cones:
+            out = _promote_cones(m, sm, out, tol)
+            out = _merge_cones(m, out, tol)
         out = _absorb(m, nb, out, tol)
         out = _dissolve_small(m, nb, out, tol)
         out = [r for r in out if len(r.faces)]
@@ -239,7 +242,7 @@ def _accept_sphere(m, sm, faces, tol) -> Sphere | None:
     return sph
 
 
-def _promote_spheres(m, sm, regs, tol, frac=0.05):
+def _promote_spheres(m, sm, regs, tol, frac=0.05, accept=None):
     """Merge a connected cluster of small regions when they lie on one sphere.
 
     Clean caps arrive as a single unfitted component (handled in
@@ -268,10 +271,10 @@ def _promote_spheres(m, sm, regs, tol, frac=0.05):
         kinds = [regs[i].surface for i in comp]
         if len(comp) < 2 and not (len(comp) == 1 and kinds[0] is None):
             continue
-        if len(comp) == 1 and isinstance(kinds[0], Sphere):
+        if len(comp) == 1 and isinstance(kinds[0], (Sphere, Cone)):
             continue
         faces = np.concatenate([regs[i].faces for i in comp])
-        sph = _accept_sphere(m, sm, faces, tol)
+        sph = (accept or _accept_sphere)(m, sm, faces, tol)
         if sph is None:
             continue
         drop |= comp
@@ -367,7 +370,7 @@ def _refit(tri, area, members, plane):
     return p
 
 
-def _cylinder_regions(m, sm, nb, faces, tol, cylinders, spheres=True):
+def _cylinder_regions(m, sm, nb, faces, tol, cylinders, spheres=True, cones=True, crease=None):
     fset = set(faces.tolist())
     seen = set()
     regs = []
@@ -380,7 +383,7 @@ def _cylinder_regions(m, sm, nb, faces, tol, cylinders, spheres=True):
             f = q.popleft()
             comp.append(f)
             for g in nb[f]:
-                if g in fset and g not in seen:
+                if g in fset and g not in seen and (crease is None or (min(f, g), max(f, g)) not in crease):
                     seen.add(g)
                     q.append(g)
         comp = np.array(comp)
@@ -399,11 +402,164 @@ def _cylinder_regions(m, sm, nb, faces, tol, cylinders, spheres=True):
                     sph.distance(m.vertices[np.unique(m.faces[comp])]), 95)
                     < 0.75 * np.percentile(surf.distance(m.vertices[np.unique(m.faces[comp])]), 95)):
                 surf = sph
+        if cones:
+            cone = _accept_cone(m, sm, comp, tol)
+            if cone is not None and (surf is None or np.percentile(
+                    cone.distance(m.vertices[np.unique(m.faces[comp])]), 95)
+                    < 0.75 * np.percentile(surf.distance(m.vertices[np.unique(m.faces[comp])]), 95)):
+                surf = cone
         if surf is None and len(comp) >= 3:
             pl = fit_plane(m.triangles[comp].reshape(-1, 3))
             if np.percentile(pl.distance(m.vertices[np.unique(m.faces[comp])]), 90) < 2.5 * tol:
                 if pl.normal @ m.face_normals[comp].mean(0) < 0:
                     pl = Plane(-pl.normal, -pl.d)
                 surf = pl
+        if surf is None and cones and crease is None and len(comp) >= 16:
+            # coaxial cylinder + cone (countersink, chamfered boss) arrive as one
+            # unfitted component: split it along sharp creases and fit the pieces
+            cr = _creases(m, sm, comp)
+            sub = [] if cr is None else _cylinder_regions(m, sm, nb, comp, tol, cylinders,
+                                                         spheres, cones, crease=cr)
+            if len(sub) > 1 and any(r.surface is not None for r in sub):
+                regs += sub
+                continue
         regs.append(Region(comp, surf, a))
     return regs
+
+
+def _accept_cone(m, sm, faces, tol) -> Cone | None:
+    """Fit a cone (chamfer, countersink, tapered boss); accept it only when it
+    fits well and a cylinder would not."""
+    if len(faces) < 8 or m.area_faces[faces].sum() < 0.002 * m.area:
+        return None
+    cen = m.triangles_center[faces]
+    pts = m.vertices[np.unique(m.faces[faces])]
+    # smoothed normals are robust to noise but blur narrow bands (chamfers);
+    # try both and keep the better refined fit
+    best = None
+    for nrm in (sm.face_normals[faces], m.face_normals[faces]):
+        c = fit_cone(cen, nrm)
+        if c is None:
+            continue
+        c = refine_cone(c, pts)
+        e = float(np.percentile(c.distance(pts), 90))
+        if best is None or e < best[0]:
+            best = (e, c, nrm)
+    if best is None:
+        return None
+    _, cone, nrm = best
+    h = (pts - cone.apex) @ cone.axis
+    if h.min() <= 0:
+        return None
+    rmax = float(cone.radius_at(h.max()))
+    if rmax > 0.5 * m.scale or np.linalg.norm(cone.apex - pts.mean(0)) > 2 * m.scale:
+        return None
+    # p90: boundary vertices of noisy strips belong half to the neighbours
+    err = float(np.percentile(cone.distance(pts), 90))
+    if err > max(4.0 * tol, 0.02 * rmax):
+        return None
+    # normals must agree with the cone's (either orientation: holes flip them)
+    if max(float(np.mean(np.abs(np.sum(n * cone.normal(cen), axis=1))))
+           for n in (sm.face_normals[faces], m.face_normals[faces])) < 0.8:
+        return None
+    cyl = fit_cylinder(cen, sm.face_normals[faces])
+    if cyl is not None and np.percentile(cyl.distance(pts), 90) < 0.75 * err:
+        return None
+    return cone
+
+
+def _merge_cones(m, regs, tol):
+    cs = [r for r in regs if isinstance(r.surface, Cone)]
+    rest = [r for r in regs if not isinstance(r.surface, Cone)]
+    cs.sort(key=lambda r: -r.area)
+    groups = []
+    for r in cs:
+        for g in groups:
+            if np.percentile(g[0].surface.distance(m.triangles_center[r.faces]), 90) < 3 * tol:
+                g.append(r)
+                break
+        else:
+            groups.append([r])
+    out = []
+    for g in groups:
+        faces = np.concatenate([r.faces for r in g])
+        surf = g[0].surface if len(g) == 1 else refine_cone(g[0].surface, m.vertices[np.unique(m.faces[faces])])
+        out.append(Region(faces, surf, float(m.area_faces[faces].sum())))
+    return rest + out
+
+
+
+def _creases(m, sm, comp):
+    """Split a coaxial revolved component by normal-to-axis angle.
+
+    For a surface of revolution the axis is the eigenvector of the normal
+    covariance whose eigenvalue stands apart; a cylinder has n.a ~ 0, a cone
+    n.a ~ const, so a 1-D 2-means on n.a separates them. Returns the set of
+    adjacency pairs crossing the split (or None)."""
+    n = sm.face_normals[comp]
+    w, V = np.linalg.eigh(np.cov(n.T))
+    k = int(np.argmax([abs(w[0] - w[1]) + abs(w[0] - w[2]), 0.0, abs(w[2] - w[1]) + abs(w[2] - w[0])]))
+    t = n @ V[:, k]
+    c = np.percentile(t, [10, 90])
+    for _ in range(30):
+        lab = np.abs(t - c[0]) > np.abs(t - c[1])
+        if lab.all() or not lab.any():
+            return None
+        c = np.array([t[~lab].mean(), t[lab].mean()])
+    if abs(c[1] - c[0]) < 0.2:
+        return None
+    side = np.full(len(m.faces), -1)
+    side[comp] = lab
+    fa = m.face_adjacency
+    cross = fa[(side[fa[:, 0]] >= 0) & (side[fa[:, 1]] >= 0) & (side[fa[:, 0]] != side[fa[:, 1]])]
+    return {(int(min(a, b)), int(max(a, b))) for a, b in cross}
+
+
+def _promote_cones(m, sm, regs, tol, frac=0.05):
+    """Merge clusters of small planar/unfitted strips that tile a cone.
+
+    Noisy chamfers and drafted walls segment into thin plane strips. A cluster
+    often also touches the cap plane next to it, so besides the whole cluster
+    each leave-one-out subset is tried and the largest accepted cone wins."""
+    lab = -np.ones(len(m.faces), int)
+    for i, r in enumerate(regs):
+        if len(r.faces):
+            lab[r.faces] = i
+    small = {i for i, r in enumerate(regs)
+             if 0 < r.area < frac * m.area and (r.surface is None or isinstance(r.surface, Plane))}
+    if len(small) < 2:
+        return regs
+    g = nx.Graph()
+    g.add_nodes_from(small)
+    for a, b in lab[m.face_adjacency]:
+        a, b = int(a), int(b)
+        if a != b and a in small and b in small:
+            g.add_edge(a, b)
+    drop, extra = set(), []
+    for comp in nx.connected_components(g):
+        comp = sorted(comp)
+        if len(comp) < 2:
+            continue
+        subsets = [comp]
+        if 3 <= len(comp) <= 16:
+            subsets += [[j for j in comp if j != i] for i in comp]
+        best = None
+        for sub in subsets:
+            if best is not None and len(sub) < len(best[0]):
+                break
+            faces = np.concatenate([regs[i].faces for i in sub])
+            if not nx.is_connected(g.subgraph(sub)):
+                continue
+            cone = _accept_cone(m, sm, faces, tol)
+            if cone is None:
+                continue
+            area = float(m.area_faces[faces].sum())
+            if best is None or area > best[2]:
+                best = (sub, cone, area, faces)
+        if best is None:
+            continue
+        drop |= set(best[0])
+        extra.append(Region(best[3], best[1], best[2]))
+    if not drop:
+        return regs
+    return [r for i, r in enumerate(regs) if i not in drop] + extra

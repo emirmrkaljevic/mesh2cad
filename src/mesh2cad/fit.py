@@ -204,3 +204,102 @@ def refine_sphere(sph: Sphere, pts) -> Sphere:
     if not np.isfinite(center).all() or not np.isfinite(radius) or radius <= 0:
         return sph
     return Sphere(center, radius)
+
+
+@dataclass
+class Cone:
+    """Right circular cone. ``axis`` points from the apex into the cone;
+    ``half_angle`` is in radians, 0 < half_angle < pi/2."""
+    apex: np.ndarray
+    axis: np.ndarray
+    half_angle: float
+    kind: str = field(default="cone", init=False)
+
+    def _hr(self, pts):
+        v = pts - self.apex
+        h = v @ self.axis
+        rad = v - np.outer(h, self.axis)
+        return h, rad, np.linalg.norm(rad, axis=1)
+
+    def radius_at(self, h):
+        return h * np.tan(self.half_angle)
+
+    def distance(self, pts):
+        h, _, rho = self._hr(pts)
+        c, s = np.cos(self.half_angle), np.sin(self.half_angle)
+        return np.abs(rho * c - h * s)
+
+    def normal(self, pts):
+        """Unit outward normal (away from the axis)."""
+        _, rad, rho = self._hr(pts)
+        u = rad / np.maximum(rho, 1e-12)[:, None]
+        return u * np.cos(self.half_angle) - self.axis * np.sin(self.half_angle)
+
+    def project(self, pts):
+        n = self.normal(pts)
+        h, _, rho = self._hr(pts)
+        sd = rho * np.cos(self.half_angle) - h * np.sin(self.half_angle)
+        return pts - n * sd[:, None]
+
+
+def fit_cone(pts, normals) -> Cone | None:
+    """Linear cone fit from oriented normals.
+
+    Every normal of a cone makes the same angle with the axis, so the axis is
+    the direction minimising the variance of n.a; every tangent plane passes
+    through the apex, so the apex solves n_i . x = n_i . p_i in least squares.
+    """
+    pts = np.asarray(pts, float)
+    n = np.asarray(normals, float)
+    if len(pts) < 8:
+        return None
+    n = n / np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-12)
+    w, V = np.linalg.eigh(np.cov(n.T))
+    axis = V[:, 0]
+    if w[0] > 0.35 * max(w[1], 1e-12):  # noisy normals: loose, residual checks decide
+        return None
+    c = float(np.mean(n @ axis))
+    if abs(c) < 0.03 or abs(c) > 0.97:  # cylinder-like or plane-like
+        return None
+    A = n.T @ n
+    if np.linalg.eigvalsh(A)[0] < 1e-6 * len(n):
+        return None
+    apex = np.linalg.solve(A, n.T @ np.einsum("ij,ij->i", n, pts))
+    # outward normal has n.a = -sin(alpha) when a points into the cone
+    if np.median((pts - apex) @ axis) < 0:
+        axis = -axis
+    c = float(np.mean(n @ axis))
+    alpha = float(np.arcsin(np.clip(abs(c), 0.0, 1.0)))
+    if not np.isfinite(apex).all() or not 0.02 < alpha < np.pi / 2 - 0.02:
+        return None
+    return Cone(apex, axis, alpha)
+
+
+def refine_cone(cone: Cone, pts) -> Cone:
+    from scipy.optimize import least_squares
+    pts = np.asarray(pts, float)
+    if len(pts) < 6:
+        return cone
+    if len(pts) > 4000:
+        pts = pts[np.random.default_rng(0).choice(len(pts), 4000, replace=False)]
+    scale = float(np.linalg.norm(pts - pts.mean(0), axis=1).max()) or 1.0
+
+    def unpack(x):
+        return x[:3], x[3:6] / np.linalg.norm(x[3:6]), x[6]
+
+    def res(x):
+        apex, ax, al = unpack(x)
+        v = pts - apex
+        h = v @ ax
+        rho = np.linalg.norm(v - np.outer(h, ax), axis=1)
+        return rho * np.cos(al) - h * np.sin(al)
+
+    try:
+        sol = least_squares(res, np.r_[cone.apex, cone.axis, cone.half_angle], loss="soft_l1",
+                            f_scale=max(1e-3, 0.01 * scale), max_nfev=300)
+    except Exception:
+        return cone
+    apex, ax, al = unpack(sol.x)
+    if not np.isfinite(sol.x).all() or not 0.01 < al < np.pi / 2 - 0.01:
+        return cone
+    return Cone(apex, ax, float(al))
