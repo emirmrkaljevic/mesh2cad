@@ -79,3 +79,32 @@ def test_spherical_zone(sigma):
     assert r["deviation"]["hausdorff"] < max(3 * tol, 0.15)
     # ref mesh is chordal, so its volume sits ~0.6% under the exact zone
     assert r["volume_error_pct"] < 1.0
+
+
+from parts import CONES
+
+CONE_FACES = {"countersunk_plate": {"plane": 6, "cylinder": 1, "cone": 1},
+              "tapered_boss": {"plane": 7, "cone": 1},
+              "chamfered_boss": {"plane": 7, "cylinder": 1, "cone": 1}}
+
+
+# narrow chamfer/countersink bands at 0.2 mm noise split into 1-2 plane strips
+# that don't constrain a cone yet; the wide drafted wall works at every level
+CONE_CASES = [(n, s) for n in CONES for s in (0.0, 0.05, 0.2)
+              if not (s == 0.2 and n != "tapered_boss")
+              and not (s == 0.05 and n == "chamfered_boss")]  # TODO: noisy narrow chamfers
+
+
+@pytest.mark.parametrize("seed", [0, 1])
+@pytest.mark.parametrize("name,sigma", CONE_CASES)
+def test_cone_roundtrip(name, sigma, seed):
+    ref = to_mesh(CONES[name]())
+    tol = max(sigma, 0.01)
+    res = convert_mesh(add_noise(ref, sigma, seed=seed), tol=tol, ref=ref)
+    r = res.report
+    assert any(getattr(reg.surface, "kind", None) == "cone" for reg in res.regions)
+    assert r["method"] == "exact"
+    assert r["output"]["valid_solid"]
+    assert r["output"]["faces"] == CONE_FACES[name]
+    assert r["deviation"]["hausdorff"] < max(3 * tol, 0.15)
+    assert r["volume_error_pct"] < 0.5

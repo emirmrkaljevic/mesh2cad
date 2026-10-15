@@ -50,8 +50,26 @@ def spherical_zone():
     return cq.Workplane().sphere(10).intersect(cq.Workplane().box(30, 30, 12))
 
 
+def countersunk_plate():
+    """40×30×6 plate with a Ø6 through hole and a 90° Ø12 countersink."""
+    return cq.Workplane().box(40, 30, 6).faces(">Z").workplane().cskHole(6, 12, 90)
+
+
+def tapered_boss():
+    """40×40×5 plate with a Ø16 boss drafted 10° over 10 mm."""
+    return cq.Workplane().box(40, 40, 5).faces(">Z").workplane().circle(8).extrude(10, taper=10)
+
+
+def chamfered_boss():
+    """Ø16 cylinder boss with a 2 mm chamfer on its top edge."""
+    return (cq.Workplane().box(40, 40, 5).faces(">Z").workplane().circle(8).extrude(12)
+            .faces(">Z").edges().chamfer(2))
+
+
 PLANAR = {"cube": cube, "l_bracket": l_bracket, "stepped_block": stepped_block}
 CURVED = {"plate_with_hole": plate_with_hole, "boss": boss, "ribbed_plate": ribbed_plate}
+CONES = {"countersunk_plate": countersunk_plate, "tapered_boss": tapered_boss,
+         "chamfered_boss": chamfered_boss}
 SPHERES = {"spherical_dome": spherical_dome, "spherical_pocket": spherical_pocket}
 
 
