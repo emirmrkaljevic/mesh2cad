@@ -81,4 +81,5 @@ def test_snap_and_fallback():
     ref = to_mesh(plate_with_hole())
     r = convert_mesh(ref, tol=0.01, cylinders=False, ref=ref).report
     assert r["method"] in ("faceted-hybrid", "faceted")
+    assert r["output"]["valid_solid"]
     assert r["deviation"]["hausdorff"] < 0.5

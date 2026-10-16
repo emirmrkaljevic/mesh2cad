@@ -18,9 +18,10 @@ from OCP.BRep import BRep_Builder
 from OCP.BRepBuilderAPI import (BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon,
                                 BRepBuilderAPI_MakeSolid, BRepBuilderAPI_Sewing)
 from OCP.BRepCheck import BRepCheck_Analyzer
+from OCP.BRepLib import BRepLib
 from OCP.gp import gp_Pnt
 from OCP.IFSelect import IFSelect_RetDone
-from OCP.ShapeFix import ShapeFix_Solid
+from OCP.ShapeFix import ShapeFix_Shape, ShapeFix_Solid
 from OCP.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
 from OCP.STEPControl import STEPControl_AsIs, STEPControl_Writer
 from OCP.TopAbs import TopAbs_SHELL
@@ -135,7 +136,25 @@ def build_solid(m: trimesh.Trimesh, verts: np.ndarray, sew_tol: float) -> TopoDS
         fix = ShapeFix_Solid(ms.Solid())
         fix.Perform()
         shape = fix.Solid()
+    # sewing leaves a few edges without SameParameter; BRepCheck then
+    # rejects an otherwise closed solid
+    same_parameter(shape, tol=max(min(sew_tol, 1e-4), 1e-7))
     return shape
+
+
+def same_parameter(shape: TopoDS_Shape, tol: float = 1e-5) -> TopoDS_Shape:
+    """Force edge 3D curves and pcurves onto one parameter range, in place."""
+    BRepLib.SameParameter_s(shape, float(tol), True)
+    return shape
+
+
+def fix_shape(shape: TopoDS_Shape, prec: float = 1e-6, max_tol: float = 1e-3) -> TopoDS_Shape:
+    """Run ShapeFix. Used when unify flips a handful of faces inside-out."""
+    fx = ShapeFix_Shape(shape)
+    fx.SetPrecision(float(prec))
+    fx.SetMaxTolerance(float(max_tol))
+    fx.Perform()
+    return fx.Shape()
 
 
 def unify(shape: TopoDS_Shape, lin_tol: float, ang_tol: float = 1e-3) -> TopoDS_Shape:

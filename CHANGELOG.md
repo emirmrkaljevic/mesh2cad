@@ -1,6 +1,8 @@
 # Changelog
 
 ## Unreleased
+- Narrow chamfers and countersinks that noise breaks into planar strips are gathered back onto the neighbouring cylinder. A chamfered boss stays exact through 0.2 mm noise; a countersink stays exact through 0.05 mm, and on some seeds at 0.2 mm.
+- When exact sewing fails, the faceted and faceted-hybrid fallbacks are sewn at a tight tolerance and forced onto one parameter range, so the STEP is a valid solid. Coplanar triangles are merged only when that merge stays valid.
 - Benchmark (`benchmarks/run.py`) now includes the cone parts (countersunk plate, tapered boss, chamfered boss) and a cone face column; README table refreshed.
 - Docs: Limits and `server.json` description now list cones; Glama score badge and MCP directory links in the README.
 
