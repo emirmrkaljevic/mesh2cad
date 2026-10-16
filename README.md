@@ -12,9 +12,10 @@ Turn 3D meshes (STL/OBJ/PLY) into **real, editable CAD (STEP)** — fitted plane
 
 ## Install
 ```
-pip install "mesh2cad[mcp] @ git+https://github.com/emirmrkaljevic/mesh2cad"
+pip install mesh2cad              # CLI + STEP
+pip install "mesh2cad[mcp]"       # + MCP server
+pip install "mesh2cad[cadquery]"  # + run/verify generated CadQuery scripts
 ```
-(PyPI release coming.)
 
 ## Use
 ```
@@ -25,11 +26,33 @@ mesh2cad report part.stl --json
 
 Output: STEP + fidelity report — method (`exact` / `faceted-hybrid` / `faceted`), face types, solid validity, two-sided Hausdorff / RMS deviation, volume error, % area per surface type.
 
+### Editable parametric CadQuery script
+For simple prismatic parts mesh2cad can also write a **CadQuery Python script** where every dimension is a named parameter, so you change a number and re-run instead of editing B-rep faces:
+```
+mesh2cad convert bracket.stl --cadquery bracket.py   # add -o bracket.step to also write STEP
+python bracket.py                                    # -> bracket.step
+```
+```python
+# --- parameters ---
+base_x           = 40.0  # base length (X)
+base_y           = 30.0  # base width (Y)
+base_t           = 6.0  # base thickness (Z)
+...
+hole_1_d         = 6.0  # diameter
+hole_1_x         = 0.0
+hole_1_y         = 0.0
+hole_1_csk_d     = 12.0  # countersink diameter
+hole_1_csk_angle = 90.0  # countersink angle
+```
+Make the hole 2 mm bigger: set `hole_1_d = 8.0` and run it again.
+
+Supported: Z-up box/plate base, rectangular pads on the top face, vertical holes (through, blind, countersunk) and vertical bosses (straight, drafted, chamfered). Values are rounded to clean numbers (5.997 → 6.0) when that stays within `--tol`. Before writing, the script is executed and compared with the mesh (needs `cadquery` installed); if the part is outside this vocabulary or the script deviates, nothing is written and the command exits with code 2 and the reason. Use STEP output for everything else.
+
 ### MCP server (Claude Desktop, Cursor, …)
 ```json
 { "mcpServers": { "mesh2cad": { "command": "mesh2cad", "args": ["mcp"] } } }
 ```
-Tools: `convert(input_path, output_path?, tol?, cylinders?, spheres?, cones?)`, `analyze(input_path, tol?, cylinders?, spheres?, cones?)`, `report(input_path, tol?, cylinders?, spheres?, cones?)`. `spheres` and `cones` default on.
+Tools: `convert(input_path, output_path?, tol?, cylinders?, spheres?, cones?)`, `analyze(input_path, tol?, cylinders?, spheres?, cones?)`, `report(input_path, tol?, cylinders?, spheres?, cones?)`, `to_cadquery(input_path, output_path?, tol?)` (returns the parameters and measured deviation). `spheres` and `cones` default on.
 
 Listed on [Glama](https://glama.ai/mcp/servers/emirmrkaljevic/mesh2cad) and the [TensorBlock MCP catalog](https://tensorblock.co/mcp/servers/github-emirmrkaljevic-mesh2cad-0f1c0e66).
 
@@ -79,10 +102,10 @@ Ground-truth cadquery parts → tessellated + subdivided (≤ 2 mm edges) → Ga
 | chamfered_boss | 0.05 | 3/3 | 7/1/0/1 | 0.096 | 0.012 | 0.08 | 3.2 |
 | chamfered_boss | 0.2 | 3/3 | 7/1/0/1 | 0.511 | 0.059 | 0.49 | 2.8 |
 
-"exact" = valid B-rep with the true face count. All rows are the worst of 3 seeds from `python benchmarks/run.py`. A row below 3/3 includes the faceted fallback (face count = triangles); that fallback is a valid solid. A 2 mm countersink at 0.2 mm noise is exact on 1 of 3 seeds. CI checks the cases that are exact, plus one fallback that must stay a valid solid.
+"exact" = valid B-rep with the true face count. All rows are the worst of 3 seeds from `python benchmarks/run.py`. A row below 3/3 includes the faceted fallback (face count = triangles); that fallback is a valid solid. A 2 mm 90° countersink at 0.2 mm noise is exact on 1 of 3 seeds. CI checks the cases that are exact, plus one fallback that must stay a valid solid.
 
-## Limits (v0.3)
-Planes, cylinders, spheres, and cones. Cylinders must end on planes perpendicular to their axis (through-holes, bosses, pins). Spheres are exact when each boundary loop is a single plane ∩ sphere circle (domes, spherical bosses, spherical pockets, and zones between two parallel planes). A sphere that runs into an edge or a cylinder falls back to the hybrid solid — vertices are still snapped onto the fitted sphere, but the face stays faceted. Cones are exact when they run between two planes perpendicular to their axis: countersinks, chamfered holes and bosses, drafted/tapered bosses. Cones may also meet a coaxial cylinder (countersunk hole, chamfered pin). A cone that ends in its apex falls back to the hybrid solid. Countersinks and narrow chamfers are exact through about 0.05 mm of noise; a 2 mm chamfer and a wide drafted wall stay exact at 0.2 mm. A short countersink at 0.2 mm still fails to close on some seeds (the band and the hole wall meet at one vertex) and falls back to a valid faceted solid. No fillets or free-form yet.
+## Limits (v0.4.2)
+Planes, cylinders, spheres, and cones. Cylinders must end on planes perpendicular to their axis (through-holes, bosses, pins). Spheres are exact when each boundary loop is a single plane ∩ sphere circle (domes, spherical bosses, spherical pockets, and zones between two parallel planes). A sphere that runs into an edge or a cylinder falls back to the hybrid solid — vertices are still snapped onto the fitted sphere, but the face stays faceted. Cones are exact when they run between two planes perpendicular to their axis: countersinks, chamfered holes and bosses, drafted/tapered bosses. Cones may also meet a coaxial cylinder (countersunk hole, chamfered pin). A cone that ends in its apex falls back to the hybrid solid. Countersinks and narrow chamfers are exact through about 0.05 mm of noise; a 2 mm chamfer and a wide drafted wall stay exact at 0.2 mm. A 2 mm 90° countersink at 0.2 mm noise still fails to close on some seeds (the conical band and the hole wall meet at one vertex) and falls back to a valid faceted solid. No fillets or free-form yet.
 
 ## Development
 ```

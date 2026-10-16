@@ -11,6 +11,20 @@ from . import __version__
 
 def _convert(a) -> int:
     from .convert import convert_file
+    if a.cadquery:
+        from .cadquery_code import Unsupported
+        from .convert import cadquery_file
+        try:
+            info = cadquery_file(a.input, a.cadquery, tol=a.tol, cylinders=not a.no_cylinders,
+                                 spheres=not a.no_spheres, cones=not a.no_cones)
+        except Unsupported as e:
+            print(f"cannot write CadQuery script: {e}", file=sys.stderr)
+            return 2
+        q = info["check"]
+        chk = f" max_dev={q['max_deviation']:.4f}" if q else " (install cadquery to verify)"
+        print(f"wrote {a.cadquery}  params={len(info['parameters'])}{chk}")
+        if not a.output:
+            return 0
     from .report import dumps, to_markdown
     out = a.output or str(Path(a.input).with_suffix(".step"))
     res = convert_file(a.input, out, tol=a.tol, cylinders=not a.no_cylinders,
@@ -59,6 +73,9 @@ def main(argv=None) -> int:
                    help="fit tolerance in model units (default: 0.1%% of bbox diagonal); set to scan noise level")
     c.add_argument("--report", help="write fidelity report (.json or .md)")
     c.add_argument("--json", action="store_true", help="print full report as JSON")
+    c.add_argument("--cadquery", metavar="OUT.py",
+                   help="write an editable parametric CadQuery script instead of STEP "
+                        "(add -o to also write STEP); simple box/plate parts only")
     c.add_argument("--no-cylinders", action="store_true")
     c.add_argument("--no-spheres", action="store_true")
     c.add_argument("--no-cones", action="store_true")

@@ -4,15 +4,16 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mesh2cad"
-version = "0.3.0"
+version = "0.4.2"
 description = "Convert STL/OBJ/PLY meshes into B-rep CAD (STEP) with primitive fitting"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
-dependencies = ["trimesh", "rtree", "networkx", "numpy", "scipy", "cadquery-ocp"]
+dependencies = ["trimesh", "rtree", "networkx", "numpy", "scipy", "cadquery-ocp>=7.8,<8"]
 
 [project.optional-dependencies]
 mcp = ["mcp"]
+cadquery = ["cadquery"]
 dev = ["pytest", "cadquery", "mcp"]
 
 [project.scripts]

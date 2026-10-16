@@ -83,3 +83,19 @@ def test_snap_and_fallback():
     assert r["method"] in ("faceted-hybrid", "faceted")
     assert r["output"]["valid_solid"]
     assert r["deviation"]["hausdorff"] < 0.5
+
+
+def test_countersunk_default_tol_no_crash(tmp_path):
+    """Regression (0.4.1): default --tol lost the countersink cone and the hybrid
+    fallback segfaulted in UnifySameDomain. Now tighter tols are retried and
+    unify only runs on valid shells."""
+    from parts import countersunk_plate
+    stl = tmp_path / "csk.stl"
+    to_mesh(countersunk_plate()).export(stl)
+    out = tmp_path / "csk.json"
+    assert main(["convert", str(stl), "--report", str(out)]) == 0
+    r = json.loads(out.read_text())
+    assert r["method"] == "exact" and r["output"]["valid_solid"]
+    assert r["output"]["faces"].get("cone") == 1
+    # the loose tol on its own must still produce a valid solid via the guarded fallback
+    assert main(["convert", str(stl), "--tol", "0.0504", "-o", str(tmp_path / "loose.step")]) == 0
