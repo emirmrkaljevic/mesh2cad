@@ -1,6 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 — 2026-10-16
+- Parametric CadQuery export: `mesh2cad convert in.stl --cadquery out.py` writes an editable script with named parameters (`base_t`, `hole_1_d`, `hole_1_csk_d`, `boss_1_h`, `boss_1_draft_deg`, `boss_1_chamfer`, `pad_1_w`, …). Covers a box/plate base, rectangular pads, through/blind/countersunk holes and straight/drafted/chamfered bosses.
+- The generated script is executed and checked against the mesh before it is written (max deviation ≤ max(4·tol, 0.1), volume error ≤ 1 %); unsupported parts exit with code 2 and a reason.
+- MCP tool `to_cadquery(input_path, output_path?, tol?)`.
+- New optional extra `mesh2cad[cadquery]`; README install now points at PyPI.
+- Tests: script reproduces 8 reference parts (clean and 0.05 mm noise) against ground truth, parameter edits change the part as expected, unsupported parts are rejected.
+- Benchmark (`benchmarks/run.py`) now includes the cone parts (countersunk plate, tapered boss, chamfered boss) and a cone face column; README table refreshed.
+- Docs: Limits and `server.json` description now list cones; Glama score badge and MCP directory links in the README.
 - Benchmark (`benchmarks/run.py`) now includes the cone parts (countersunk plate, tapered boss, chamfered boss) and a cone face column; README table refreshed.
 - Docs: Limits and `server.json` description now list cones; Glama score badge and MCP directory links in the README.
 
