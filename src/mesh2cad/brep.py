@@ -146,6 +146,44 @@ def unify(shape: TopoDS_Shape, lin_tol: float, ang_tol: float = 1e-3) -> TopoDS_
     return u.Shape()
 
 
+_UNIFY_CHILD = """
+import sys
+from OCP.BRep import BRep_Builder
+from OCP.BRepTools import BRepTools
+from OCP.TopoDS import TopoDS_Shape
+from mesh2cad.brep import unify
+s = TopoDS_Shape()
+BRepTools.Read_s(s, sys.argv[1], BRep_Builder())
+BRepTools.Write_s(unify(s, float(sys.argv[3]), float(sys.argv[4])), sys.argv[2])
+"""
+
+
+def safe_unify(shape: TopoDS_Shape, lin_tol: float, ang_tol: float = 1e-3,
+               timeout: float = 120.0) -> TopoDS_Shape:
+    """UnifySameDomain in a child process. OCCT can segfault inside it on some
+    snapped shells (valid per BRepCheck); then the shape is returned un-merged
+    instead of taking the whole process down."""
+    import os
+    import subprocess
+    import sys
+    import tempfile
+
+    from OCP.BRepTools import BRepTools
+    with tempfile.TemporaryDirectory() as d:
+        src, dst = os.path.join(d, "in.brep"), os.path.join(d, "out.brep")
+        BRepTools.Write_s(shape, src)
+        try:
+            p = subprocess.run([sys.executable, "-c", _UNIFY_CHILD, src, dst, repr(lin_tol), repr(ang_tol)],
+                               capture_output=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return shape
+        if p.returncode != 0 or not os.path.exists(dst):
+            return shape
+        out = TopoDS_Shape()
+        BRepTools.Read_s(out, dst, BRep_Builder())
+        return out if not out.IsNull() and is_valid(out) else shape
+
+
 def is_valid(shape: TopoDS_Shape) -> bool:
     return bool(BRepCheck_Analyzer(shape).IsValid())
 

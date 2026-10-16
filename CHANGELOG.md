@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.1 — 2026-10-16
+- Fix: `convert` segfaulted on some parts at the default `--tol` (e.g. a countersunk plate) inside OCCT's UnifySameDomain. Without an explicit `--tol`, tighter fits (0.4×, 0.2×) are now tried before falling back, and the fallback runs face merging in an isolated child process, keeping the un-merged valid solid if OCCT crashes.
+- Fix: a fresh `pip install` pulled cadquery-ocp 8.x, whose API breaks the fallback path (`TopoDS.Shell_s`); pinned `cadquery-ocp>=7.8,<8`.
+- Regression test for the countersunk plate at default and loose tolerance.
+
 ## 0.4.0 — 2026-10-16
 - Parametric CadQuery export: `mesh2cad convert in.stl --cadquery out.py` writes an editable script with named parameters (`base_t`, `hole_1_d`, `hole_1_csk_d`, `boss_1_h`, `boss_1_draft_deg`, `boss_1_chamfer`, `pad_1_w`, …). Covers a box/plate base, rectangular pads, through/blind/countersunk holes and straight/drafted/chamfered bosses.
 - The generated script is executed and checked against the mesh before it is written (max deviation ≤ max(4·tol, 0.1), volume error ≤ 1 %); unsupported parts exit with code 2 and a reason.
