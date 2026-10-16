@@ -56,5 +56,25 @@ def report(input_path: str, tol: float | None = None, cylinders: bool = True,
                                     spheres=spheres, cones=cones).report)
 
 
+@mcp.tool()
+def to_cadquery(input_path: str, output_path: str | None = None, tol: float | None = None) -> dict:
+    """Write an editable parametric CadQuery script (.py) for a simple part.
+
+    Works for a box/plate base with rectangular pads, vertical holes (through,
+    blind, countersunk) and vertical bosses (straight, drafted, chamfered).
+    Each dimension is a named parameter (e.g. hole_1_d = 6.0): edit it and run
+    the script with Python to regenerate the part. Returns the parameters and
+    the measured deviation of the script's output from the mesh. Returns an
+    "error" key when the part is outside that vocabulary.
+    """
+    from .cadquery_code import Unsupported
+    from .convert import cadquery_file
+    out = output_path or str(Path(input_path).with_suffix(".py"))
+    try:
+        return cadquery_file(input_path, out, tol=tol)
+    except Unsupported as e:
+        return {"error": str(e)}
+
+
 def run() -> None:
     mcp.run()
