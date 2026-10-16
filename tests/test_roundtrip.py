@@ -88,9 +88,10 @@ CONE_FACES = {"countersunk_plate": {"plane": 6, "cylinder": 1, "cone": 1},
               "chamfered_boss": {"plane": 7, "cylinder": 1, "cone": 1}}
 
 
-# A 2 mm countersink at 0.2 mm noise still fails to close on some seeds: the
-# band and the hole wall meet at a non-manifold vertex, so those seeds stay on
-# the faceted fallback (see test_inexact_countersink_fallback_is_solid).
+# The 90° countersink (Ø6 hole, Ø12 head, 3 mm deep) at 0.2 mm noise still
+# fails to close on some seeds: the band and the hole wall meet at a
+# non-manifold vertex, so those seeds stay on the faceted fallback
+# (see test_inexact_countersink_fallback_is_solid).
 # Seed 0 does recover and is checked on its own. Narrow chamfers and the wide
 # drafted wall are exact at every noise level.
 CONE_CASES = [(n, s) for n in CONES for s in (0.0, 0.05, 0.2)
