@@ -3,12 +3,12 @@
   "name": "io.github.emirmrkaljevic/mesh2cad",
   "description": "Mesh (STL/OBJ/PLY) to editable STEP CAD: fitted planes, cylinders, spheres, cones + fidelity report",
   "repository": {"url": "https://github.com/emirmrkaljevic/mesh2cad", "source": "github"},
-  "version": "0.4.0",
+  "version": "0.4.1",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "mesh2cad",
-      "version": "0.4.0",
+      "version": "0.4.1",
       "transport": {"type": "stdio"},
       "packageArguments": [{"type": "positional", "value": "mcp"}]
     }

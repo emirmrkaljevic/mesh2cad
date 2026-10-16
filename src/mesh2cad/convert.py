@@ -19,30 +19,47 @@ class Result:
     tol: float = 0.0
 
 
+def _exact(m, regions, tol):
+    if not all(r.surface is not None for r in regions):
+        return None
+    shape = brep.build_planar(m, regions, tol)
+    if shape is None:
+        return None
+    from .report import volume
+    vm = abs(m.volume) if m.is_volume else None
+    if not brep.is_valid(shape) or (vm and abs(volume(shape) - vm) > 0.05 * vm):
+        return None
+    return shape
+
+
 def convert_mesh(m: trimesh.Trimesh, tol: float | None = None, cylinders: bool = True,
                  spheres: bool = True, cones: bool = True, angle_deg: float = 20.0, ref: trimesh.Trimesh | None = None,
                  with_report: bool = True) -> Result:
     m = clean(m)
-    if tol is None:
-        tol = 1e-3 * m.scale
-    regions = segment(m, tol, angle_deg=angle_deg, cylinders=cylinders, spheres=spheres, cones=cones)
-    shape, method = None, "faceted-hybrid"
-    if all(r.surface is not None for r in regions):
-        shape = brep.build_planar(m, regions, tol)
+    seg = dict(angle_deg=angle_deg, cylinders=cylinders, spheres=spheres, cones=cones)
+    # without an explicit tol, also try tighter fits before falling back: small
+    # cones/holes on clean meshes are often lost at 0.1% of the bbox diagonal
+    tols = [tol] if tol is not None else [f * 1e-3 * m.scale for f in (1.0, 0.4, 0.2)]
+    shape, method, first = None, "faceted-hybrid", None
+    for t in tols:
+        regions = segment(m, t, **seg)
+        first = first or (t, regions)
+        shape = _exact(m, regions, t)
         if shape is not None:
-            from .report import volume
-            vm = abs(m.volume) if m.is_volume else None
-            if not brep.is_valid(shape) or (vm and abs(volume(shape) - vm) > 0.05 * vm):
-                shape = None
-            else:
-                method = "exact"
+            tol, method = t, "exact"
+            break
     if shape is None:
+        tol, regions = first
         verts = brep.snap_vertices(m, regions, tol)
         shape = brep.build_solid(m, verts, sew_tol=max(tol, 1e-6))
-        shape = brep.unify(shape, lin_tol=max(tol * 0.05, 1e-6))
+        # OCCT's UnifySameDomain can segfault on some snapped shells: run it isolated
+        if brep.is_valid(shape):
+            shape = brep.safe_unify(shape, lin_tol=max(tol * 0.05, 1e-6))
         if not brep.is_valid(shape):
             # snapping tangled triangles: export the raw mesh as a faithful faceted solid
-            shape = brep.unify(brep.build_solid(m, m.vertices, sew_tol=1e-6), lin_tol=1e-6)
+            shape = brep.build_solid(m, m.vertices, sew_tol=1e-6)
+            if brep.is_valid(shape):
+                shape = brep.safe_unify(shape, lin_tol=1e-6)
             method = "faceted"
     valid = brep.is_valid(shape)
     r = rep.build_report(m, shape, regions, valid, ref=ref) if with_report else {}
