@@ -303,3 +303,75 @@ def refine_cone(cone: Cone, pts) -> Cone:
     if not np.isfinite(sol.x).all() or not 0.01 < al < np.pi / 2 - 0.01:
         return cone
     return Cone(apex, ax, float(al))
+
+
+def fit_cone_about_axis(origin, axis, pts, normals=None) -> Cone | None:
+    """Right circular cone locked to ``axis`` (a line through ``origin``).
+
+    Narrow chamfers and countersinks do not span enough of the normal circle
+    for a free axis estimate. The neighbouring cylinder or cap plane supplies
+    the axis; half-angle comes from ``|n·axis| = sin(alpha)`` when normals
+    agree, otherwise from ``rho = tan(alpha) * h``.
+    """
+    pts = np.asarray(pts, float)
+    origin = np.asarray(origin, float)
+    axis = np.asarray(axis, float)
+    nrm = float(np.linalg.norm(axis))
+    if nrm < 1e-12 or len(pts) < 6:
+        return None
+    axis = axis / nrm
+
+    def frame(ax):
+        v = pts - origin
+        h = v @ ax
+        rho = np.linalg.norm(v - np.outer(h, ax), axis=1)
+        return h, rho
+
+    alpha = None
+    if normals is not None:
+        n = np.asarray(normals, float)
+        ln = np.linalg.norm(n, axis=1)
+        ok = ln > 1e-12
+        if int(ok.sum()) >= 6:
+            n = n[ok] / ln[ok, None]
+            s = np.abs(n @ axis)
+            band = (s > 0.12) & (s < 0.96)
+            if int(band.sum()) >= 6:
+                alpha = float(np.arcsin(np.clip(np.median(s[band]), 0.0, 1.0)))
+    h, rho = frame(axis)
+    # normals give |sin(alpha)| but not which way the cone opens. Radius has
+    # to increase along the axis; a negative slope means the axis is backwards.
+    if len(h) >= 6 and float(np.ptp(h)) > 1e-4:
+        sol, *_ = np.linalg.lstsq(np.c_[h, np.ones_like(h)], rho, rcond=None)
+        if float(sol[0]) < -0.05:
+            axis = -axis
+            h, rho = frame(axis)
+    if alpha is None:
+        if len(h) < 6:
+            return None
+        sol, *_ = np.linalg.lstsq(np.c_[h, np.ones_like(h)], rho, rcond=None)
+        slope = float(sol[0])
+        if slope <= 0.05:
+            return None
+        alpha = float(np.arctan(slope))
+    if not np.isfinite(alpha) or not 0.08 < alpha < np.pi / 2 - 0.08:
+        return None
+    tana = float(np.tan(alpha))
+    h_i = h - rho / tana
+    h_apex = float(np.median(h_i))
+    if not np.isfinite(h_apex):
+        return None
+    resid = np.abs(rho - (h - h_apex) * tana)
+    scale = float(np.median(resid))
+    inl = resid <= max(3.0 * scale, 1e-9)
+    if int(inl.sum()) >= 6:
+        h_apex = float(np.median(h_i[inl]))
+    apex = origin + axis * h_apex
+    along = (pts - apex) @ axis
+    if float(np.median(along)) < 0:
+        axis = -axis
+        along = -along
+    # a handful of boundary vertices may cross the apex under noise
+    if float(np.percentile(along, 8)) <= 0:
+        return None
+    return Cone(np.asarray(apex, float), np.asarray(axis, float), float(alpha))

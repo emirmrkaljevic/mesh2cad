@@ -18,9 +18,10 @@ from OCP.BRep import BRep_Builder
 from OCP.BRepBuilderAPI import (BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon,
                                 BRepBuilderAPI_MakeSolid, BRepBuilderAPI_Sewing)
 from OCP.BRepCheck import BRepCheck_Analyzer
+from OCP.BRepLib import BRepLib
 from OCP.gp import gp_Pnt
 from OCP.IFSelect import IFSelect_RetDone
-from OCP.ShapeFix import ShapeFix_Solid
+from OCP.ShapeFix import ShapeFix_Shape, ShapeFix_Solid
 from OCP.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
 from OCP.STEPControl import STEPControl_AsIs, STEPControl_Writer
 from OCP.TopAbs import TopAbs_SHELL
@@ -135,7 +136,25 @@ def build_solid(m: trimesh.Trimesh, verts: np.ndarray, sew_tol: float) -> TopoDS
         fix = ShapeFix_Solid(ms.Solid())
         fix.Perform()
         shape = fix.Solid()
+    # sewing leaves a few edges without SameParameter; BRepCheck then
+    # rejects an otherwise closed solid
+    same_parameter(shape, tol=max(min(sew_tol, 1e-4), 1e-7))
     return shape
+
+
+def same_parameter(shape: TopoDS_Shape, tol: float = 1e-5) -> TopoDS_Shape:
+    """Force edge 3D curves and pcurves onto one parameter range, in place."""
+    BRepLib.SameParameter_s(shape, float(tol), True)
+    return shape
+
+
+def fix_shape(shape: TopoDS_Shape, prec: float = 1e-6, max_tol: float = 1e-3) -> TopoDS_Shape:
+    """Run ShapeFix. Used when unify flips a handful of faces inside-out."""
+    fx = ShapeFix_Shape(shape)
+    fx.SetPrecision(float(prec))
+    fx.SetMaxTolerance(float(max_tol))
+    fx.Perform()
+    return fx.Shape()
 
 
 def unify(shape: TopoDS_Shape, lin_tol: float, ang_tol: float = 1e-3) -> TopoDS_Shape:
@@ -159,10 +178,15 @@ BRepTools.Write_s(unify(s, float(sys.argv[3]), float(sys.argv[4])), sys.argv[2])
 
 
 def safe_unify(shape: TopoDS_Shape, lin_tol: float, ang_tol: float = 1e-3,
-               timeout: float = 120.0) -> TopoDS_Shape:
+               timeout: float = 120.0, keep_invalid: bool = False) -> TopoDS_Shape:
     """UnifySameDomain in a child process. OCCT can segfault inside it on some
     snapped shells (valid per BRepCheck); then the shape is returned un-merged
-    instead of taking the whole process down."""
+    instead of taking the whole process down.
+
+    With ``keep_invalid``, a unify that finishes but fails BRepCheck is returned
+    anyway so the caller can run SameParameter or ShapeFix. A crash, timeout, or
+    null result still returns ``shape`` itself.
+    """
     import os
     import subprocess
     import sys
@@ -181,7 +205,11 @@ def safe_unify(shape: TopoDS_Shape, lin_tol: float, ang_tol: float = 1e-3,
             return shape
         out = TopoDS_Shape()
         BRepTools.Read_s(out, dst, BRep_Builder())
-        return out if not out.IsNull() and is_valid(out) else shape
+        if out.IsNull():
+            return shape
+        if keep_invalid or is_valid(out):
+            return out
+        return shape
 
 
 def is_valid(shape: TopoDS_Shape) -> bool:
