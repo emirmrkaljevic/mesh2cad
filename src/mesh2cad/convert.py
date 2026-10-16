@@ -50,22 +50,51 @@ def convert_mesh(m: trimesh.Trimesh, tol: float | None = None, cylinders: bool =
             break
     if shape is None:
         tol, regions = first
-        verts = brep.snap_vertices(m, regions, tol)
-        shape = brep.build_solid(m, verts, sew_tol=max(tol, 1e-6))
-        # OCCT's UnifySameDomain can segfault on some snapped shells: run it isolated
-        if brep.is_valid(shape):
-            shape = brep.safe_unify(shape, lin_tol=max(tol * 0.05, 1e-6))
-        if not brep.is_valid(shape):
-            # snapping tangled triangles: export the raw mesh as a faithful faceted solid
+        # Sew with a tight tolerance: the mesh is already closed, and a sew
+        # tolerance on the order of the noise welds distinct vertices together.
+        shape = _faceted_solid(m, brep.snap_vertices(m, regions, tol), lin_tol=max(tol * 0.05, 1e-6))
+        method = "faceted-hybrid"
+        if shape is None:
+            # raw triangles are already coincident, so a broken unify is usually
+            # just inside-out faces and ShapeFix can put them back
+            shape = _faceted_solid(m, m.vertices, lin_tol=1e-6, repair_unify=True)
+            method = "faceted"
+        if shape is None:
             shape = brep.build_solid(m, m.vertices, sew_tol=1e-6)
-            if brep.is_valid(shape):
-                shape = brep.safe_unify(shape, lin_tol=1e-6)
             method = "faceted"
     valid = brep.is_valid(shape)
     r = rep.build_report(m, shape, regions, valid, ref=ref) if with_report else {}
     if r:
         r["method"] = method
     return Result(shape, regions, r, m, tol)
+
+
+def _faceted_solid(m: trimesh.Trimesh, verts, lin_tol: float, repair_unify: bool = False):
+    """Sew ``verts`` into a solid. Unify coplanar triangles when that stays valid.
+
+    ShapeUpgrade_UnifySameDomain can segfault, flip a few faces (BRepCheck
+    UnorientableShape), or, after vertex snapping, merge triangles that are not
+    quite coplanar. Unify runs in a child process so a crash keeps the sewn
+    solid. A broken unify is dropped. ``repair_unify`` retries ShapeFix, which
+    recovers the raw mesh (inside-out faces) and not a snapped one.
+    """
+    sewn = brep.build_solid(m, verts, sew_tol=1e-6)
+    if not brep.is_valid(sewn):
+        sewn = brep.fix_shape(sewn)
+    if not brep.is_valid(sewn):
+        return None
+    # keep an invalid unify so SameParameter / ShapeFix can still recover it;
+    # a crash or a null result comes back as ``sewn`` itself
+    unified = brep.safe_unify(sewn, lin_tol=lin_tol, keep_invalid=True)
+    if unified is not sewn:
+        unified = brep.same_parameter(unified, tol=1e-5)
+        if brep.is_valid(unified):
+            return unified
+        if repair_unify:
+            fixed = brep.same_parameter(brep.fix_shape(unified), tol=1e-5)
+            if brep.is_valid(fixed):
+                return fixed
+    return sewn
 
 
 def convert_file(src: str, dst: str, tol: float | None = None, **kw) -> Result:

@@ -46,6 +46,28 @@ def test_script_reproduces_part(name, sigma):
         assert _params(code)[k] == pytest.approx(v, abs=0.5 if ("angle" in k or "deg" in k) else 0.05)
 
 
+@pytest.mark.parametrize("seed", [1, 2])
+def test_recovered_chamfer_exports_cadquery(seed):
+    """A chamfer brought back by narrow-cone recovery still exports CadQuery.
+
+    chamfered_boss at 0.05 mm noise was exact on one seed before that recovery.
+    Seed 0 is covered above; seeds 1 and 2 are the ones the gather brings back.
+    The script has to run and match the mesh.
+    """
+    ref = to_mesh(chamfered_boss())
+    res = convert_mesh(add_noise(ref, 0.05, seed=seed), tol=0.05, with_report=False)
+    assert any(getattr(r.surface, "kind", None) == "cone" for r in res.regions)
+    code, q = to_cadquery(res.mesh, res.regions, res.tol)
+    assert q["max_deviation"] <= max(4 * res.tol, 0.1)
+    assert q["volume_error_pct"] <= 1.0
+    against_truth = check(code, ref)
+    assert against_truth["max_deviation"] < 0.15
+    assert against_truth["volume_error_pct"] < 0.5
+    params = _params(code)
+    assert params["boss_1_d"] == pytest.approx(16.0, abs=0.05)
+    assert params["boss_1_chamfer"] == pytest.approx(2.0, abs=0.2)
+
+
 def test_edit_parameter_changes_part():
     ref, code = _gen("plate_with_hole")
     v0 = run_script(code).volume

@@ -88,11 +88,14 @@ CONE_FACES = {"countersunk_plate": {"plane": 6, "cylinder": 1, "cone": 1},
               "chamfered_boss": {"plane": 7, "cylinder": 1, "cone": 1}}
 
 
-# narrow chamfer/countersink bands at 0.2 mm noise split into 1-2 plane strips
-# that don't constrain a cone yet; the wide drafted wall works at every level
+# The 90° countersink (Ø6 hole, Ø12 head, 3 mm deep) at 0.2 mm noise still
+# fails to close on some seeds: the band and the hole wall meet at a
+# non-manifold vertex, so those seeds stay on the faceted fallback
+# (see test_inexact_countersink_fallback_is_solid).
+# Seed 0 does recover and is checked on its own. Narrow chamfers and the wide
+# drafted wall are exact at every noise level.
 CONE_CASES = [(n, s) for n in CONES for s in (0.0, 0.05, 0.2)
-              if not (s == 0.2 and n != "tapered_boss")
-              and not (s == 0.05 and n == "chamfered_boss")]  # TODO: noisy narrow chamfers
+              if not (s == 0.2 and n == "countersunk_plate")]
 
 
 @pytest.mark.parametrize("seed", [0, 1])
@@ -108,3 +111,24 @@ def test_cone_roundtrip(name, sigma, seed):
     assert r["output"]["faces"] == CONE_FACES[name]
     assert r["deviation"]["hausdorff"] < max(3 * tol, 0.15)
     assert r["volume_error_pct"] < 0.5
+
+
+def test_countersunk_plate_one_seed_at_high_noise():
+    """σ = 0.2 recovers the countersink for seed 0. Seeds 1 and 2 do not."""
+    ref = to_mesh(CONES["countersunk_plate"]())
+    res = convert_mesh(add_noise(ref, 0.2, seed=0), tol=0.2, ref=ref)
+    r = res.report
+    assert r["method"] == "exact"
+    assert r["output"]["valid_solid"]
+    assert r["output"]["faces"] == CONE_FACES["countersunk_plate"]
+    assert r["deviation"]["hausdorff"] < 0.6
+    assert r["volume_error_pct"] < 0.5
+
+
+def test_inexact_countersink_fallback_is_solid():
+    """When the countersink does not close, the fallback is still a valid solid."""
+    ref = to_mesh(CONES["countersunk_plate"]())
+    r = convert_mesh(add_noise(ref, 0.2, seed=1), tol=0.2, ref=ref).report
+    assert r["method"] in ("faceted-hybrid", "faceted")
+    assert r["output"]["valid_solid"]
+    assert r["deviation"]["hausdorff"] < 1.5
