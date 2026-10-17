@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.0 — 2026-10-17
+- Constant-radius fillets between two planes are rebuilt as one partial cylinder, tangent to both walls and trimmed by the two end caps. Covers rounded vertical corners of a plate or block, and the inner corner of an L-bracket as well as the outer ones.
+- On the synthetic plate (r=5 mm), block (r=2 mm) and L-bracket (r=3 mm) this is exact at 0 and 0.05 mm noise (3/3 seeds). The radius is taken from the cylinder tangent to both walls that fits the arc, so wall triangles left in the patch do not move it. With no noise the radius error is 0.009 / 0.005 / 0.006 mm. At 0.05 mm the worst error is 0.041 mm on the r=2 corners, 0.100 mm on the plate and 0.131 mm on the bracket. At 0.2 mm the bracket falls back on every seed; the plate is exact on 2 of 3 seeds and one of those solids is missing a corner; the block stays valid but one seed keeps only three of the four rounds. The fallback stays a valid solid.
+- CadQuery export writes `fillet_r` and `.edges("|Z").fillet(fillet_r)` when the four vertical corners of a rectangular base share one radius, so the radius is a named parameter. An L-bracket fillet stays on the STEP path.
+- A fillet that runs into a spherical corner, and a fillet between a plane and a coaxial cylinder (a torus: boss base, rounded hole edge), are not rebuilt.
+
 ## 0.4.2 — 2026-10-16
 - Narrow chamfers and countersinks that noise breaks into planar strips are gathered back onto the neighbouring cylinder. A chamfered boss stays exact through 0.2 mm noise; a countersink stays exact through 0.05 mm, and on one of three seeds at 0.2 mm.
 - When exact sewing fails, the faceted and faceted-hybrid fallbacks are sewn at a tight tolerance and forced onto one parameter range, so the STEP is a valid solid. Coplanar triangles are merged only when that merge stays valid. UnifySameDomain still runs in an isolated process, so a crash keeps the un-merged solid.

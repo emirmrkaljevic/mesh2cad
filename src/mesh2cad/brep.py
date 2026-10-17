@@ -7,8 +7,8 @@ ShapeUpgrade_UnifySameDomain so each fitted plane becomes one clean face.
 Unfitted regions stay faceted (hybrid fallback).
 
 Exact path (build_planar): plane polygons from triple-plane intersections,
-circles from plane ∩ cylinder and plane ∩ sphere, cylindrical faces, and
-spherical caps/zones bounded by those circles.
+circles from plane ∩ cylinder and plane ∩ sphere, full cylindrical faces,
+partial fillet cylinders tangent to two planes, and spherical caps/zones.
 """
 from __future__ import annotations
 
@@ -457,6 +457,279 @@ def _make_cone_face(cone, hits):
         return None
 
 
+def _circle_plane_hits(center, normal, radius, plane_n, plane_d):
+    """Points where a circle meets a plane. None when the plane misses it."""
+    normal = np.asarray(normal, float)
+    plane_n = np.asarray(plane_n, float)
+    center = np.asarray(center, float)
+    ln = float(np.linalg.norm(normal))
+    pn = float(np.linalg.norm(plane_n))
+    if ln < 1e-12 or pn < 1e-12 or radius <= 0:
+        return None
+    normal, plane_n = normal / ln, plane_n / pn
+    in_plane = plane_n - normal * float(plane_n @ normal)
+    ln = float(np.linalg.norm(in_plane))
+    if ln < 1e-8:
+        return None
+    in_plane /= ln
+    denom = float(plane_n @ in_plane)
+    if abs(denom) < 1e-8:
+        return None
+    closest = center + in_plane * ((float(plane_d) - float(plane_n @ center)) / denom)
+    closest = closest - normal * float(normal @ (closest - center))
+    delta = float(np.linalg.norm(closest - center))
+    if delta > radius + max(1e-7, 1e-6 * radius):
+        return None
+    half = float(np.sqrt(max(radius * radius - min(delta, radius) ** 2, 0.0)))
+    if half <= max(1e-8, 1e-6 * radius):
+        return [closest], 0.0
+    line_dir = np.cross(normal, plane_n)
+    line_dir = line_dir / np.linalg.norm(line_dir)
+    return [closest + line_dir * half, closest - line_dir * half], half
+
+
+def _plane_cyl_circle(plane, cyl):
+    """plane ∩ cylinder when the plane is nearly perpendicular to the axis."""
+    n, d = _unit_plane(plane)
+    if n is None or cyl.radius <= 0 or abs(float(n @ cyl.axis)) < 0.85:
+        return None
+    center = cyl.point + cyl.axis * ((d - float(n @ cyl.point)) / float(n @ cyl.axis))
+    return center, n, float(cyl.radius)
+
+
+def _fillet_vertex(plane_a, plane_b, cyl, tol):
+    """Corner where a fillet cylinder meets two planes.
+
+    The corner is the cap plane meeting the generator that lies in the tangent
+    wall. A circular section of radius ``cyl.radius`` misses that wall by
+    about ``r α²/2`` once noise tilts the axis off the cap normal, which is
+    enough for the circle test to report a miss.
+    """
+    na, da = _unit_plane(plane_a)
+    nb, db = _unit_plane(plane_b)
+    if na is None or nb is None or cyl.radius <= 0:
+        return None
+    axis = np.asarray(cyl.axis, float)
+    axis = axis / max(float(np.linalg.norm(axis)), 1e-12)
+    aa, ab = abs(float(na @ axis)), abs(float(nb @ axis))
+    if max(aa, ab) < 0.85:
+        return None
+    if aa >= ab:
+        cap_n, cap_d, side_n, side_d = na, da, nb, db
+    else:
+        cap_n, cap_d, side_n, side_d = nb, db, na, da
+    signed = float(side_n @ np.asarray(cyl.point, float) - side_d)
+    gap = abs(abs(signed) - float(cyl.radius))
+    # sewing uses 2*tol; a wall this close is the tangent plane, not a cut
+    if (abs(signed) > 1e-12 and gap <= max(2.0 * tol, 1e-4)
+            and abs(float(side_n @ axis)) <= 0.20 and abs(float(cap_n @ axis)) >= 0.85):
+        radial = -side_n * np.sign(signed)
+        radial = radial - axis * float(radial @ axis)
+        ln = float(np.linalg.norm(radial))
+        if ln >= 1e-8:
+            radial /= ln
+            origin = np.asarray(cyl.point, float) + radial * float(cyl.radius)
+            origin = origin + axis * ((cap_d - float(cap_n @ origin)) / float(cap_n @ axis))
+            if np.isfinite(origin).all():
+                return origin
+    ca = _plane_cyl_circle(plane_a, cyl)
+    cb = _plane_cyl_circle(plane_b, cyl)
+    if ca is None and cb is None:
+        return None
+    if ca is not None and (cb is None or abs(float(ca[1] @ axis)) >= abs(float(cb[1] @ axis))):
+        center, normal, radius = ca
+        sn, sd = nb, db
+    else:
+        center, normal, radius = cb
+        sn, sd = na, da
+    hit = _circle_plane_hits(center, normal, radius, sn, sd)
+    if hit is None:
+        return None
+    pts, half = hit
+    if half > max(8.0 * tol, 0.35 * radius):
+        return None
+    if abs(signed) < 1e-12:
+        return None
+    radial = -sn * np.sign(float(sn @ np.asarray(cyl.point, float) - sd))
+    radial = radial - normal * float(radial @ normal)
+    ln = float(np.linalg.norm(radial))
+    if ln < 1e-8:
+        return None
+    expect = center + radial / ln * radius
+    return min(pts, key=lambda p: float(np.linalg.norm(p - expect)))
+
+
+def _line_edge(p0, p1):
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge
+    from OCP.gp import gp_Pnt
+    if float(np.linalg.norm(p0 - p1)) < 1e-8:
+        return None
+    edge = BRepBuilderAPI_MakeEdge(gp_Pnt(*map(float, p0)), gp_Pnt(*map(float, p1)))
+    return edge.Edge() if edge.IsDone() else None
+
+
+def _arc_edge(plane, cyl, p0, p1, hint):
+    """Circular arc of plane ∩ cylinder from p0 to p1 through ``hint``.
+
+    ``GC_MakeArcOfCircle(circle, p0, p1, sense)`` ignores the sense flag in
+    this OCCT build and always emits the same sweep, which is the long arc
+    when the fillet is concave. A point on the desired arc fixes the sweep.
+    """
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge
+    from OCP.GC import GC_MakeArcOfCircle
+    from OCP.gp import gp_Pnt
+    circ = _plane_cyl_circle(plane, cyl)
+    if circ is None:
+        return None
+    center, normal, radius = circ
+    if float(np.linalg.norm(p0 - p1)) < 1e-8:
+        return None
+    hint = np.asarray(hint, float)
+    hint = hint - normal * (float(normal @ hint) - float(normal @ center))
+    radial = hint - center
+    ln = float(np.linalg.norm(radial))
+    if ln < 1e-9:
+        return None
+    mid = center + radial / ln * radius
+    try:
+        arc = GC_MakeArcOfCircle(
+            gp_Pnt(*map(float, p0)), gp_Pnt(*map(float, mid)), gp_Pnt(*map(float, p1)))
+    except Exception:
+        return None
+    if not arc.IsDone():
+        return None
+    edge = BRepBuilderAPI_MakeEdge(arc.Value())
+    return edge.Edge() if edge.IsDone() else None
+
+
+def _mixed_fillet_wire(m, face, seq, regions, tol):
+    """Planar wire whose runs alternate straight edges and fillet arcs."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeWire
+    if len(seq) < 3:
+        return None
+    verts = []
+    for i, sid in enumerate(seq):
+        prev, this = regions[seq[i - 1]].surface, regions[sid].surface
+        if isinstance(prev, Plane) and isinstance(this, Plane):
+            vert = _intersect3([face, prev, this])
+        elif isinstance(prev, Cylinder) and isinstance(this, Plane):
+            vert = _fillet_vertex(face, this, prev, tol)
+        elif isinstance(this, Cylinder) and isinstance(prev, Plane):
+            vert = _fillet_vertex(face, prev, this, tol)
+        else:
+            return None
+        if vert is None:
+            return None
+        verts.append(np.asarray(vert, float))
+    edges = []
+    for i, sid in enumerate(seq):
+        surf = regions[sid].surface
+        p0, p1 = verts[i], verts[(i + 1) % len(seq)]
+        if isinstance(surf, Cylinder) and _plane_cyl_circle(face, surf) is not None:
+            hint = m.triangles_center[regions[sid].faces].mean(axis=0)
+            edge = _arc_edge(face, surf, p0, p1, hint)
+        else:
+            edge = _line_edge(p0, p1)
+        if edge is None:
+            return None
+        edges.append(edge)
+    wire = BRepBuilderAPI_MakeWire()
+    for edge in edges:
+        wire.Add(edge)
+    if not wire.IsDone():
+        return None
+    return wire.Wire()
+
+
+def _rotate_about(axis, radial, angle):
+    y = np.cross(axis, radial)
+    y = y / np.linalg.norm(y)
+    return np.cos(angle) * radial + np.sin(angle) * y
+
+
+def _radial_from(cyl, point):
+    d = np.asarray(point, float) - cyl.point
+    d = d - cyl.axis * float(d @ cyl.axis)
+    ln = float(np.linalg.norm(d))
+    if ln < 1e-8:
+        return None
+    return d / ln
+
+
+def _make_fillet_cylinder(m, region, loops, regions, tol):
+    """Partial cylinder bounded by two tangent walls and two end planes."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+    from OCP.Geom import Geom_CylindricalSurface
+    from OCP.gp import gp_Ax3, gp_Dir, gp_Pnt
+    if len(loops) != 1:
+        return None
+    seq = _runs(loops[0], min_run=3)
+    if len(seq) != 4:
+        seq = _runs(loops[0], min_run=2)
+    if len(seq) != 4 or any(not isinstance(regions[s].surface, Plane) for s in seq):
+        return None
+    cyl = region.surface
+    planes = [regions[s].surface for s in seq]
+    caps = []
+    for plane in planes:
+        n, _d = _unit_plane(plane)
+        caps.append(n is not None and abs(float(n @ cyl.axis)) > 0.70)
+    if caps.count(True) != 2 or any(caps[i] == caps[i - 1] for i in range(4)):
+        return None
+    verts = []
+    for i in range(4):
+        vert = _fillet_vertex(planes[i - 1], planes[i], cyl, tol)
+        if vert is None:
+            return None
+        verts.append(np.asarray(vert, float))
+    if float(cyl.distance(np.vstack(verts)).max()) > max(8.0 * tol, 0.2 * cyl.radius):
+        return None
+    rads = []
+    for i, is_cap in enumerate(caps):
+        if is_cap:
+            continue
+        rad = _radial_from(cyl, verts[i])
+        if rad is None:
+            return None
+        rads.append(rad)
+    if len(rads) != 2 or float(np.linalg.norm(np.cross(rads[0], rads[1]))) < 0.15:
+        return None
+    axis = cyl.axis / max(float(np.linalg.norm(cyl.axis)), 1e-12)
+    y = np.cross(axis, rads[0])
+    y = y / np.linalg.norm(y)
+
+    def _ang(rad):
+        a = float(np.arctan2(float(rad @ y), float(rad @ rads[0])))
+        return a if a >= 0.0 else a + 2.0 * np.pi
+
+    hint = _radial_from(cyl, m.triangles_center[region.faces].mean(axis=0))
+    if hint is None:
+        return None
+    u_b, u_h = _ang(rads[1]), _ang(hint)
+    sweep = u_b if u_h <= u_b + 1e-4 else u_b - 2.0 * np.pi
+    if not 0.20 <= abs(sweep) <= np.pi * 1.15:
+        return None
+    hs = [float((v - cyl.point) @ axis) for v in verts]
+    h0, h1 = min(hs), max(hs)
+    if h1 - h0 < 1e-6:
+        return None
+    origin = cyl.point + axis * h0
+    try:
+        ax = gp_Ax3(gp_Pnt(*map(float, origin)), gp_Dir(*map(float, axis)), gp_Dir(*map(float, rads[0])))
+        surf = Geom_CylindricalSurface(ax, float(cyl.radius))
+        made = BRepBuilderAPI_MakeFace(surf, 0.0 if sweep > 0.0 else float(sweep),
+                                       float(sweep) if sweep > 0.0 else 0.0, 0.0, float(h1 - h0), 1e-7)
+    except Exception:
+        return None
+    if not made.IsDone():
+        return None
+    face = made.Face()
+    mid = _rotate_about(axis, rads[0], sweep / 2.0)
+    if float(np.mean(m.face_normals[region.faces], axis=0) @ mid) < 0.0:
+        face = face.Reversed()
+    return face
+
+
 def build_planar(m: trimesh.Trimesh, regions: list[Region], tol: float):
     """Exact B-rep: plane polygons, cylindrical walls, spherical caps/zones.
     Returns None when the topology can't be resolved (caller falls back)."""
@@ -486,6 +759,13 @@ def build_planar(m: trimesh.Trimesh, regions: list[Region], tol: float):
         if not loops:
             return None
         if isinstance(r.surface, Cylinder):
+            # a fillet is one loop: two tangent walls and two end caps
+            if len(loops) == 1:
+                face = _make_fillet_cylinder(m, r, loops, regions, tol)
+                if face is None:
+                    return None
+                sew.Add(face)
+                continue
             # cylinder bounded by exactly two planar circular loops
             if len(loops) != 2:
                 return None
@@ -545,6 +825,14 @@ def build_planar(m: trimesh.Trimesh, regions: list[Region], tol: float):
             # signed area of the mesh loop: >0 outer boundary, <0 hole (u,v,n right-handed)
             sa = 0.5 * np.sum(q2[:, 0] * np.roll(q2[:, 1], -1) - np.roll(q2[:, 0], -1) * q2[:, 1])
             seq = _runs(loop, min_run=3)
+            # a fillet run can be only a couple of edges once the wings have been
+            # absorbed into the wall; min_run=3 would delete the arc
+            seq_fine = _runs(loop, min_run=1)
+            if any(isinstance(regions[k].surface, Cylinder) for k in seq_fine):
+                seq = _runs(loop, min_run=2)
+                fine_cyl = [k for k in seq_fine if isinstance(regions[k].surface, Cylinder)]
+                if any(k not in seq for k in fine_cyl):
+                    seq = seq_fine
             if len(seq) == 1 and isinstance(regions[seq[0]].surface, Cylinder):
                 cyl = regions[seq[0]].surface
                 cc = circle_on(r.surface, cyl)
@@ -564,6 +852,12 @@ def build_planar(m: trimesh.Trimesh, regions: list[Region], tol: float):
                 circ = gp_Circ(gp_Ax2(gp_Pnt(*map(float, cc)), gp_Dir(*map(float, nrm))), float(rho))
                 w = BRepBuilderAPI_MakeWire(BRepBuilderAPI_MakeEdge(circ).Edge()).Wire()
                 wires.append((sa, q2, w))
+                continue
+            if any(isinstance(regions[k].surface, Cylinder) for k in seq):
+                mixed = _mixed_fillet_wire(m, r.surface, seq, regions, tol)
+                if mixed is None:
+                    return None
+                wires.append((sa, q2, mixed))
                 continue
             if len(seq) < 3 or any(not isinstance(regions[k].surface, Plane) for k in seq):
                 return None

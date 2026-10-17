@@ -66,7 +66,26 @@ def chamfered_boss():
             .faces(">Z").edges().chamfer(2))
 
 
+def filleted_plate():
+    """40×30×6 plate with the four vertical corners rounded at r=5."""
+    return cq.Workplane().box(40, 30, 6).edges("|Z").fillet(5)
+
+
+def filleted_box():
+    """30×24×16 block with the four vertical edges rounded at r=2."""
+    return cq.Workplane().box(30, 24, 16).edges("|Z").fillet(2)
+
+
+def filleted_bracket():
+    """L-bracket extruded 12 mm; every vertical edge, including the inner corner, at r=3."""
+    return (cq.Workplane("XY").polyline([(0, 0), (40, 0), (40, 8), (8, 8), (8, 30), (0, 30)])
+            .close().extrude(12).edges("|Z").fillet(3))
+
+
 PLANAR = {"cube": cube, "l_bracket": l_bracket, "stepped_block": stepped_block}
+FILLETS = {"filleted_plate": filleted_plate, "filleted_box": filleted_box,
+           "filleted_bracket": filleted_bracket}
+FILLET_RADIUS = {"filleted_plate": 5.0, "filleted_box": 2.0, "filleted_bracket": 3.0}
 CURVED = {"plate_with_hole": plate_with_hole, "boss": boss, "ribbed_plate": ribbed_plate}
 CONES = {"countersunk_plate": countersunk_plate, "tapered_boss": tapered_boss,
          "chamfered_boss": chamfered_boss}
