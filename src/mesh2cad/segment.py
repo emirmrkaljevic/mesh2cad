@@ -419,7 +419,7 @@ def _claim_fillets(m, sm, nb, keep, leftover, tol):
                 if abs(abs(signed) - cyl.radius) > max(2.0 * tol, 0.05 * cyl.radius):
                     continue
             planes.append(plane)
-        snapped = snap_tangent_cylinder(cyl, planes, tol)
+        snapped = snap_tangent_cylinder(cyl, planes, tol, pts)
         if snapped is None:
             continue
         ends = 0
@@ -562,7 +562,8 @@ def _fillet_protected(m, nb, regs, i, tol):
     span = _partial_span(m, r.surface, r.faces)
     if span is None or not np.radians(25.0) <= span <= np.radians(190.0):
         return False
-    return snap_tangent_cylinder(r.surface, _neighbor_planes(m, nb, regs, i), tol) is not None
+    pts = m.vertices[np.unique(m.faces[r.faces])]
+    return snap_tangent_cylinder(r.surface, _neighbor_planes(m, nb, regs, i), tol, pts) is not None
 
 
 def _resnap_fillets(m, nb, regs, tol):
@@ -572,7 +573,7 @@ def _resnap_fillets(m, nb, regs, tol):
         if not _fillet_protected(m, nb, regs, i, tol):
             continue
         pts = m.vertices[np.unique(m.faces[r.faces])]
-        snapped = snap_tangent_cylinder(r.surface, _neighbor_planes(m, nb, regs, i), tol)
+        snapped = snap_tangent_cylinder(r.surface, _neighbor_planes(m, nb, regs, i), tol, pts)
         if snapped is None:
             continue
         old = float(np.percentile(r.surface.distance(pts), 90))
