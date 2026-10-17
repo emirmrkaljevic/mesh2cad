@@ -8,8 +8,9 @@ from mesh2cad.cadquery_code import Unsupported, check, run_script, to_cadquery  
 from mesh2cad.cli import main  # noqa: E402
 from mesh2cad.convert import convert_mesh  # noqa: E402
 from mesh2cad.io import add_noise  # noqa: E402
-from parts import (boss, chamfered_boss, countersunk_plate, cube, plate_with_hole,  # noqa: E402
-                   ribbed_plate, spherical_dome, stepped_block, tapered_boss, to_mesh)
+from parts import (boss, chamfered_boss, countersunk_plate, cube, filleted_box,  # noqa: E402
+                   filleted_bracket, filleted_plate, plate_with_hole, ribbed_plate,
+                   spherical_dome, stepped_block, tapered_boss, to_mesh)
 
 PARTS = {"cube": cube, "stepped_block": stepped_block, "plate_with_hole": plate_with_hole,
          "boss": boss, "ribbed_plate": ribbed_plate, "countersunk_plate": countersunk_plate,
@@ -75,6 +76,46 @@ def test_edit_parameter_changes_part():
     v1 = run_script(bigger).volume
     expect = 3.141592653589793 * (6.0 ** 2 - 5.0 ** 2) * 6.0
     assert v0 - v1 == pytest.approx(expect, rel=0.01)
+
+
+@pytest.mark.parametrize("sigma", [0.0, 0.05])
+@pytest.mark.parametrize("name,fn,radius", [
+    ("filleted_plate", filleted_plate, 5.0),
+    ("filleted_box", filleted_box, 2.0),
+])
+def test_vertical_fillet_is_a_parameter(name, fn, radius, sigma):
+    ref = to_mesh(fn())
+    tol = max(sigma, 0.01)
+    res = convert_mesh(add_noise(ref, sigma, seed=0), tol=tol, with_report=False)
+    code, q = to_cadquery(res.mesh, res.regions, res.tol)
+    assert q["max_deviation"] <= max(4 * tol, 0.1)
+    params = _params(code)
+    assert params["fillet_r"] == pytest.approx(radius, abs=0.15)
+    assert '.edges("|Z").fillet(fillet_r)' in code
+    against = check(code, ref)
+    assert against["max_deviation"] < (0.08 if sigma == 0.0 else 0.25)
+    assert against["volume_error_pct"] < 0.5
+
+
+def test_editing_fillet_radius_changes_volume():
+    ref = to_mesh(filleted_plate())
+    res = convert_mesh(ref, tol=0.01, with_report=False)
+    code, _ = to_cadquery(res.mesh, res.regions, res.tol)
+    r0 = _params(code)["fillet_r"]
+    v0 = run_script(code).volume
+    bigger = re.sub(r"^fillet_r\s*=\s*[\d.]+", "fillet_r = 6.0", code, flags=re.M)
+    v1 = run_script(bigger).volume
+    # four vertical corners, height 6: each loses h*r^2*(1-π/4) of the sharp box
+    import math
+    expect = 4 * 6.0 * (6.0 ** 2 - r0 ** 2) * (1.0 - math.pi / 4.0)
+    assert v0 - v1 == pytest.approx(expect, rel=0.02)
+
+
+def test_bracket_fillet_is_not_a_box_script():
+    ref = to_mesh(filleted_bracket())
+    res = convert_mesh(ref, tol=0.01, with_report=False)
+    with pytest.raises(Unsupported):
+        to_cadquery(res.mesh, res.regions, res.tol)
 
 
 def test_unsupported_part():

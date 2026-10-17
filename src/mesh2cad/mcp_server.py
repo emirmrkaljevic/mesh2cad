@@ -17,13 +17,13 @@ mcp = _Server("mesh2cad")
 @mcp.tool()
 def convert(input_path: str, output_path: str | None = None, tol: float | None = None,
             cylinders: bool = True, spheres: bool = True, cones: bool = True) -> dict:
-    """Convert an STL/OBJ/PLY mesh into a STEP B-rep with fitted planes, cylinders, spheres, and cones.
+    """Convert an STL/OBJ/PLY mesh into a STEP B-rep with fitted planes, cylinders, spheres, cones, and constant-radius fillets.
 
     Args:
         input_path: path to the mesh file.
         output_path: STEP path to write (default: input with .step suffix).
         tol: fit tolerance in model units (~ mesh noise); default 0.1% of bbox diagonal.
-        cylinders: also fit cylinders (holes, bosses).
+        cylinders: also fit cylinders (holes, bosses, plane-plane fillets).
         spheres: also fit spheres (domes, spherical bosses).
         cones: also fit cones (chamfers, countersinks, tapered bosses).
     Returns the fidelity report (method, faces, deviation, volume error) and output path.

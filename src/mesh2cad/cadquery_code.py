@@ -1,11 +1,13 @@
 """Emit an editable, parametric CadQuery script from a fitted model.
 
 Supported (Z-up, axis-aligned) parts: a box/plate base, rectangular pads on its
-top face, vertical holes (through, blind, countersunk) and vertical bosses
-(straight, drafted, chamfered). Every dimension becomes a named parameter at
-the top of the script (``hole_1_d = 6.0``) so the part can be edited and
-re-run. Anything outside that vocabulary raises :class:`Unsupported`; the
-generated script is checked against the input mesh before it is returned.
+top face, vertical holes (through, blind, countersunk), vertical bosses
+(straight, drafted, chamfered), and one constant radius on all four vertical
+corners of the base (``.edges("|Z").fillet(fillet_r)``). Every dimension
+becomes a named parameter at the top of the script (``hole_1_d = 6.0``) so
+the part can be edited and re-run. Anything outside that vocabulary raises
+:class:`Unsupported`; the generated script is checked against the input mesh
+before it is returned.
 """
 from __future__ import annotations
 
@@ -16,6 +18,7 @@ import numpy as np
 import trimesh
 
 from .fit import Cone, Cylinder, Plane
+from .segment import _partial_span
 
 Z = np.array([0.0, 0.0, 1.0])
 
@@ -65,6 +68,58 @@ def _snap(v, cands, eps):
         if abs(c - v) <= eps:
             return c
     return v
+
+
+def _vertical_fillets(m, regions):
+    """Partial vertical cylinders. Full holes and bosses cover ~360° and are not here."""
+    found = []
+    for r in regions:
+        s = r.surface
+        if not isinstance(s, Cylinder) or not len(r.faces):
+            continue
+        axis = np.asarray(s.axis, float)
+        axis = axis / max(float(np.linalg.norm(axis)), 1e-12)
+        if abs(abs(float(axis @ Z)) - 1.0) > 0.02:
+            continue
+        span = _partial_span(m, s, r.faces)
+        if span is None or not np.radians(25.0) <= span <= np.radians(190.0):
+            continue
+        found.append(r)
+    return found
+
+
+def _base_fillet_radius(m, fillet_regs, lo, hi, zmin, ztop, tol):
+    """Radius when ``fillet_regs`` are the four vertical corners of the base box.
+
+    The script can only say ``edges("|Z").fillet(r)`` for that one case. Any
+    other fillet (one edge, an L, a horizontal round) is left to STEP.
+    """
+    if len(fillet_regs) != 4:
+        raise Unsupported("fillet is not the four vertical corners of a rectangular base")
+    radii = [float(r.surface.radius) for r in fillet_regs]
+    med = float(np.median(radii))
+    if max(abs(r - med) for r in radii) > max(4.0 * tol, 0.25):
+        raise Unsupported("vertical fillets do not share one radius")
+    used = set()
+    eps = max(4.0 * tol, 0.25)
+    zeps = max(6.0 * tol, 0.5)
+    for r in fillet_regs:
+        rad = float(r.surface.radius)
+        pt = np.asarray(r.surface.point, float)
+        cands = [(lo[0] + rad, lo[1] + rad), (lo[0] + rad, hi[1] - rad),
+                 (hi[0] - rad, lo[1] + rad), (hi[0] - rad, hi[1] - rad)]
+        best_i, best_d = None, 1e9
+        for i, (x, y) in enumerate(cands):
+            d = float(np.hypot(pt[0] - x, pt[1] - y))
+            if d < best_d:
+                best_i, best_d = i, d
+        if best_d > eps or best_i in used:
+            raise Unsupported("vertical fillet is not a base corner")
+        used.add(best_i)
+        vz = _verts(m, r)[:, 2]
+        if abs(float(vz.min()) - zmin) > zeps or abs(float(vz.max()) - ztop) > zeps:
+            raise Unsupported("vertical fillet does not span the base")
+    return med
 
 
 def _stacks(m, regions, tol, zs=()):
@@ -131,7 +186,11 @@ def extract(m: trimesh.Trimesh, regions, tol: float) -> dict:
         raise Unsupported("no bottom face")
     zmin = min(down, key=lambda t: -t[0].area)[1]
     zs = [c for _, i, _, c in pos if i == 2]
-    stacks = _stacks(m, regions, tol, zs + [zmin])
+    # corner fillets are partial cylinders; leaving them in the stacks makes
+    # them look like bosses that do not start on the top face
+    fillet_regs = _vertical_fillets(m, regions)
+    fillet_ids = {id(r) for r in fillet_regs}
+    stacks = _stacks(m, [r for r in regions if id(r) not in fillet_ids], tol, zs + [zmin])
 
     def on_stack(r):
         v = _verts(m, r)
@@ -211,6 +270,8 @@ def extract(m: trimesh.Trimesh, regions, tol: float) -> dict:
             else:
                 raise Unsupported("boss profile is not straight, drafted or chamfered")
             feats["bosses"].append(b)
+    if fillet_regs:
+        feats["fillet_r"] = _base_fillet_radius(m, fillet_regs, lo, hi, zmin, ztop, tol)
     return feats
 
 
@@ -231,6 +292,9 @@ def render(feats: dict, tol: float = 0.01, source: str | None = None) -> str:
     body = ["result = (cq.Workplane(\"XY\", origin=(base_cx, base_cy, base_z0))",
             "          .rect(base_x, base_y).extrude(base_t))",
             "top = base_z0 + base_t"]
+    if "fillet_r" in feats:
+        p("fillet_r", feats["fillet_r"], "vertical corner radius")
+        body.append("result = result.edges(\"|Z\").fillet(fillet_r)")
     for i, d in enumerate(feats["pads"], 1):
         n = f"pad_{i}"
         for k, note in (("w", "X size"), ("l", "Y size"), ("h", "height above top face")):
