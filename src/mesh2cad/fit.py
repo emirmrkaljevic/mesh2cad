@@ -1,4 +1,4 @@
-"""Primitive fitting: planes, cylinders, and spheres."""
+"""Primitive fitting: planes, cylinders, spheres, and cones."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -87,6 +87,87 @@ def fit_cylinder(pts, normals) -> Cylinder | None:
     if r2 <= 0:
         return None
     return Cylinder(axis, cx * u + cy * v, float(np.sqrt(r2)))
+
+
+def _unit_normal(plane: Plane):
+    n = np.asarray(plane.normal, float)
+    ln = float(np.linalg.norm(n))
+    if ln < 1e-12:
+        return None, None
+    return n / ln, float(plane.d) / ln
+
+
+def snap_tangent_cylinder(cyl: Cylinder, planes, tol: float) -> Cylinder | None:
+    """Cylinder of ``cyl`` made exactly tangent to two neighbouring planes.
+
+    A constant-radius fillet between two planes is a partial cylinder whose
+    generators lie in those planes. The fitted axis is only a hint: the
+    returned axis is the cross product of the two tangent normals, and the
+    radius is the distance from that axis to each plane. Returns None when
+    no pair of ``planes`` is tangent within ``tol``.
+    """
+    if cyl.radius <= 0 or not planes:
+        return None
+    axis0 = np.asarray(cyl.axis, float)
+    axis0 = axis0 / max(float(np.linalg.norm(axis0)), 1e-12)
+    point = np.asarray(cyl.point, float)
+    limit = max(8.0 * tol, 0.15 * cyl.radius)
+    cands = []
+    for plane in planes:
+        if not isinstance(plane, Plane):
+            continue
+        n, d = _unit_normal(plane)
+        if n is None or abs(float(n @ axis0)) > 0.30:
+            continue
+        signed = float(n @ point - d)
+        err = abs(abs(signed) - cyl.radius)
+        if err <= limit:
+            cands.append((err, n, d, signed))
+    if len(cands) < 2:
+        return None
+    cands.sort(key=lambda t: t[0])
+    pair = None
+    for i in range(len(cands)):
+        for j in range(i + 1, len(cands)):
+            if np.linalg.norm(np.cross(cands[i][1], cands[j][1])) >= 0.30:
+                pair = (cands[i], cands[j])
+                break
+        if pair is not None:
+            break
+    if pair is None:
+        return None
+    # a third plane equally tangent means the strip is not one edge fillet
+    third = max(4.0 * tol, 0.08 * cyl.radius)
+    for cand in cands:
+        if cand is pair[0] or cand is pair[1] or cand[0] > third:
+            continue
+        extra = cand[1]
+        if min(np.linalg.norm(np.cross(extra, pair[0][1])),
+               np.linalg.norm(np.cross(extra, pair[1][1]))) >= 0.30:
+            return None
+    (_, n1, d1, s1), (_, n2, d2, s2) = pair
+    axis = np.cross(n1, n2)
+    axis = axis / np.linalg.norm(axis)
+    if float(axis @ axis0) < 0.0:
+        axis = -axis
+    radius = float(np.median([cyl.radius, abs(s1), abs(s2)]))
+    if not np.isfinite(radius) or radius <= 0:
+        return None
+    # exactly r on the same side of each plane as the fitted centre
+    mat = np.stack([n1, n2, axis])
+    rhs = np.array([d1 + np.sign(s1 if s1 != 0 else 1.0) * radius,
+                    d2 + np.sign(s2 if s2 != 0 else 1.0) * radius,
+                    float(axis @ point)])
+    try:
+        origin = np.linalg.solve(mat, rhs)
+    except np.linalg.LinAlgError:
+        return None
+    if not np.isfinite(origin).all():
+        return None
+    shift = float(np.linalg.norm(np.cross(origin - point, axis)))
+    if shift > max(6.0 * tol, 0.25 * cyl.radius) or abs(radius - cyl.radius) > max(6.0 * tol, 0.2 * cyl.radius):
+        return None
+    return Cylinder(axis, origin, radius)
 
 
 def refine_cylinder(cyl: Cylinder, pts) -> Cylinder:

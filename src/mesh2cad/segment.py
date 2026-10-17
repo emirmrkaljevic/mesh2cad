@@ -9,7 +9,8 @@ import numpy as np
 import trimesh
 
 from .fit import (Cone, Cylinder, Plane, Sphere, fit_cylinder, fit_plane, fit_sphere,
-                  refine_cylinder, refine_sphere, fit_cone, refine_cone, fit_cone_about_axis)
+                  refine_cylinder, refine_sphere, fit_cone, refine_cone, fit_cone_about_axis,
+                  snap_tangent_cylinder)
 
 
 @dataclass
@@ -81,9 +82,12 @@ def segment(m: trimesh.Trimesh, tol: float, angle_deg: float = 20.0,
     keep, leftover, strip_cyls = _claim_strip_cylinders(m, sm, keep, leftover, tol)
     keep, more = _strip_chains(m, sm, keep, tol)
     leftover += more
+    fillets = []
+    if cylinders:
+        keep, leftover, fillets = _claim_fillets(m, sm, nb, keep, leftover, tol)
 
     # --- leftovers: give them to planes, then fit cylinders or spheres
-    out = _merge_planes(m, keep, tol) + strip_cyls
+    out = _merge_planes(m, keep, tol) + strip_cyls + fillets
     if leftover:
         left = np.concatenate([r.faces for r in leftover])
         out = _absorb(m, nb, out + [Region(left, None, float(area[left].sum()))], tol)
@@ -108,6 +112,8 @@ def segment(m: trimesh.Trimesh, tol: float, angle_deg: float = 20.0,
     out = _absorb(m, nb, out, tol, force_frac=0.005)
     if cones:
         out = _reclaim_coaxial_cones(m, sm, nb, out, tol)
+    if cylinders:
+        out = _resnap_fillets(m, nb, out, tol)
     return [r for r in out if len(r.faces)]
 
 
@@ -259,6 +265,321 @@ def _claim_strip_cylinders(m, sm, keep, leftover, tol, frac=0.05):
         if len(faces):
             new_left.append(Region(faces, r.surface, float(m.area_faces[faces].sum())))
     return new_keep, new_left, extra
+
+
+def _drop_claimed(m, regs, claimed):
+    out = []
+    area = m.area_faces
+    for r in regs:
+        if not len(r.faces):
+            continue
+        keep = r.faces[~claimed[r.faces]]
+        if len(keep) == 0:
+            continue
+        if len(keep) == len(r.faces):
+            out.append(r)
+            continue
+        surf = r.surface
+        if isinstance(surf, Plane) and len(keep) >= 3:
+            surf = _refit(m.triangles, area, keep, surf)
+        out.append(Region(keep, surf, float(area[keep].sum())))
+    return out
+
+
+def _fit_partial_cylinder(m, sm, faces):
+    """Best refined cylinder on ``faces``, or None when the patch is not cylindrical."""
+    best = None
+    pts = m.vertices[np.unique(m.faces[faces])]
+    cen = m.triangles_center[faces]
+    for nrm in (sm.face_normals[faces], m.face_normals[faces]):
+        cyl = fit_cylinder(cen, nrm)
+        if cyl is None or not 0 < cyl.radius <= 0.5 * m.scale:
+            continue
+        cyl = refine_cylinder(cyl, pts)
+        if not np.isfinite(cyl.radius) or not 0 < cyl.radius <= 0.5 * m.scale:
+            continue
+        err = float(np.percentile(cyl.distance(pts), 90))
+        if best is None or err < best[0]:
+            best = (err, cyl)
+    return None if best is None else best
+
+
+def _claim_fillets(m, sm, nb, keep, leftover, tol):
+    """Turn a narrow round between two planes into one partial cylinder.
+
+    Region growing slices a constant-radius fillet into thin planar strips,
+    and those strips are too slim to be kept as planes. The middle of a noisy
+    fillet can also survive as its own small plane and split the strip in
+    two. A connected patch of those faces that lies on a cylinder tangent to
+    two large planes is the fillet; it is snapped onto the planes so the
+    B-rep trim is tangent instead of a chord through the mesh.
+    """
+    total = float(m.area_faces.sum()) or 1.0
+    big = []
+    for i, r in enumerate(keep):
+        if isinstance(r.surface, Plane) and r.area >= 0.02 * total and len(r.faces):
+            big.append(i)
+    if len(big) < 2:
+        return keep, leftover, []
+    eligible = np.zeros(len(m.faces), bool)
+    for r in leftover:
+        if len(r.faces):
+            eligible[r.faces] = True
+    big_set = set(big)
+    big_normals = []
+    for i in big:
+        n = np.asarray(keep[i].surface.normal, float)
+        ln = float(np.linalg.norm(n))
+        if ln > 1e-12:
+            big_normals.append(n / ln)
+    # a fillet's own middle can survive as a small plane (~45° to both walls).
+    # a fragment of a real wall is nearly parallel to a big plane and must stay
+    # out of the fillet patch, or it bridges two corners into one bogus cylinder.
+    # the fragment is still a real wall, so it counts as a tangent neighbour.
+    parallel = float(np.cos(np.radians(18.0)))
+    walls = set(big)
+    for i, r in enumerate(keep):
+        if i in big_set or not len(r.faces) or not isinstance(r.surface, Plane):
+            continue
+        n = np.asarray(r.surface.normal, float)
+        ln = float(np.linalg.norm(n))
+        if ln < 1e-12:
+            continue
+        n = n / ln
+        if any(abs(float(n @ b)) >= parallel for b in big_normals):
+            walls.add(i)
+            continue
+        eligible[r.faces] = True
+    faces = np.where(eligible)[0]
+    if len(faces) < 8:
+        return keep, leftover, []
+    fset = set(int(f) for f in faces)
+    seen = set()
+    comps = []
+    for s in faces:
+        s = int(s)
+        if s in seen:
+            continue
+        comp, q = [], deque([s])
+        seen.add(s)
+        while q:
+            f = q.popleft()
+            comp.append(f)
+            for g in nb[f]:
+                if g in fset and g not in seen:
+                    seen.add(g)
+                    q.append(g)
+        comps.append(np.asarray(comp, int))
+    lab = -np.ones(len(m.faces), int)
+    for i in walls:
+        lab[keep[i].faces] = i
+    claimed = np.zeros(len(m.faces), bool)
+    extra = []
+    area = m.area_faces
+    for comp in comps:
+        if len(comp) < 8 or float(area[comp].sum()) < 0.001 * total:
+            continue
+        fitted = _fit_partial_cylinder(m, sm, comp)
+        if fitted is None:
+            continue
+        err, cyl = fitted
+        # boundary vertices are shared with the walls, so a true fillet's p90
+        # sits a little above the noise floor
+        if err > max(6.0 * tol, 0.06 * cyl.radius):
+            continue
+        pts = m.vertices[np.unique(m.faces[comp])]
+        span = 2.0 * np.pi - _angular_gap(cyl.axis, cyl.point, pts)
+        if not np.radians(25.0) <= span <= np.radians(190.0):
+            continue
+        neigh_ids = []
+        seen_n = set()
+        for f in comp:
+            for g in nb[f]:
+                j = int(lab[g])
+                if j >= 0 and j not in seen_n:
+                    seen_n.add(j)
+                    neigh_ids.append(j)
+        # a wall fragment counts only when the free fit is already tangent to
+        # it. Otherwise a patch that covers two corners snaps onto the fragment
+        # and comes back as one cylinder of the wrong radius.
+        axis0 = np.asarray(cyl.axis, float)
+        axis0 = axis0 / max(float(np.linalg.norm(axis0)), 1e-12)
+        planes = []
+        for j in neigh_ids:
+            plane = keep[j].surface
+            if j not in big_set:
+                n = np.asarray(plane.normal, float)
+                ln = float(np.linalg.norm(n))
+                if ln < 1e-12:
+                    continue
+                n, d = n / ln, float(plane.d) / ln
+                if abs(float(n @ axis0)) > 0.30:
+                    continue
+                signed = float(n @ np.asarray(cyl.point, float) - d)
+                if abs(abs(signed) - cyl.radius) > max(2.0 * tol, 0.05 * cyl.radius):
+                    continue
+            planes.append(plane)
+        snapped = snap_tangent_cylinder(cyl, planes, tol)
+        if snapped is None:
+            continue
+        ends = 0
+        for plane in planes:
+            n = plane.normal / max(float(np.linalg.norm(plane.normal)), 1e-12)
+            if abs(float(n @ snapped.axis)) > 0.90:
+                ends += 1
+        if ends < 2:
+            continue
+        # a sharp edge with noise stays within a few tolerances of both walls.
+        # a real quarter-cylinder leaves them by about 0.29*r at mid-arc
+        if _fillet_crown(pts, planes, snapped) < max(4.0 * tol, 0.20 * snapped.radius):
+            continue
+        err2 = float(np.percentile(snapped.distance(pts), 90))
+        if err2 > max(6.0 * tol, 0.08 * snapped.radius, err * 2.5):
+            continue
+        if abs(float(snapped.axis @ cyl.axis)) < 0.95:
+            continue
+        cens = m.triangles_center[comp]
+        sph = fit_sphere(cens, sm.face_normals[comp])
+        if sph is not None and float(np.percentile(sph.distance(pts), 90)) <= 0.75 * max(err2, 1e-9):
+            continue
+        cone = fit_cone(cens, sm.face_normals[comp])
+        if cone is not None and float(np.percentile(cone.distance(pts), 90)) <= 0.75 * max(err2, 1e-9):
+            continue
+        claimed[comp] = True
+        extra.append(Region(comp, snapped, float(area[comp].sum())))
+    if not claimed.any():
+        return keep, leftover, []
+    return _drop_claimed(m, keep, claimed), _drop_claimed(m, leftover, claimed), extra
+
+
+def _fillet_crown(pts, planes, cyl):
+    """How far the patch lifts off the nearer of its two tangent walls."""
+    axis = np.asarray(cyl.axis, float)
+    axis = axis / max(float(np.linalg.norm(axis)), 1e-12)
+    walls = []
+    point = np.asarray(cyl.point, float)
+    for plane in planes:
+        if not isinstance(plane, Plane):
+            continue
+        n = np.asarray(plane.normal, float)
+        ln = float(np.linalg.norm(n))
+        if ln < 1e-12:
+            continue
+        n, d = n / ln, float(plane.d) / ln
+        if abs(float(n @ axis)) > 0.35:
+            continue
+        signed = float(n @ point - d)
+        walls.append((abs(abs(signed) - float(cyl.radius)), n, d))
+    if len(walls) < 2:
+        return 0.0
+    walls.sort(key=lambda t: t[0])
+    pair = walls[:2]
+    best = 0.0
+    for pt in pts:
+        best = max(best, min(abs(float(n @ pt - d)) for _, n, d in pair))
+    return best
+
+
+def _neighbor_planes(m, nb, regs, i):
+    label = -np.ones(len(m.faces), int)
+    for k, r in enumerate(regs):
+        if len(r.faces):
+            label[r.faces] = k
+    planes, seen = [], set()
+    for f in regs[i].faces:
+        for g in nb[f]:
+            j = int(label[g])
+            if j >= 0 and j not in seen and isinstance(regs[j].surface, Plane):
+                seen.add(j)
+                planes.append(regs[j].surface)
+    return planes
+
+
+def _partial_span(m, cyl, faces):
+    pts = m.vertices[np.unique(m.faces[faces])]
+    if len(pts) < 6:
+        return None
+    return 2.0 * np.pi - _angular_gap(cyl.axis, cyl.point, pts)
+
+
+def _tangent_fillet_wall(m, nb, regs, i, tol):
+    """True when plane ``i`` is the tangent wall of a neighbouring fillet.
+
+    The wall can be only a couple of millimetres wide (an L-bracket leg
+    between two rounds). Its triangles lie close to the fillet cylinders, so
+    the dissolve pass would delete the plane and leave the cylinders adjacent.
+    """
+    r = regs[i]
+    if not isinstance(r.surface, Plane) or not len(r.faces):
+        return False
+    # slivers next to a noisy hole are not the wall between two fillets
+    if r.area < max(15.0, 0.004 * m.area):
+        return False
+    n = np.asarray(r.surface.normal, float)
+    ln = float(np.linalg.norm(n))
+    if ln < 1e-12:
+        return False
+    n, d = n / ln, float(r.surface.d) / ln
+    label = -np.ones(len(m.faces), int)
+    for k, reg in enumerate(regs):
+        if len(reg.faces):
+            label[reg.faces] = k
+    seen = set()
+    for f in r.faces:
+        for g in nb[f]:
+            j = int(label[g])
+            if j < 0 or j == i or j in seen:
+                continue
+            seen.add(j)
+            cyl = regs[j].surface
+            if not isinstance(cyl, Cylinder) or cyl.radius <= 0:
+                continue
+            axis = np.asarray(cyl.axis, float)
+            axis = axis / max(float(np.linalg.norm(axis)), 1e-12)
+            if abs(float(n @ axis)) > 0.25:
+                continue
+            span = _partial_span(m, cyl, regs[j].faces)
+            if span is None or not np.radians(25.0) <= span <= np.radians(190.0):
+                continue
+            signed = float(n @ np.asarray(cyl.point, float) - d)
+            if abs(abs(signed) - cyl.radius) > max(3.0 * tol, 0.08 * cyl.radius):
+                continue
+            # only a real fillet is worth keeping a wall for; a noisy hole
+            # fragment is also a partial cylinder and must not freeze the strips
+            # beside a countersink
+            pts = m.vertices[np.unique(m.faces[regs[j].faces])]
+            if _fillet_crown(pts, _neighbor_planes(m, nb, regs, j), cyl) < max(4.0 * tol, 0.20 * cyl.radius):
+                continue
+            return True
+    return False
+
+
+def _fillet_protected(m, nb, regs, i, tol):
+    """True when region ``i`` is a partial cylinder tangent to two planes."""
+    r = regs[i]
+    if not isinstance(r.surface, Cylinder) or len(r.faces) < 8:
+        return False
+    span = _partial_span(m, r.surface, r.faces)
+    if span is None or not np.radians(25.0) <= span <= np.radians(190.0):
+        return False
+    return snap_tangent_cylinder(r.surface, _neighbor_planes(m, nb, regs, i), tol) is not None
+
+
+def _resnap_fillets(m, nb, regs, tol):
+    """Put fillet cylinders back on the planes after merges have refit them."""
+    out = list(regs)
+    for i, r in enumerate(regs):
+        if not _fillet_protected(m, nb, regs, i, tol):
+            continue
+        pts = m.vertices[np.unique(m.faces[r.faces])]
+        snapped = snap_tangent_cylinder(r.surface, _neighbor_planes(m, nb, regs, i), tol)
+        if snapped is None:
+            continue
+        old = float(np.percentile(r.surface.distance(pts), 90))
+        new = float(np.percentile(snapped.distance(pts), 90))
+        if new <= max(old * 2.0, old + max(4.0 * tol, 0.05 * snapped.radius)):
+            out[i] = Region(r.faces, snapped, r.area)
+    return out
 
 
 def _angular_gap(axis, origin, pts):
@@ -1088,7 +1409,10 @@ def _promote_spheres(m, sm, regs, tol, frac=0.05, accept=None):
     for i, r in enumerate(regs):
         if len(r.faces):
             lab[r.faces] = i
-    small = {i for i, r in enumerate(regs) if 0 < r.area < frac * m.area}
+    # fillet cylinders are small but they are not pieces of a sphere
+    nb = _neighbors(m)
+    small = {i for i, r in enumerate(regs) if 0 < r.area < frac * m.area
+             and not _fillet_protected(m, nb, regs, i, tol)}
     if len(small) < 1:
         return regs
     pairs = set()
@@ -1148,6 +1472,15 @@ def _dissolve_small(m, nb, regs, tol, frac=0.05):
     for i in np.argsort([r.area for r in regs]):
         r = regs[i]
         if r.surface is None or r.area >= frac * m.area or not len(r.faces):
+            continue
+        # a real fillet is a small partial cylinder; its triangles sit within a
+        # few tolerances of the tangent planes, and the force-absorb pass would
+        # otherwise delete the whole strip
+        if _fillet_protected(m, nb, regs, i, tol):
+            continue
+        # a narrow wall between two fillets is within a few tolerances of both
+        # cylinders, and absorbing it would make those cylinders share an edge
+        if _tangent_fillet_wall(m, nb, regs, i, tol):
             continue
         trial = list(regs)
         trial[i] = Region(r.faces, None, r.area)
