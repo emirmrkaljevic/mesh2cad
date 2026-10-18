@@ -9,20 +9,38 @@ from pathlib import Path
 from . import __version__
 
 
+def _script(kind: str, path: str, a) -> int:
+    from .parametric import Unsupported
+    kw = dict(tol=a.tol, cylinders=not a.no_cylinders, spheres=not a.no_spheres, cones=not a.no_cones)
+    if kind == "cadquery":
+        from .convert import cadquery_file as write
+        label, missing = "CadQuery", " (install cadquery to verify)"
+    else:
+        from .convert import openscad_file as write
+        label, missing = "OpenSCAD", " (unverified: openscad not available)"
+    try:
+        info = write(a.input, path, **kw)
+    except Unsupported as e:
+        print(f"cannot write {label} script: {e}", file=sys.stderr)
+        return 2
+    q = info["check"]
+    chk = f" max_dev={q['max_deviation']:.4f}" if q else missing
+    print(f"wrote {path}  params={len(info['parameters'])}{chk}")
+    return 0
+
+
 def _convert(a) -> int:
     from .convert import convert_file
     if a.cadquery:
-        from .cadquery_code import Unsupported
-        from .convert import cadquery_file
-        try:
-            info = cadquery_file(a.input, a.cadquery, tol=a.tol, cylinders=not a.no_cylinders,
-                                 spheres=not a.no_spheres, cones=not a.no_cones)
-        except Unsupported as e:
-            print(f"cannot write CadQuery script: {e}", file=sys.stderr)
-            return 2
-        q = info["check"]
-        chk = f" max_dev={q['max_deviation']:.4f}" if q else " (install cadquery to verify)"
-        print(f"wrote {a.cadquery}  params={len(info['parameters'])}{chk}")
+        rc = _script("cadquery", a.cadquery, a)
+        if rc:
+            return rc
+        if not a.output and not a.openscad:
+            return 0
+    if a.openscad:
+        rc = _script("openscad", a.openscad, a)
+        if rc:
+            return rc
         if not a.output:
             return 0
     from .report import dumps, to_markdown
@@ -76,6 +94,9 @@ def main(argv=None) -> int:
     c.add_argument("--cadquery", metavar="OUT.py",
                    help="write an editable parametric CadQuery script instead of STEP "
                         "(add -o to also write STEP); simple box/plate parts only")
+    c.add_argument("--openscad", metavar="OUT.scad",
+                   help="write an editable parametric OpenSCAD script instead of STEP "
+                        "(add -o to also write STEP); same simple parts as --cadquery")
     c.add_argument("--no-cylinders", action="store_true")
     c.add_argument("--no-spheres", action="store_true")
     c.add_argument("--no-cones", action="store_true")

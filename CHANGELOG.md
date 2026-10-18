@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.0 — 2026-10-18
+- Parametric OpenSCAD export: `mesh2cad convert in.stl --openscad out.scad` writes a Customizer-friendly `.scad` file for the same Z-up parts as the CadQuery script. Parameter names and values match (`base_t`, `hole_1_d`, `hole_1_csk_d`, `boss_1_draft_deg`, `boss_1_chamfer`, `pad_1_w`, `fillet_r`, …).
+- Plain CSG: `cube` and `cylinder` (`r1`/`r2` for a draft, chamfer, or countersink), `union` / `difference`, and `offset(r=fillet_r)` for the four vertical corners of a rectangular base. A `// [min:max]` slider is written only where the part has a real bound (hole diameter, fillet, draft, countersink angle, chamfer, pad size). Positions stay plain numbers.
+- The script is rendered with the `openscad` CLI and compared to the mesh (sampled Hausdorff and volume) before it is written. The same deviation limits as CadQuery apply. If `openscad` is not installed the file is still written and the command reports it unverified; OpenSCAD is not a Python dependency. Parts outside the vocabulary exit with code 2 and a reason. STEP output is unchanged.
+- MCP tool `to_openscad(input_path, output_path?, tol?)`.
+- Tests cover each vocabulary element on the synthetic parts (clean and 0.05 mm noise), a hole-diameter edit re-rendered with OpenSCAD, and the unsupported path.
+
 ## 0.5.0 — 2026-10-17
 - Constant-radius fillets between two planes are rebuilt as one partial cylinder, tangent to both walls and trimmed by the two end caps. Covers rounded vertical corners of a plate or block, and the inner corner of an L-bracket as well as the outer ones.
 - On the synthetic plate (r=5 mm), block (r=2 mm) and L-bracket (r=3 mm) this is exact at 0 and 0.05 mm noise (3/3 seeds). The radius is taken from the cylinder tangent to both walls that fits the arc, so wall triangles left in the patch do not move it. With no noise the radius error is 0.009 / 0.005 / 0.006 mm. At 0.05 mm the worst error is 0.041 mm on the r=2 corners, 0.100 mm on the plate and 0.131 mm on the bracket. At 0.2 mm the bracket falls back on every seed; the plate is exact on 2 of 3 seeds and one of those solids is missing a corner; the block stays valid but one seed keeps only three of the four rounds. The fallback stays a valid solid.
