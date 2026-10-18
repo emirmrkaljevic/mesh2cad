@@ -1,7 +1,7 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
   "name": "io.github.emirmrkaljevic/mesh2cad",
-  "description": "Mesh (STL/OBJ/PLY) to editable STEP CAD: fitted planes, cylinders, spheres, cones, constant-radius fillets + fidelity report",
+  "description": "Mesh (STL/OBJ/PLY) to editable STEP CAD: planes, cylinders, spheres, cones, fillets, fidelity report",
   "repository": {"url": "https://github.com/emirmrkaljevic/mesh2cad", "source": "github"},
   "version": "0.5.0",
   "packages": [
