@@ -19,6 +19,7 @@ pip install mesh2cad              # CLI + STEP
 pip install "mesh2cad[mcp]"       # + MCP server
 pip install "mesh2cad[cadquery]"  # + run/verify generated CadQuery scripts
 ```
+OpenSCAD scripts are plain text. Verifying one needs the `openscad` program ([openscad.org](https://openscad.org)); it is not a Python dependency. Without it the `.scad` file is still written.
 
 ## Use
 ```
@@ -51,11 +52,65 @@ Make the hole 2 mm bigger: set `hole_1_d = 8.0` and run it again. A plate or blo
 
 Supported: Z-up box/plate base, rectangular pads on the top face, vertical holes (through, blind, countersunk), vertical bosses (straight, drafted, chamfered), and that one vertical corner radius. Values are rounded to clean numbers (5.997 → 6.0) when that stays within `--tol`. Before writing, the script is executed and compared with the mesh (needs `cadquery` installed); if the part is outside this vocabulary or the script deviates, nothing is written and the command exits with code 2 and the reason. Use STEP output for everything else.
 
+### Editable parametric OpenSCAD script
+The same parts can be written as OpenSCAD, which is what the 3D-printing Customizer on Thingiverse and Printables edits. Names and values match the CadQuery script. `--openscad` and `--cadquery` can be combined, and `-o` still writes STEP.
+```
+mesh2cad convert plate.stl --openscad plate.scad
+openscad -o plate.stl plate.scad
+```
+A 40×30×6 plate with a Ø10 hole comes out as below, plus a short header. Before:
+
+```openscad
+// --- parameters ---
+/* [Base] */
+// base length (X)
+base_x   = 40.0;
+// base width (Y)
+base_y   = 30.0;
+// base thickness (Z)
+base_t   = 6.0;
+base_cx  = 0.0;
+base_cy  = 0.0;
+// bottom face height
+base_z0  = -3.0;
+
+/* [Holes] */
+// diameter
+hole_1_d = 10.0; // [0.2:0.1:30]
+hole_1_x = 0.0;
+hole_1_y = 0.0;
+
+/* [Hidden] */
+$fn = 96; // circle segments
+
+// --- model ---
+module mesh2cad_part() {
+  difference() {
+    translate([base_cx, base_cy, base_z0 + base_t / 2])
+      cube([base_x, base_y, base_t], center=true);
+    translate([hole_1_x, hole_1_y, base_z0 - 1])
+      cylinder(h=base_t + 2, d=hole_1_d);
+  }
+}
+
+mesh2cad_part();
+```
+
+After, the hole is 2 mm bigger — one number changes, then re-render:
+
+```openscad
+hole_1_d = 12.0; // [0.2:0.1:30]
+```
+
+Re-render (F6) and export STL. A drafted boss is a `cylinder` with `r1`/`r2`, a chamfer or countersink is the same, and the four vertical corners of a rectangular base are `offset(r=fillet_r)` on a smaller square, then extruded. A slider (`// [min:max]`) is added only where the part gives a bound: hole diameter up to the short side of the plate, fillet up to half that side, draft until the tip would close, countersink angle in 60–120°, chamfer up to the boss, pad size up to the base. Positions (`hole_1_x`, `base_z0`, …) stay plain numbers.
+
+Same honesty as CadQuery. Before writing, mesh2cad renders the script with the `openscad` CLI and compares the STL to the mesh (sampled Hausdorff and volume, same limits as the CadQuery check). If `openscad` is not installed the file is still written and the command says it was unverified. If the part is outside this vocabulary, or the render does not match, nothing is written and the command exits with code 2 and the reason. Circles are `$fn = 96` polygons; on these parts that is a few thousandths of a millimetre, not an analytic solid. STEP remains the path for everything else.
+
 ### MCP server (Claude Desktop, Cursor, …)
 ```json
 { "mcpServers": { "mesh2cad": { "command": "mesh2cad", "args": ["mcp"] } } }
 ```
-Tools: `convert(input_path, output_path?, tol?, cylinders?, spheres?, cones?)`, `analyze(input_path, tol?, cylinders?, spheres?, cones?)`, `report(input_path, tol?, cylinders?, spheres?, cones?)`, `to_cadquery(input_path, output_path?, tol?)` (returns the parameters and measured deviation). `spheres` and `cones` default on.
+Tools: `convert(input_path, output_path?, tol?, cylinders?, spheres?, cones?)`, `analyze(input_path, tol?, cylinders?, spheres?, cones?)`, `report(input_path, tol?, cylinders?, spheres?, cones?)`, `to_cadquery(input_path, output_path?, tol?)`, `to_openscad(input_path, output_path?, tol?)`. Both script tools return the parameters and, when the script was run or rendered, the measured deviation. `to_openscad` also returns `verified: false` when the `openscad` program is absent. `spheres` and `cones` default on.
 
 Listed on [Glama](https://glama.ai/mcp/servers/emirmrkaljevic/mesh2cad) and the [TensorBlock MCP catalog](https://tensorblock.co/mcp/servers/github-emirmrkaljevic-mesh2cad-0f1c0e66).
 
@@ -116,12 +171,12 @@ Ground-truth cadquery parts → tessellated + subdivided (≤ 2 mm edges) → Ga
 
 "exact" = valid analytic B-rep. A face count equal to the triangle count is the faceted fallback, which is still a valid solid. radius err is the worst |fitted − true| cylinder radius among seeds that came back exact, and — when the part has no fillet radius or no seed was exact. All rows are the worst of 3 seeds from `python benchmarks/run.py`. The 90° countersink (Ø6 hole, Ø12 head, 3 mm deep) at 0.2 mm noise is exact on 1 of 3 seeds. At 0.2 mm the filleted bracket falls back on every seed; the plate is exact on 2 of 3, and one of those solids is missing a corner (7 planes + 3 cylinders). The block stays a valid solid, but one seed keeps only three of the four rounds (Hausdorff 0.85 mm). CI checks the cases that are exact, plus fallbacks that must stay valid solids.
 
-## Limits (v0.5.0)
+## Limits (v0.6.0)
 Planes, cylinders, spheres, cones, and constant-radius fillets between two planes. Cylinders must end on planes perpendicular to their axis (through-holes, bosses, pins). Spheres are exact when each boundary loop is a single plane ∩ sphere circle (domes, spherical bosses, spherical pockets, and zones between two parallel planes). A sphere that runs into an edge or a cylinder falls back to the hybrid solid — vertices are still snapped onto the fitted sphere, but the face stays faceted. Cones are exact when they run between two planes perpendicular to their axis: countersinks, chamfered holes and bosses, drafted/tapered bosses. Cones may also meet a coaxial cylinder (countersunk hole, chamfered pin). A cone that ends in its apex falls back to the hybrid solid. Countersinks and narrow chamfers are exact through about 0.05 mm of noise; a 2 mm chamfer and a wide drafted wall stay exact at 0.2 mm. The countersunk plate's 90° countersink (Ø6 hole, Ø12 head, 3 mm deep) at 0.2 mm noise is exact on one of three seeds. On the other two the conical band and the hole wall meet at a single vertex, so those seeds fall back to a valid faceted solid.
 
 A fillet between two planes is a partial cylinder. When the round runs from one cap to another — rounded vertical corners of a plate or block, a single edge, the inner corner of an L as well as the outer ones — it comes back as one cylinder, tangent to both walls, with the radius in the report's cylinder faces. The radius is the one whose axis is tangent to both walls and which fits the arc; wall triangles that remain in the patch do not pull it off. On the synthetic plate (r=5 mm), block (r=2 mm) and L-bracket (r=3 mm) that rebuild is exact at 0 and 0.05 mm of noise, all three seeds. With no noise the radius error is 0.009 mm on the plate, 0.005 mm on the block and 0.006 mm on the bracket. At 0.05 mm the worst radius error is 0.041 mm on the r=2 corners, 0.100 mm on the r=5 plate and 0.131 mm on the r=3 bracket. At 0.2 mm the bracket falls back on every seed. The plate is exact on 2 of 3 seeds, and one of those solids is missing a corner. The block is a valid solid on every seed, but one seed keeps only three of the four rounds and the Hausdorff rises to 0.85 mm. Whatever does not sew stays a valid faceted solid.
 
-A fillet that runs into a spherical corner (every edge of a box filleted) is not rebuilt: the corner is a sphere octant bounded by three cylinders. A fillet between a plane and a coaxial cylinder — the base of a boss, the rim of a hole — is a torus, and is not rebuilt either. Free-form surfaces are still unsupported. CadQuery export writes `fillet_r` only for the four vertical corners of a rectangular base.
+A fillet that runs into a spherical corner (every edge of a box filleted) is not rebuilt: the corner is a sphere octant bounded by three cylinders. A fillet between a plane and a coaxial cylinder — the base of a boss, the rim of a hole — is a torus, and is not rebuilt either. Free-form surfaces are still unsupported. CadQuery and OpenSCAD export write `fillet_r` only for the four vertical corners of a rectangular base (OpenSCAD as `offset(r=fillet_r)` on the base profile). An L-bracket fillet, a spherical corner, and a torus stay on the STEP path. The OpenSCAD file is not a general mesh reconstruction: one Z-up box, pads on its top face, vertical holes and bosses.
 
 ## Development
 ```

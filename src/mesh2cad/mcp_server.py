@@ -67,11 +67,33 @@ def to_cadquery(input_path: str, output_path: str | None = None, tol: float | No
     the measured deviation of the script's output from the mesh. Returns an
     "error" key when the part is outside that vocabulary.
     """
-    from .cadquery_code import Unsupported
+    from .parametric import Unsupported
     from .convert import cadquery_file
     out = output_path or str(Path(input_path).with_suffix(".py"))
     try:
         return cadquery_file(input_path, out, tol=tol)
+    except Unsupported as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def to_openscad(input_path: str, output_path: str | None = None, tol: float | None = None) -> dict:
+    """Write an editable parametric OpenSCAD script (.scad) for a simple part.
+
+    Same parts as to_cadquery: a box/plate base with rectangular pads, vertical
+    holes (through, blind, countersunk), vertical bosses (straight, drafted,
+    chamfered), and one radius on the four vertical corners. Parameter names
+    match the CadQuery script (hole_1_d, boss_1_h, fillet_r, ...). Edit one and
+    render in OpenSCAD. Returns the parameters, whether the openscad CLI
+    verified the script against the mesh, and the measured deviation when it
+    did. Without the openscad program the script is still written and verified
+    is false. Returns an "error" key when the part is outside that vocabulary.
+    """
+    from .convert import openscad_file
+    from .parametric import Unsupported
+    out = output_path or str(Path(input_path).with_suffix(".scad"))
+    try:
+        return openscad_file(input_path, out, tol=tol)
     except Unsupported as e:
         return {"error": str(e)}
 
