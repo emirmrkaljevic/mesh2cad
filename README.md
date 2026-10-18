@@ -122,7 +122,7 @@ Listed on [Glama](https://glama.ai/mcp/servers/emirmrkaljevic/mesh2cad) and the 
 5. Fidelity report against the input mesh.
 
 ## Self-test benchmark
-Ground-truth cadquery parts → tessellated + subdivided (≤ 2 mm edges) → Gaussian vertex noise → mesh2cad → compared with the truth. 3 seeds, worst case shown (`python benchmarks/run.py`); the same cases run in CI.
+Ground-truth cadquery parts → tessellated + subdivided (≤ 2 mm edges) → Gaussian vertex noise → mesh2cad → compared with the truth. 3 seeds, worst case shown (`python benchmarks/run.py`); the same cases run in CI. Numbers are **STEP / B-rep fidelity** (Hausdorff, RMS, volume, face counts). Parametric OpenSCAD and CadQuery export are verified separately when you pass `--openscad` / `--cadquery` (or the MCP `to_openscad` / `to_cadquery` tools); they are not rows in this table.
 
 | part | noise σ (mm) | exact | faces (plane/cyl[/sph[/cone]]) | radius err (mm) | Hausdorff (mm) | RMS (mm) | vol err % | time s |
 |---|---|---|---|---|---|---|---|---|
