@@ -1,5 +1,6 @@
 name: publish
-# Manual only: publishes to PyPI via Trusted Publishing (no token stored).
+# Manual only: publishes to PyPI via Trusted Publishing (no token stored),
+# then server.json to the official MCP Registry via GitHub OIDC.
 on:
   workflow_dispatch:
 jobs:
@@ -15,10 +16,31 @@ jobs:
   pypi:
     needs: build
     runs-on: ubuntu-latest
-    environment: pypi
+    environment:
+      name: pypi
+      url: https://pypi.org/p/mesh2cad
     permissions:
       id-token: write
     steps:
       - uses: actions/download-artifact@v4
         with: {name: dist, path: dist}
       - uses: pypa/gh-action-pypi-publish@release/v1
+        with: {skip-existing: true}
+  mcp-registry:
+    # Publishes server.json to the official MCP Registry once PyPI serves the version.
+    needs: pypi
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install mcp-publisher
+        run: |
+          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz" | tar xz mcp-publisher
+      - name: Wait for PyPI to serve this version
+        run: |
+          v=$(python3 -c "import json;print(json.load(open('server.json'))['version'])")
+          for i in $(seq 1 30); do curl -fsS "https://pypi.org/pypi/mesh2cad/$v/json" >/dev/null && exit 0; sleep 10; done; exit 1
+      - run: ./mcp-publisher login github-oidc
+      - run: ./mcp-publisher publish
