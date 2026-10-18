@@ -103,32 +103,80 @@ def convert_file(src: str, dst: str, tol: float | None = None, **kw) -> Result:
     return res
 
 
-def cadquery_file(src: str, dst: str, tol: float | None = None, **kw) -> dict:
-    """Write an editable parametric CadQuery script for a simple part.
+def _script_parameters(code: str) -> dict:
+    """Named numbers between the parameter and model markers."""
+    if "# --- parameters ---" in code:
+        block = code.split("# --- parameters ---", 1)[1].split("# --- model ---", 1)[0]
+    elif "// --- parameters ---" in code:
+        block = code.split("// --- parameters ---", 1)[1].split("// --- model ---", 1)[0]
+    else:
+        block = code
+    params = {}
+    for line in block.splitlines():
+        line = line.split("#", 1)[0].split("//", 1)[0].strip().rstrip(";").strip()
+        if "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        k, v = k.strip(), v.strip()
+        if not k.isidentifier():
+            continue
+        try:
+            params[k] = float(v)
+        except ValueError:
+            continue
+    return params
 
-    Raises ``mesh2cad.cadquery_code.Unsupported`` when the part is outside the
-    box/plate + pads + holes + bosses vocabulary or the script does not match."""
+
+def _parametric_script(src: str, emit, tol: float | None, **kw):
+    """Fit ``src`` and emit a parametric script, retrying tighter tolerances.
+
+    ``emit(mesh, regions, tol, source=...)`` returns ``(code, check)`` and
+    raises ``Unsupported`` when the part is outside the shared vocabulary or
+    the script does not reproduce the mesh.
+    """
     from pathlib import Path
 
-    from .cadquery_code import to_cadquery
-    from .cadquery_code import Unsupported
+    from .parametric import Unsupported
     m = clean(load_mesh(src))
     # without an explicit tol, also try tighter fits: small cones and holes on
     # clean meshes are often lost at the default 0.1% of the bbox diagonal
     tols = [tol] if tol is not None else [f * 1e-3 * m.scale for f in (1.0, 0.4, 0.2)]
+    seg = dict(cylinders=kw.get("cylinders", True), spheres=kw.get("spheres", True),
+               cones=kw.get("cones", True))
     for i, t in enumerate(tols):
-        regions = segment(m, t, cylinders=kw.get("cylinders", True), spheres=kw.get("spheres", True),
-                          cones=kw.get("cones", True))
+        regions = segment(m, t, **seg)
         try:
-            code, q = to_cadquery(m, regions, t, source=Path(src).name)
-            break
+            return emit(m, regions, t, source=Path(src).name)
         except Unsupported:
             if i == len(tols) - 1:
                 raise
+
+
+def cadquery_file(src: str, dst: str, tol: float | None = None, **kw) -> dict:
+    """Write an editable parametric CadQuery script for a simple part.
+
+    Raises ``mesh2cad.parametric.Unsupported`` when the part is outside the
+    box/plate + pads + holes + bosses vocabulary or the script does not match."""
+    from pathlib import Path
+
+    from .cadquery_code import to_cadquery
+    code, q = _parametric_script(src, to_cadquery, tol, **kw)
     Path(dst).write_text(code)
-    params = {}
-    for line in code.split("# --- parameters ---")[1].split("# --- model ---")[0].splitlines():
-        if "=" in line:
-            k, v = line.split("#")[0].split("=")
-            params[k.strip()] = float(v)
-    return {"output_path": dst, "parameters": params, "check": q}
+    return {"output_path": dst, "parameters": _script_parameters(code), "check": q}
+
+
+def openscad_file(src: str, dst: str, tol: float | None = None, **kw) -> dict:
+    """Write an editable parametric OpenSCAD script for a simple part.
+
+    Raises ``mesh2cad.parametric.Unsupported`` when the part is outside the
+    shared vocabulary, or when ``openscad`` is installed and the rendered STL
+    does not match the mesh. If ``openscad`` is not on ``PATH`` the file is
+    still written and ``verified`` is false.
+    """
+    from pathlib import Path
+
+    from .openscad_code import to_openscad
+    code, q = _parametric_script(src, to_openscad, tol, **kw)
+    Path(dst).write_text(code)
+    return {"output_path": dst, "parameters": _script_parameters(code), "check": q,
+            "verified": q is not None}

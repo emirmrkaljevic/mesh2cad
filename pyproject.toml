@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mesh2cad"
-version = "0.5.0"
-description = "Convert STL/OBJ/PLY meshes into B-rep CAD (STEP) with primitive fitting"
+version = "0.6.0"
+description = "Convert STL/OBJ/PLY meshes into STEP, CadQuery, and OpenSCAD"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
