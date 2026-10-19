@@ -2,10 +2,10 @@
 
 Uses the same feature dict and parameter names as the CadQuery export
 (:mod:`mesh2cad.parametric`). The script is plain CSG: ``cube`` / ``cylinder``
-(with ``r1``/``r2`` for a draft or a chamfer), ``difference`` / ``union``, and
-``offset`` for the one vertical corner radius. Customizer annotations
-(``/* [Group] */``, ``// [min:max]``) are added only where the part has a real
-bound.
+(with ``r1``/``r2`` for a draft or a chamfer; ``rotate`` when the axis is X or
+Y), ``difference`` / ``union``, and ``offset`` for the one vertical corner
+radius. Customizer annotations (``/* [Group] */``, ``// [min:max]``) are added
+only where the part has a real bound.
 
 When the ``openscad`` program is on ``PATH``, the script is rendered to STL and
 compared with the input mesh. Without that program the script is still
@@ -21,8 +21,9 @@ from pathlib import Path
 
 import trimesh
 
-from .parametric import (Unsupported, chamfer_is_square, deviation_problem, extract,
-                         named_parameters)
+from .parametric import (Unsupported, axis_point_expr, boss_span, chamfer_is_square,
+                         deviation_problem, extract, hole_cut_span, named_parameters,
+                         openscad_axis_rotate)
 from .report import deviation
 
 # Chord error of a radius-8 circle at this count is about 0.004 mm, under the
@@ -66,6 +67,25 @@ def _slider(lo: float, hi: float, step: float, value: float, floor_hi: bool = Fa
     return f"[{_fmt_bound(lo_s)}:{_fmt_bound(step)}:{_fmt_bound(hi_s)}]"
 
 
+def _feature_axis(by_name: dict[str, float], kind: str, idx: str) -> str:
+    """X, Y, or Z from which of ``{kind}_{idx}_{x,y,z}`` the script actually has."""
+    has = {c: f"{kind}_{idx}_{c}" in by_name for c in "xyz"}
+    if has["y"] and has["z"] and not has["x"]:
+        return "X"
+    if has["x"] and has["z"] and not has["y"]:
+        return "Y"
+    return "Z"
+
+
+def _face_limit(by_name: dict[str, float], axis: str) -> float:
+    """Shorter side of the face perpendicular to ``axis``."""
+    if axis == "X":
+        return min(by_name["base_y"], by_name["base_t"])
+    if axis == "Y":
+        return min(by_name["base_x"], by_name["base_t"])
+    return min(by_name["base_x"], by_name["base_y"])
+
+
 def _customizer_range(name: str, value: float, by_name: dict[str, float]) -> str:
     """A slider bound only when the geometry actually limits the number."""
     plate = min(by_name["base_x"], by_name["base_y"])
@@ -75,10 +95,11 @@ def _customizer_range(name: str, value: float, by_name: dict[str, float]) -> str
         return _slider(0.0, plate / 2.0 - 0.1, 0.1, value, floor_hi=True)
     hole_d = _indexed(name, "hole_", "_d")
     if hole_d:
-        return _slider(0.2, plate, 0.1, value)
+        return _slider(0.2, _face_limit(by_name, _feature_axis(by_name, "hole", hole_d)), 0.1, value)
     hole_depth = _indexed(name, "hole_", "_depth")
     if hole_depth:
-        return _slider(0.2, thick, 0.1, value)
+        span = {"X": by_name["base_x"], "Y": by_name["base_y"], "Z": thick}
+        return _slider(0.2, span[_feature_axis(by_name, "hole", hole_depth)], 0.1, value)
     csk_d = _indexed(name, "hole_", "_csk_d")
     if csk_d:
         return _slider(by_name[f"hole_{csk_d}_d"], plate, 0.1, value)
@@ -88,7 +109,7 @@ def _customizer_range(name: str, value: float, by_name: dict[str, float]) -> str
         return _slider(lo, hi, 1.0, value)
     boss = _indexed(name, "boss_", "_d")
     if boss:
-        return _slider(0.2, plate, 0.1, value)
+        return _slider(0.2, _face_limit(by_name, _feature_axis(by_name, "boss", boss)), 0.1, value)
     draft = _indexed(name, "boss_", "_draft_deg")
     if draft:
         radius = by_name[f"boss_{draft}_d"] / 2.0
@@ -157,9 +178,16 @@ def _param_lines(params: list[tuple[str, float, str]]) -> list[str]:
 
 
 def _needs_top(feats: dict) -> bool:
-    if feats["pads"] or feats["bosses"]:
+    if feats["pads"] or any(b.get("axis", "Z") == "Z" for b in feats["bosses"]):
         return True
-    return any("depth" in h or "csk_d" in h for h in feats["holes"])
+    return any(h.get("axis", "Z") == "Z" and ("depth" in h or "csk_d" in h) for h in feats["holes"])
+
+
+def _side_cylinder(prefix: str, feat: dict, diam: str, start: str, length: str) -> str:
+    point = axis_point_expr(feat["axis"], prefix, start)
+    return (f"translate([{point}])\n"
+            f"  rotate({openscad_axis_rotate(feat['axis'])})\n"
+            f"    cylinder(h={length}, d={diam});")
 
 
 def _solids(feats: dict, tol: float) -> list[str]:
@@ -184,6 +212,10 @@ def _solids(feats: dict, tol: float) -> list[str]:
         )
     for i, d in enumerate(feats["bosses"], 1):
         n = f"boss_{i}"
+        if d.get("axis", "Z") != "Z":
+            start, length = boss_span(n, d)
+            solids.append(_side_cylinder(n, d, f"{n}_d", start, length))
+            continue
         if "draft_deg" in d:
             solids.append(
                 f"translate([{n}_x, {n}_y, top])\n"
@@ -213,6 +245,10 @@ def _cuts(feats: dict) -> list[str]:
     cuts = []
     for i, d in enumerate(feats["holes"], 1):
         n = f"hole_{i}"
+        if d.get("axis", "Z") != "Z":
+            start, length = hole_cut_span(n, d)
+            cuts.append(_side_cylinder(n, d, f"{n}_d", start, length))
+            continue
         if "depth" in d:
             cuts.append(
                 f"translate([{n}_x, {n}_y, top - {n}_depth])\n"

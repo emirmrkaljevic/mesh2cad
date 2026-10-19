@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.0 — 2026-10-19
+- Parametric CadQuery and OpenSCAD export now include through-holes, blind holes, and straight cylindrical bosses whose axis is the box X or Y axis, as well as +Z. A side hole is `hole_N_d` plus the two coordinates of its axis (`hole_N_y` and `hole_N_z` for an X hole; `hole_N_x` and `hole_N_z` for a Y hole). A blind hole keeps `hole_N_depth`, measured from the face it opens on. A side boss is `boss_N_d` and `boss_N_h` on that same pattern.
+- Countersinks, drafts, and chamfers still have to be vertical. An axis that is not aligned with X, Y, or Z is refused. The script is still executed or rendered and compared with the mesh before it is written (same deviation limits); a mismatch is not written.
+- Tests: a 60×40×36 block with an Ø8 through hole along X, an Ø6 blind hole along Y, and an Ø10 boss on the +X face, clean and at 0.05 mm noise, plus a side-hole diameter edit whose volume change matches the analytic cylinder, for both exporters. With no noise the scripts match the mesh to 0.006 mm (CadQuery volume error 0.004%, OpenSCAD 0.003%). At 0.05 mm noise the check against the noisy mesh is 0.139 mm / 0.015% (CadQuery) and 0.149 mm / 0.016% (OpenSCAD), under the existing limit max(4·tol, 0.1) = 0.20 mm. The exact STEP builder does not sew this blind hole (the end disk stays in the cylinder region); STEP falls back to a valid faceted solid, Hausdorff 0.004 mm.
+
 ## 0.6.0 — 2026-10-18
 - Parametric OpenSCAD export: `mesh2cad convert in.stl --openscad out.scad` writes a Customizer-friendly `.scad` file for the same Z-up parts as the CadQuery script. Parameter names and values match (`base_t`, `hole_1_d`, `hole_1_csk_d`, `boss_1_draft_deg`, `boss_1_chamfer`, `pad_1_w`, `fillet_r`, …).
 - Plain CSG: `cube` and `cylinder` (`r1`/`r2` for a draft, chamfer, or countersink), `union` / `difference`, and `offset(r=fillet_r)` for the four vertical corners of a rectangular base. A `// [min:max]` slider is written only where the part has a real bound (hole diameter, fillet, draft, countersink angle, chamfer, pad size). Positions stay plain numbers.

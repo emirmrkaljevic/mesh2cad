@@ -76,6 +76,28 @@ def filleted_box():
     return cq.Workplane().box(30, 24, 16).edges("|Z").fillet(2)
 
 
+def side_hole_boss():
+    """60×40×36 block with three side features.
+
+    Ø8 through hole along X, axis at y=0, z=-6.
+    Ø6 blind hole, 12 deep, opening on the +Y face, axis at x=-12, z=8.
+    Ø10 boss, 8 tall, on the +X face, axis at y=10, z=8.
+    """
+    block = cq.Workplane().box(60, 40, 36).val()
+    # cutters run 1 mm past the opening so the boolean does not leave a coincident face
+    through = cq.Solid.makeCylinder(4.0, 90.0, cq.Vector(-45.0, 0.0, -6.0), cq.Vector(1, 0, 0))
+    blind = cq.Solid.makeCylinder(3.0, 13.0, cq.Vector(-12.0, 8.0, 8.0), cq.Vector(0, 1, 0))
+    boss = cq.Solid.makeCylinder(5.0, 9.0, cq.Vector(29.0, 10.0, 8.0), cq.Vector(1, 0, 0))
+    return cq.Workplane(obj=block.cut(through).cut(blind).fuse(boss))
+
+
+def angled_hole():
+    """40×40×20 block with a hole whose axis is in the XY plane but not on X or Y."""
+    block = cq.Workplane().box(40, 40, 20).val()
+    cut = cq.Solid.makeCylinder(4.0, 80.0, cq.Vector(-30.0, -14.0, 0.0), cq.Vector(1.0, 0.4, 0.0))
+    return cq.Workplane(obj=block.cut(cut))
+
+
 def filleted_bracket():
     """L-bracket extruded 12 mm; every vertical edge, including the inner corner, at r=3."""
     return (cq.Workplane("XY").polyline([(0, 0), (40, 0), (40, 8), (8, 8), (8, 30), (0, 30)])
