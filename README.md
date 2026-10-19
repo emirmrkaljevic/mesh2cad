@@ -50,7 +50,25 @@ hole_1_csk_angle = 90.0  # countersink angle
 ```
 Make the hole 2 mm bigger: set `hole_1_d = 8.0` and run it again. A plate or block whose four vertical corners share one radius also gets `fillet_r` and `.edges("|Z").fillet(fillet_r)`, so the same edit grows the round.
 
-Supported: Z-up box/plate base, rectangular pads on the top face, vertical holes (through, blind, countersunk), vertical bosses (straight, drafted, chamfered), and that one vertical corner radius. Values are rounded to clean numbers (5.997 → 6.0) when that stays within `--tol`. Before writing, the script is executed and compared with the mesh (needs `cadquery` installed); if the part is outside this vocabulary or the script deviates, nothing is written and the command exits with code 2 and the reason. Use STEP output for everything else.
+A hole or boss on a side face uses the same kind of parameter. This is the block below (60×40×36, an Ø8 hole through X, an Ø6 hole 12 deep opening on +Y, an Ø10 boss 8 tall on +X):
+
+```python
+boss_1_d     = 10.0  # diameter
+boss_1_h     = 8.0  # height from the +X face
+boss_1_y     = 10.0
+boss_1_z     = 8.0
+hole_1_d     = 8.0  # diameter (axis X)
+hole_1_y     = 0.0
+hole_1_z     = -6.0
+hole_2_d     = 6.0  # diameter (axis Y)
+hole_2_x     = -12.0
+hole_2_z     = 8.0
+hole_2_depth = 12.0  # blind depth from the +Y face
+```
+
+Set `hole_1_d = 10.0` and run the script again. The volume drops by π(5²−4²)·60 mm³, the analytic change for that through hole.
+
+Supported: a Z-up box/plate base, rectangular pads on the top face, holes along X, Y, or Z (through, blind, and countersunk when the axis is vertical), bosses along X, Y, or Z (straight, and drafted or chamfered when the axis is vertical), and that one vertical corner radius. Values are rounded to clean numbers (5.997 → 6.0) when that stays within `--tol`. Before writing, the script is executed and compared with the mesh (needs `cadquery` installed); if the part is outside this vocabulary or the script deviates, nothing is written and the command exits with code 2 and the reason. Use STEP output for everything else.
 
 ### Editable parametric OpenSCAD script
 The same parts can be written as OpenSCAD, which is what the 3D-printing Customizer on Thingiverse and Printables edits. Names and values match the CadQuery script. `--openscad` and `--cadquery` can be combined, and `-o` still writes STEP.
@@ -102,7 +120,7 @@ After, the hole is 2 mm bigger — one number changes, then re-render:
 hole_1_d = 12.0; // [0.2:0.1:30]
 ```
 
-Re-render (F6) and export STL. A drafted boss is a `cylinder` with `r1`/`r2`, a chamfer or countersink is the same, and the four vertical corners of a rectangular base are `offset(r=fillet_r)` on a smaller square, then extruded. A slider (`// [min:max]`) is added only where the part gives a bound: hole diameter up to the short side of the plate, fillet up to half that side, draft until the tip would close, countersink angle in 60–120°, chamfer up to the boss, pad size up to the base. Positions (`hole_1_x`, `base_z0`, …) stay plain numbers.
+Re-render (F6) and export STL. A drafted boss is a `cylinder` with `r1`/`r2`, a chamfer or countersink is the same, and the four vertical corners of a rectangular base are `offset(r=fillet_r)` on a smaller square, then extruded. A hole or boss whose axis is X or Y is the same `cylinder`, turned with `rotate` so it points along that axis; its parameters are the diameter and the two coordinates of the axis (`hole_1_y` / `hole_1_z` for an X hole). A slider (`// [min:max]`) is added only where the part gives a bound: hole diameter up to the shorter side of the face it is cut through, fillet up to half the short side of the plate, draft until the tip would close, countersink angle in 60–120°, chamfer up to the boss, pad size up to the base, blind depth up to the length of the hole's axis. Positions (`hole_1_x`, `base_z0`, …) stay plain numbers.
 
 Same honesty as CadQuery. Before writing, mesh2cad renders the script with the `openscad` CLI and compares the STL to the mesh (sampled Hausdorff and volume, same limits as the CadQuery check). If `openscad` is not installed the file is still written and the command says it was unverified. If the part is outside this vocabulary, or the render does not match, nothing is written and the command exits with code 2 and the reason. Circles are `$fn = 96` polygons; on these parts that is a few thousandths of a millimetre, not an analytic solid. STEP remains the path for everything else.
 
@@ -171,12 +189,16 @@ Ground-truth cadquery parts → tessellated + subdivided (≤ 2 mm edges) → Ga
 
 "exact" = valid analytic B-rep. A face count equal to the triangle count is the faceted fallback, which is still a valid solid. radius err is the worst |fitted − true| cylinder radius among seeds that came back exact, and — when the part has no fillet radius or no seed was exact. All rows are the worst of 3 seeds from `python benchmarks/run.py`. The 90° countersink (Ø6 hole, Ø12 head, 3 mm deep) at 0.2 mm noise is exact on 1 of 3 seeds. At 0.2 mm the filleted bracket falls back on every seed; the plate is exact on 2 of 3, and one of those solids is missing a corner (7 planes + 3 cylinders). The block stays a valid solid, but one seed keeps only three of the four rounds (Hausdorff 0.85 mm). CI checks the cases that are exact, plus fallbacks that must stay valid solids.
 
-## Limits (v0.6.0)
+## Limits (v0.7.0)
 Planes, cylinders, spheres, cones, and constant-radius fillets between two planes. Cylinders must end on planes perpendicular to their axis (through-holes, bosses, pins). Spheres are exact when each boundary loop is a single plane ∩ sphere circle (domes, spherical bosses, spherical pockets, and zones between two parallel planes). A sphere that runs into an edge or a cylinder falls back to the hybrid solid — vertices are still snapped onto the fitted sphere, but the face stays faceted. Cones are exact when they run between two planes perpendicular to their axis: countersinks, chamfered holes and bosses, drafted/tapered bosses. Cones may also meet a coaxial cylinder (countersunk hole, chamfered pin). A cone that ends in its apex falls back to the hybrid solid. Countersinks and narrow chamfers are exact through about 0.05 mm of noise; a 2 mm chamfer and a wide drafted wall stay exact at 0.2 mm. The countersunk plate's 90° countersink (Ø6 hole, Ø12 head, 3 mm deep) at 0.2 mm noise is exact on one of three seeds. On the other two the conical band and the hole wall meet at a single vertex, so those seeds fall back to a valid faceted solid.
 
 A fillet between two planes is a partial cylinder. When the round runs from one cap to another — rounded vertical corners of a plate or block, a single edge, the inner corner of an L as well as the outer ones — it comes back as one cylinder, tangent to both walls, with the radius in the report's cylinder faces. The radius is the one whose axis is tangent to both walls and which fits the arc; wall triangles that remain in the patch do not pull it off. On the synthetic plate (r=5 mm), block (r=2 mm) and L-bracket (r=3 mm) that rebuild is exact at 0 and 0.05 mm of noise, all three seeds. With no noise the radius error is 0.009 mm on the plate, 0.005 mm on the block and 0.006 mm on the bracket. At 0.05 mm the worst radius error is 0.041 mm on the r=2 corners, 0.100 mm on the r=5 plate and 0.131 mm on the r=3 bracket. At 0.2 mm the bracket falls back on every seed. The plate is exact on 2 of 3 seeds, and one of those solids is missing a corner. The block is a valid solid on every seed, but one seed keeps only three of the four rounds and the Hausdorff rises to 0.85 mm. Whatever does not sew stays a valid faceted solid.
 
-A fillet that runs into a spherical corner (every edge of a box filleted) is not rebuilt: the corner is a sphere octant bounded by three cylinders. A fillet between a plane and a coaxial cylinder — the base of a boss, the rim of a hole — is a torus, and is not rebuilt either. Free-form surfaces are still unsupported. CadQuery and OpenSCAD export write `fillet_r` only for the four vertical corners of a rectangular base (OpenSCAD as `offset(r=fillet_r)` on the base profile). An L-bracket fillet, a spherical corner, and a torus stay on the STEP path. The OpenSCAD file is not a general mesh reconstruction: one Z-up box, pads on its top face, vertical holes and bosses.
+A fillet that runs into a spherical corner (every edge of a box filleted) is not rebuilt: the corner is a sphere octant bounded by three cylinders. A fillet between a plane and a coaxial cylinder — the base of a boss, the rim of a hole — is a torus, and is not rebuilt either. Free-form surfaces are still unsupported. CadQuery and OpenSCAD export write `fillet_r` only for the four vertical corners of a rectangular base (OpenSCAD as `offset(r=fillet_r)` on the base profile). An L-bracket fillet, a spherical corner, and a torus stay on the STEP path.
+
+The parametric scripts are one Z-up box, pads on its top face, and holes and straight cylindrical bosses whose axis is X, Y, or Z. A through hole runs from one face of the base to the opposite face. A blind hole opens on one face; `hole_N_depth` is the distance from that face to the flat end. A side boss sits on one side face and grows straight out. Countersinks, drafts, and chamfers are still vertical only. An axis that is not aligned with X, Y, or Z is refused, and so is a side feature that does not open on a face of the base.
+
+On the 60×40×36 block (Ø8 through hole along X at y=0, z=−6; Ø6 blind hole, 12 deep, opening on +Y at x=−12, z=8; Ø10 boss, 8 tall, on +X at y=10, z=8) both scripts recover those dimensions with no noise and at 0.05 mm noise. With no noise the CadQuery script matches the mesh to 0.006 mm (volume error 0.004%) and the OpenSCAD script to 0.006 mm (volume error 0.003%). At 0.05 mm noise the check against that noisy mesh is 0.139 mm / 0.015% for CadQuery and 0.149 mm / 0.016% for OpenSCAD, under the same limit as every other script, max(4·tol, 0.1) = 0.20 mm. The blind end is not its own plane on this part (the disk stays in the cylinder region), so the depth is the median of the vertices clustered at that end. The exact STEP builder does not sew that cylinder; STEP export of this block falls back to a valid faceted solid, Hausdorff 0.004 mm from the mesh. Anything else outside this vocabulary stays on the STEP path.
 
 ## Development
 ```

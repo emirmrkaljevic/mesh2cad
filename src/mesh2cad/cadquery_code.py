@@ -2,17 +2,21 @@
 
 The vocabulary and the parameter list live in :mod:`mesh2cad.parametric`.
 Every dimension is a named parameter at the top of the script
-(``hole_1_d = 6.0``). The four vertical corners of a rectangular base, when
-they share one radius, become ``edges("|Z").fillet(fillet_r)``. Anything
-outside that vocabulary raises :class:`Unsupported`; the generated script is
-checked against the input mesh before it is returned.
+(``hole_1_d = 6.0``). Holes and bosses whose axis is X or Y are cylinders
+along that axis; +Z features stay on the XY workplane. The four vertical
+corners of a rectangular base, when they share one radius, become
+``edges("|Z").fillet(fillet_r)``. Anything outside that vocabulary raises
+:class:`Unsupported`; the generated script is checked against the input mesh
+before it is returned.
 """
 from __future__ import annotations
 
 import numpy as np
 import trimesh
 
-from .parametric import Unsupported, chamfer_is_square, deviation_problem, extract, named_parameters
+from .parametric import (Unsupported, axis_point_expr, boss_span, cadquery_axis_dir,
+                         chamfer_is_square, deviation_problem, extract, hole_cut_span,
+                         named_parameters)
 
 __all__ = ["Unsupported", "check", "extract", "render", "run_script", "to_cadquery"]
 
@@ -31,6 +35,12 @@ def render(feats: dict, tol: float = 0.01, source: str | None = None) -> str:
                     f".rect({n}_w, {n}_l).extrude({n}_h))")
     for i, d in enumerate(feats["bosses"], 1):
         n = f"boss_{i}"
+        if d.get("axis", "Z") != "Z":
+            start, length = boss_span(n, d)
+            body.append(f"result = result.union(cq.Workplane().add(cq.Solid.makeCylinder("
+                        f"{n}_d / 2, {length}, cq.Vector({axis_point_expr(d['axis'], n, start)}), "
+                        f"cq.Vector({cadquery_axis_dir(d['axis'])}))))")
+            continue
         if "draft_deg" in d:
             body.append(f"result = result.union(cq.Workplane(\"XY\", origin=({n}_x, {n}_y, top))"
                         f".circle({n}_d / 2).extrude({n}_h, taper={n}_draft_deg))")
@@ -48,6 +58,12 @@ def render(feats: dict, tol: float = 0.01, source: str | None = None) -> str:
                         f".circle({n}_d / 2).extrude({n}_h))")
     for i, d in enumerate(feats["holes"], 1):
         n = f"hole_{i}"
+        if d.get("axis", "Z") != "Z":
+            start, length = hole_cut_span(n, d)
+            body.append(f"result = result.cut(cq.Workplane().add(cq.Solid.makeCylinder("
+                        f"{n}_d / 2, {length}, cq.Vector({axis_point_expr(d['axis'], n, start)}), "
+                        f"cq.Vector({cadquery_axis_dir(d['axis'])}))))")
+            continue
         if "depth" in d:
             body.append(f"result = result.cut(cq.Workplane(\"XY\", origin=({n}_x, {n}_y, top - {n}_depth))"
                         f".circle({n}_d / 2).extrude({n}_depth + 1))")
