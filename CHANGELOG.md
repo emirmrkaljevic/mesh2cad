@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.8.0 — 2026-10-19
+- Clean CAD tessellations are segmented on the raw normals. A mesh whose dihedral angles sit on a few exact values (a CAD export with no noise, including faces that are a single quad) is no longer Taubin-smoothed, and a planar face of one or two triangles is kept. A boundary run of a single mesh edge is kept when the whole loop is coarse; a one-edge flicker between two long runs of the same region is still dropped.
+- Two coplanar patches merge only when they share an edge, so disconnected faces on one plane stay separate and the exact builder does not see a non-manifold vertex.
+- A sphere fit is rejected when the patch has fewer than eight normal directions. The side walls of a rectangular step lie on a circumsphere; they stay planes.
+- On a clean mesh, cylinder strips are chained only across a shallow facet step, and a sphere has to beat that cylinder on the vertices by a real margin. Caps are not absorbed into a cylinder they only touch at the rim.
+- `benchmarks/real_parts.py` downloads six Original Prusa i3 MK3S printed parts (Prusa Research, GPL-2.0, not vendored) and prints a fidelity table. CI skips it. `tests/test_coarse.py` converts cadquery solids tessellated once, with no subdivision.
+- plug-aligner (48 triangles, 14 planes) is exact, Hausdorff 0, 0.6 s. endstop-block is exact: 15 planes and two cylinders (R 1.65 mm and 3.10 mm), Hausdorff 0.017 mm, volume error 0.20%, 2.0 s. On 0.7.0 both were faceted-hybrid (the aligner had no fitted region; the endstop was 75 planar faces).
+- y-belt-idler, y-belt-holder, y-motor-holder and y-rod-holder stay faceted-hybrid or faceted. Each has unfitted patches (edge rounds and belt profiles; 0.5% to 6.6% of the area) and cylinders split by a groove, which is outside the vocabulary, so the exact solid is refused. They finish in 12–39 s. On 0.7.0 the holder, motor holder and rod holder did not finish within 300 s: segmentation was a few seconds, and the time was UnifySameDomain on the faceted fallback after the fit had given up.
+
 ## 0.7.0 — 2026-10-19
 - Parametric CadQuery and OpenSCAD export now include through-holes, blind holes, and straight cylindrical bosses whose axis is the box X or Y axis, as well as +Z. A side hole is `hole_N_d` plus the two coordinates of its axis (`hole_N_y` and `hole_N_z` for an X hole; `hole_N_x` and `hole_N_z` for a Y hole). A blind hole keeps `hole_N_depth`, measured from the face it opens on. A side boss is `boss_N_d` and `boss_N_h` on that same pattern.
 - Countersinks, drafts, and chamfers still have to be vertical. An axis that is not aligned with X, Y, or Z is refused. The script is still executed or rendered and compared with the mesh before it is written (same deviation limits); a mismatch is not written.

@@ -273,8 +273,28 @@ def _loops(m, label, rid):
     return loops
 
 
+def _collapse_runs(runs):
+    """Merge adjacent runs of the same region, including across the loop seam."""
+    if runs and runs[0][0] == runs[-1][0] and len(runs) > 1:
+        runs[0][1] += runs.pop()[1]
+    j = 0
+    while j < len(runs) and len(runs) > 1:
+        k = (j + 1) % len(runs)
+        if j != k and runs[j][0] == runs[k][0]:
+            runs[j][1] += runs[k][1]
+            runs.pop(k)
+            if runs and runs[0][0] == runs[-1][0] and len(runs) > 1:
+                runs[0][1] += runs.pop()[1]
+            j = 0
+        else:
+            j += 1
+    return runs
+
+
 def _runs(loop, min_run):
     labs = [s for _, _, s in loop]
+    if not labs:
+        return []
     # rotate so we start at a label change
     for i in range(len(labs)):
         if labs[i] != labs[i - 1]:
@@ -286,27 +306,31 @@ def _runs(loop, min_run):
             runs[-1][1] += 1
         else:
             runs.append([s, 1])
-    # drop flicker runs
-    changed = True
-    while changed and len(runs) > 1:
-        changed = False
-        i = min(range(len(runs)), key=lambda k: runs[k][1])
-        if runs[i][1] < min_run:
-            runs[i - 1][1] += runs[i][1]
-            runs.pop(i)
-            # merge equal neighbours
-            j = 0
-            while j < len(runs) and len(runs) > 1:
-                k = (j + 1) % len(runs)
-                if runs[j][0] == runs[k][0] and j != k:
-                    runs[j][1] += runs[k][1]
-                    runs.pop(k)
-                    j = 0
-                else:
-                    j += 1
+    runs = _collapse_runs(runs)
+    # A dense noisy boundary flickers: one or two edges of a foreign region
+    # between two long runs of the same neighbour. A CAD edge is often a
+    # single mesh edge between two different neighbours, and every run on
+    # that loop is short — dropping the shortest one deletes the corner.
+    if len(runs) > 1 and max(r[1] for r in runs) >= min_run:
+        changed = True
+        while changed and len(runs) > 1:
+            changed = False
+            victim = None
+            for i in range(len(runs)):
+                if runs[i][1] >= min_run:
+                    continue
+                prev = runs[(i - 1) % len(runs)]
+                nxt = runs[(i + 1) % len(runs)]
+                if prev[0] == nxt[0] and prev[1] >= runs[i][1] and nxt[1] >= runs[i][1]:
+                    victim = i
+                    break
+            if victim is None:
+                break
+            prev_i = (victim - 1) % len(runs)
+            runs[prev_i][1] += runs[victim][1]
+            del runs[victim]
+            runs = _collapse_runs(runs)
             changed = True
-    if runs and runs[0][0] == runs[-1][0] and len(runs) > 1:
-        runs[0][1] += runs.pop()[1]
     return [r[0] for r in runs]
 
 
