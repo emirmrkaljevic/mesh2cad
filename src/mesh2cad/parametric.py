@@ -356,10 +356,14 @@ def extract(m: trimesh.Trimesh, regions, tol: float) -> dict:
              "pads": [], "holes": [], "bosses": []}
     eps = max(3 * tol, 0.05)
     for r, z in up:
-        if r is base_r or on_stack(r) or z < ztop + eps:
-            if r is not base_r and not on_stack(r):
-                raise Unsupported("pocket or step below the top face")
+        if r is base_r or on_stack(r):
             continue
+        # a pad that crosses the top splits that face into coplanar pieces.
+        # They share z with the base top; a pocket sits below it.
+        if abs(z - ztop) <= eps:
+            continue
+        if z < ztop:
+            raise Unsupported("pocket or step below the top face")
         pv = _verts(m, r)
         e2 = max(4 * tol, 0.1)
         plo = np.array([_snap(pv[:, 0].min(), xs, e2), _snap(pv[:, 1].min(), ys, e2)])

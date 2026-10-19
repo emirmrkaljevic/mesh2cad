@@ -8,3 +8,4 @@ build/
 dist/
 out/
 docs/__pycache__/
+benchmarks/.cache/

@@ -28,18 +28,52 @@ def _neighbors(m: trimesh.Trimesh):
     return nb
 
 
+def _analytic_mesh(m: trimesh.Trimesh) -> bool:
+    """True when dihedral angles sit on a few exact values.
+
+    A CAD tessellation with no scan noise piles adjacency angles on 0° (the
+    interior of a planar face) and on the facet angles of cylinders, cones and
+    fillets. Gaussian noise spreads the same edges across the histogram, so
+    the eight busiest half-degree bins no longer cover it. Smoothing and a
+    wide grow angle are for that noisy case; on a clean tessellation they
+    rotate exact normals and weld distinct faces together.
+    """
+    ang = m.face_adjacency_angles
+    if len(ang) < 8:
+        return True
+    hist, _ = np.histogram(np.degrees(ang), bins=np.arange(0.0, 180.5, 0.5))
+    total = float(hist.sum())
+    if total <= 0:
+        return True
+    return float(np.sort(hist)[-8:].sum()) / total >= 0.75
+
+
 def segment(m: trimesh.Trimesh, tol: float, angle_deg: float = 20.0,
             min_area_frac: float = 0.002, cylinders: bool = True,
             spheres: bool = True, cones: bool = True) -> list[Region]:
     nb = _neighbors(m)
-    # segmentation runs on a denoised copy; fits use original geometry
+    # segmentation of a noisy mesh runs on a denoised copy; fits use original
+    # geometry. A clean CAD tessellation is already exact — Taubin smoothing
+    # swings those normals by tens of degrees and the planes never form.
+    analytic = _analytic_mesh(m)
     sm = m.copy()
-    trimesh.smoothing.filter_taubin(sm, iterations=10)
+    if not analytic:
+        trimesh.smoothing.filter_taubin(sm, iterations=10)
     fn, area, cen = sm.face_normals, m.area_faces, m.triangles_center
     tri = m.triangles
     label = -np.ones(len(m.faces), int)
-    cos_t = np.cos(np.radians(angle_deg))
-    dist_tol = max(3.0 * tol, 1e-9)
+    # CAD planes meet their neighbours at a sharp edge. Half a degree keeps
+    # every triangle of a planar face and leaves the next cylinder facet out.
+    grow_angle = 0.5 if analytic else angle_deg
+    cos_t = np.cos(np.radians(grow_angle))
+    if analytic:
+        dist_tol = max(1e-4 * float(m.scale), 1e-6)
+    else:
+        dist_tol = max(3.0 * tol, 1e-9)
+    # plane fragments of one CAD face are adjacent and numerically coplanar.
+    # A 3° / 3·tol merge also glues neighbouring cylinder facets together.
+    merge_ang = 0.5 if analytic else 3.0
+    merge_dist = max(1e-4 * float(m.scale), 1e-6) if analytic else None
     regions: list[Region] = []
 
     # --- planes, seeded from largest faces
@@ -75,11 +109,17 @@ def segment(m: trimesh.Trimesh, tol: float, angle_deg: float = 20.0,
     keep, leftover = [], []
     for r in regions:
         vp = m.vertices[np.unique(m.faces[r.faces])]
-        ok = (r.area >= min_area_frac * total and _minor_extent(m, r) > 0.05 * m.scale
+        # On a noisy mesh a thin strip is a slice of a cylinder and must not
+        # stay a plane. On a CAD tessellation that test deletes real walls a
+        # couple of millimetres wide, so it is skipped there. Area is checked
+        # first: a noisy mesh grows thousands of slivers, and the extent test
+        # is not free.
+        ok = (r.area >= min_area_frac * total
+              and (analytic or _minor_extent(m, r) > 0.05 * m.scale)
               and np.percentile(r.surface.distance(vp), 90) < 2.5 * tol)
         (keep if ok else leftover).append(r)
 
-    keep, leftover, strip_cyls = _claim_strip_cylinders(m, sm, keep, leftover, tol)
+    keep, leftover, strip_cyls = _claim_strip_cylinders(m, sm, keep, leftover, tol, shallow=analytic)
     keep, more = _strip_chains(m, sm, keep, tol)
     leftover += more
     fillets = []
@@ -87,29 +127,33 @@ def segment(m: trimesh.Trimesh, tol: float, angle_deg: float = 20.0,
         keep, leftover, fillets = _claim_fillets(m, sm, nb, keep, leftover, tol)
 
     # --- leftovers: give them to planes, then fit cylinders or spheres
-    out = _merge_planes(m, keep, tol) + strip_cyls + fillets
+    out = _merge_planes(m, keep, tol, ang_deg=merge_ang, dist=merge_dist,
+                        adjacent_only=analytic) + strip_cyls + fillets
     if leftover:
         left = np.concatenate([r.faces for r in leftover])
-        out = _absorb(m, nb, out + [Region(left, None, float(area[left].sum()))], tol)
+        out = _absorb(m, nb, out + [Region(left, None, float(area[left].sum()))], tol,
+                      match_normals=analytic)
         out = [r for r in out if r.surface is not None or len(r.faces)]
         rest = [r for r in out if r.surface is None]
         out = [r for r in out if r.surface is not None]
         if rest:
             left = np.concatenate([r.faces for r in rest])
-            out += _cylinder_regions(m, sm, nb, left, tol, cylinders, spheres, cones)
+            out += _cylinder_regions(m, sm, nb, left, tol, cylinders, spheres, cones,
+                                     analytic=analytic)
     for _ in range(3):
-        out = _merge_planes(m, out, tol)
-        out = _merge_cylinders(m, out, tol)
+        out = _merge_planes(m, out, tol, ang_deg=merge_ang, dist=merge_dist,
+                            adjacent_only=analytic)
+        out = _merge_cylinders(m, out, tol, adjacent_only=analytic)
         if spheres:
-            out = _promote_spheres(m, sm, out, tol)
+            out = _promote_spheres(m, sm, out, tol, analytic=analytic)
             out = _merge_spheres(m, out, tol)
         if cones:
             out = _promote_cones(m, sm, out, tol)
             out = _merge_cones(m, out, tol)
-        out = _absorb(m, nb, out, tol)
-        out = _dissolve_small(m, nb, out, tol)
+        out = _absorb(m, nb, out, tol, match_normals=analytic)
+        out = _dissolve_small(m, nb, out, tol, match_normals=analytic)
         out = [r for r in out if len(r.faces)]
-    out = _absorb(m, nb, out, tol, force_frac=0.005)
+    out = _absorb(m, nb, out, tol, force_frac=0.005, match_normals=analytic)
     if cones:
         out = _reclaim_coaxial_cones(m, sm, nb, out, tol)
     if cylinders:
@@ -153,7 +197,7 @@ def _strip_chains(m, sm, regs, tol, frac=0.05):
             [r for i, r in enumerate(regs) if i in moved])
 
 
-def _claim_strip_cylinders(m, sm, keep, leftover, tol, frac=0.05):
+def _claim_strip_cylinders(m, sm, keep, leftover, tol, frac=0.05, shallow=False):
     """Turn chains of tangent planar strips into a cylinder region.
 
     A noisy cylinder is often region-grown as strips. Two adjacent strips
@@ -173,10 +217,20 @@ def _claim_strip_cylinders(m, sm, keep, leftover, tol, frac=0.05):
         return keep, leftover, []
     g = nx.Graph()
     g.add_nodes_from(small)
+    # a facet step on a cylinder or fillet is a shallow angle. A 45°+ corner
+    # is a real edge between two planes; chaining across it poisons the fit.
+    # Noisy strips wobble past that, so the gate is only for clean tessellations.
+    step = float(np.cos(np.radians(35.0)))
     for a, b in lab[m.face_adjacency]:
         a, b = int(a), int(b)
-        if a != b and a in small and b in small:
-            g.add_edge(a, b)
+        if a == b or a not in small or b not in small:
+            continue
+        if shallow:
+            na = np.asarray(keep[a].surface.normal, float)
+            nb_ = np.asarray(keep[b].surface.normal, float)
+            if float(na @ nb_) < step:
+                continue
+        g.add_edge(a, b)
     cands = []
     for comp in nx.connected_components(g):
         comp = set(comp)
@@ -247,12 +301,21 @@ def _claim_strip_cylinders(m, sm, keep, leftover, tol, frac=0.05):
             continue
         if np.percentile(cyl.distance(pts), 90) > max(4 * tol, 0.02 * cyl.radius):
             continue
-        # a spherical cap also breaks into strips; don't steal it when the
-        # sphere explains those faces at least as well as the cylinder
+        # a spherical cap also breaks into strips; don't steal it.
+        # On a noisy mesh the centroid residual is the check the synthetic
+        # parts were tuned with. On a clean tessellation those centroids sit
+        # inside the cylinder by the sagitta, so a sphere that misses the
+        # vertices by a millimetre looks better; compare the vertices there.
         cens = m.triangles_center[faces]
         sph = fit_sphere(cens, sm.face_normals[faces])
-        if sph is not None and np.percentile(sph.distance(cens), 90) <= np.percentile(cyl.distance(cens), 90):
-            continue
+        if sph is not None:
+            if shallow:
+                steal = _better_fit(np.percentile(sph.distance(pts), 90),
+                                    np.percentile(cyl.distance(pts), 90), tol, 1.0)
+            else:
+                steal = np.percentile(sph.distance(cens), 90) <= np.percentile(cyl.distance(cens), 90)
+            if steal:
+                continue
         drop |= comp
         extra.append(Region(faces, cyl, float(m.area_faces[faces].sum())))
     if not drop:
@@ -748,6 +811,10 @@ def _reclaim_coaxial_cones(m, sm, nb, regs, tol):
         if float(np.percentile(h, 5)) <= 0:
             continue
         rmax = float(cone.radius_at(float(np.max(h))))
+        # a torus fillet between a boss and a plate is a short band that
+        # happens to sit near a cone. A real chamfer runs along the axis.
+        if float(np.max(h) - np.min(h)) < max(8.0 * tol, 0.05 * rmax):
+            continue
         if (err_v > max(5.0 * tol, 0.04 * max(rmax, 1e-6))
                 or err_c > max(3.5 * tol, 0.025 * max(rmax, 1e-6))
                 or rmax > 0.5 * m.scale):
@@ -1302,6 +1369,9 @@ def _grow_cone_faces(m, nb, regs, label, ci, cyl, cone, seed, claimed, tol, tota
 
 
 def _minor_extent(m, r):
+    # Two centroids have no width. A CAD quad is kept by the caller, which
+    # skips this test on a clean tessellation; running it here on every noisy
+    # sliver (a vertex SVD, and a mesh-cache hash) dominated segmentation.
     pts = m.triangles_center[r.faces]
     if len(pts) < 3:
         return 0.0
@@ -1317,24 +1387,49 @@ def _minor_extent(m, r):
     return float(4 * s[-1] / np.sqrt(len(q)))  # ~ full width for uniform strip
 
 
-def _merge_planes(m, regs, tol, ang_deg=3.0):
-    """Merge plane regions lying on the same plane (split by noise/edges)."""
-    planes = [r for r in regs if isinstance(r.surface, Plane)]
-    rest = [r for r in regs if not isinstance(r.surface, Plane)]
+def _merge_planes(m, regs, tol, ang_deg=3.0, dist=None, adjacent_only=False):
+    """Merge plane regions lying on the same plane (split by noise/edges).
+
+    ``adjacent_only`` keeps two coplanar CAD faces that do not share an edge
+    as two regions. Merging them makes one boundary vertex carry two loops,
+    and the exact builder rejects that as non-manifold. Faces split by a
+    noise edge do share that edge, so they still merge.
+    """
+    planes = [r for r in regs if isinstance(r.surface, Plane) and len(r.faces)]
+    rest = [r for r in regs if not isinstance(r.surface, Plane) or not len(r.faces)]
     planes.sort(key=lambda r: -r.area)
     cos_t = np.cos(np.radians(ang_deg))
+    limit = 3 * tol if dist is None else dist
+    neigh = None
+    if adjacent_only and planes:
+        label = -np.ones(len(m.faces), int)
+        for i, r in enumerate(planes):
+            label[r.faces] = i
+        neigh = [set() for _ in planes]
+        if len(m.face_adjacency):
+            a = label[m.face_adjacency[:, 0]]
+            b = label[m.face_adjacency[:, 1]]
+            mask = (a >= 0) & (b >= 0) & (a != b)
+            for i, j in zip(a[mask].tolist(), b[mask].tolist()):
+                neigh[i].add(j)
+                neigh[j].add(i)
     groups = []
-    for r in planes:
-        for g in groups:
+    for ri, r in enumerate(planes):
+        for g, nbrs in groups:
+            if neigh is not None and ri not in nbrs:
+                continue
             p = g[0].surface
             pts = m.triangles_center[r.faces]
-            if r.surface.normal @ p.normal > cos_t and np.percentile(p.distance(pts), 90) < 3 * tol:
+            if len(pts) and r.surface.normal @ p.normal > cos_t and np.percentile(p.distance(pts), 90) < limit:
                 g.append(r)
+                if nbrs is not None:
+                    nbrs.add(ri)
+                    nbrs |= neigh[ri]
                 break
         else:
-            groups.append([r])
+            groups.append(([r], None if neigh is None else set(neigh[ri])))
     out = []
-    for g in groups:
+    for g, _nbrs in groups:
         faces = np.concatenate([r.faces for r in g])
         surf = g[0].surface if len(g) == 1 else _refit(m.triangles, m.area_faces, faces, g[0].surface)
         out.append(Region(faces, surf, float(m.area_faces[faces].sum())))
@@ -1364,12 +1459,31 @@ def _merge_spheres(m, regs, tol):
     return rest + out
 
 
-def _accept_sphere(m, sm, faces, tol) -> Sphere | None:
+def _direction_count(normals, decimals=2) -> int:
+    """How many distinct normal directions a patch has, at about a degree."""
+    n = np.asarray(normals, float)
+    ln = np.linalg.norm(n, axis=1)
+    ok = ln > 1e-12
+    if not np.any(ok):
+        return 0
+    n = n[ok] / ln[ok, None]
+    return int(np.unique(np.round(n, decimals), axis=0).shape[0])
+
+
+def _accept_sphere(m, sm, faces, tol, analytic=False) -> Sphere | None:
     """Fit a sphere to faces and accept it only when it beats a plane or cylinder."""
     if len(faces) < 8 or m.area_faces[faces].sum() < 0.002 * m.area:
         return None
     cen = m.triangles_center[faces]
     nrm = sm.face_normals[faces]
+    # The corners of a rectangular step (or the side walls of a plate) lie on
+    # a circumsphere, and every face normal points away from that centre, so
+    # the fit and the normal test both pass. A real spherical patch turns
+    # from facet to facet; a handful of planar directions does not. Noisy
+    # patches are left to the residual tests — rounding their normals into
+    # a few bins drops a real cap.
+    if analytic and _direction_count(nrm) < 8:
+        return None
     sph = fit_sphere(cen, nrm)
     if sph is None:
         return None
@@ -1399,7 +1513,7 @@ def _accept_sphere(m, sm, faces, tol) -> Sphere | None:
     return sph
 
 
-def _promote_spheres(m, sm, regs, tol, frac=0.05, accept=None):
+def _promote_spheres(m, sm, regs, tol, frac=0.05, accept=None, analytic=False):
     """Merge a connected cluster of small regions when they lie on one sphere.
 
     Clean caps arrive as a single unfitted component (handled in
@@ -1434,7 +1548,7 @@ def _promote_spheres(m, sm, regs, tol, frac=0.05, accept=None):
         if len(comp) == 1 and isinstance(kinds[0], (Sphere, Cone)):
             continue
         faces = np.concatenate([regs[i].faces for i in comp])
-        sph = (accept or _accept_sphere)(m, sm, faces, tol)
+        sph = (accept or _accept_sphere)(m, sm, faces, tol, analytic=analytic)
         if sph is None:
             continue
         drop |= comp
@@ -1444,31 +1558,49 @@ def _promote_spheres(m, sm, regs, tol, frac=0.05, accept=None):
     return [r for i, r in enumerate(regs) if i not in drop] + extra
 
 
-def _merge_cylinders(m, regs, tol):
-    cyl = [r for r in regs if isinstance(r.surface, Cylinder)]
-    rest = [r for r in regs if not isinstance(r.surface, Cylinder)]
+def _merge_cylinders(m, regs, tol, adjacent_only=False):
+    cyl = [r for r in regs if isinstance(r.surface, Cylinder) and len(r.faces)]
+    rest = [r for r in regs if not isinstance(r.surface, Cylinder) or not len(r.faces)]
     cyl.sort(key=lambda r: -r.area)
+    neigh = None
+    if adjacent_only and cyl:
+        label = -np.ones(len(m.faces), int)
+        for i, r in enumerate(cyl):
+            label[r.faces] = i
+        neigh = [set() for _ in cyl]
+        if len(m.face_adjacency):
+            a = label[m.face_adjacency[:, 0]]
+            b = label[m.face_adjacency[:, 1]]
+            mask = (a >= 0) & (b >= 0) & (a != b)
+            for i, j in zip(a[mask].tolist(), b[mask].tolist()):
+                neigh[i].add(j)
+                neigh[j].add(i)
     groups = []
-    for r in cyl:
-        for g in groups:
+    for ri, r in enumerate(cyl):
+        for g, nbrs in groups:
+            if neigh is not None and ri not in nbrs:
+                continue
             c = g[0].surface
             same_axis = (abs(r.surface.axis @ c.axis) > 0.98
                          and abs(r.surface.radius - c.radius) < 0.15 * c.radius
                          and np.linalg.norm(np.cross(r.surface.point - c.point, c.axis)) < 0.15 * c.radius)
             if same_axis or np.percentile(c.distance(m.triangles_center[r.faces]), 90) < 3 * tol:
                 g.append(r)
+                if nbrs is not None:
+                    nbrs.add(ri)
+                    nbrs |= neigh[ri]
                 break
         else:
-            groups.append([r])
+            groups.append(([r], None if neigh is None else set(neigh[ri])))
     out = []
-    for g in groups:
+    for g, _nbrs in groups:
         faces = np.concatenate([r.faces for r in g])
         surf = refine_cylinder(g[0].surface, m.vertices[np.unique(m.faces[faces])])
         out.append(Region(faces, surf, float(m.area_faces[faces].sum())))
     return rest + out
 
 
-def _dissolve_small(m, nb, regs, tol, frac=0.05):
+def _dissolve_small(m, nb, regs, tol, frac=0.05, match_normals=False):
     """Small fitted regions that neighbours explain anyway get absorbed."""
     for i in np.argsort([r.area for r in regs]):
         r = regs[i]
@@ -1485,15 +1617,50 @@ def _dissolve_small(m, nb, regs, tol, frac=0.05):
             continue
         trial = list(regs)
         trial[i] = Region(r.faces, None, r.area)
-        trial = _absorb(m, nb, trial, tol)
+        trial = _absorb(m, nb, trial, tol, match_normals=match_normals)
         if 0 < len(trial[i].faces) < 0.15 * len(r.faces) or r.area < 0.002 * m.area:
-            trial = _absorb(m, nb, trial, tol, max_d=np.inf)
+            trial = _absorb(m, nb, trial, tol, max_d=np.inf, match_normals=match_normals)
         if len(trial[i].faces) == 0:
             regs = trial
     return regs
 
 
-def _absorb(m, nb, regs, tol, rounds=50, force_frac=0.0, max_d=None):
+def _matches_surface(surface, normal, point) -> bool:
+    """False when a face sits on a surface but does not belong to it.
+
+    Every vertex of a coarse polygonal cap lies on the cylinder circle, so the
+    distance test absorbs the cap into the wall and the wall no longer has a
+    boundary. The cap normal is the axis; a wall normal is not.
+    """
+    n = np.asarray(normal, float)
+    ln = float(np.linalg.norm(n))
+    if ln < 1e-12 or surface is None:
+        return False
+    n = n / ln
+    if isinstance(surface, Plane):
+        pn = np.asarray(surface.normal, float)
+        pn = pn / max(float(np.linalg.norm(pn)), 1e-12)
+        return abs(float(n @ pn)) > 0.5
+    if isinstance(surface, Cylinder):
+        axis = np.asarray(surface.axis, float)
+        axis = axis / max(float(np.linalg.norm(axis)), 1e-12)
+        return abs(float(n @ axis)) < 0.45
+    if isinstance(surface, Sphere):
+        radial = np.asarray(point, float) - np.asarray(surface.center, float)
+        ln = float(np.linalg.norm(radial))
+        if ln < 1e-12:
+            return False
+        return abs(float(n @ (radial / ln))) > 0.5
+    if isinstance(surface, Cone):
+        sn = np.asarray(surface.normal(np.asarray(point, float)[None])[0], float)
+        ln = float(np.linalg.norm(sn))
+        if ln < 1e-12:
+            return False
+        return abs(float(n @ (sn / ln))) > 0.5
+    return True
+
+
+def _absorb(m, nb, regs, tol, rounds=50, force_frac=0.0, max_d=None, match_normals=False):
     """Give faceted faces to an adjacent fitted region when they fit it."""
     label = -np.ones(len(m.faces), int)
     for i, r in enumerate(regs):
@@ -1518,10 +1685,14 @@ def _absorb(m, nb, regs, tol, rounds=50, force_frac=0.0, max_d=None):
             best, bd = None, np.inf
             for g in nb[f]:
                 j = label[g]
-                if fitted[j]:
-                    d = regs[j].surface.distance(tri[f]).max()
-                    if d < bd:
-                        best, bd = j, d
+                if not fitted[j]:
+                    continue
+                if match_normals and not _matches_surface(
+                        regs[j].surface, m.face_normals[f], m.triangles_center[f]):
+                    continue
+                d = regs[j].surface.distance(tri[f]).max()
+                if d < bd:
+                    best, bd = j, d
             if best is not None and (bd < (5 * tol if max_d is None else max_d) or force_frac > 0):
                 label[f] = best
                 changed = True
@@ -1539,7 +1710,19 @@ def _refit(tri, area, members, plane):
     return p
 
 
-def _cylinder_regions(m, sm, nb, faces, tol, cylinders, spheres=True, cones=True, crease=None):
+def _better_fit(new_err, old_err, tol, factor):
+    """True when ``new_err`` beats ``old_err`` by more than roundoff.
+
+    Two equal circles lie on a cylinder and on a sphere, and a coarse
+    tessellation of a short hole is within 1e-5 mm of both. A ratio of those
+    residuals picks the sphere. Require an absolute gap as well.
+    """
+    new_err, old_err = float(new_err), float(old_err)
+    return new_err < factor * old_err and old_err - new_err > max(0.25 * tol, 1e-4)
+
+
+def _cylinder_regions(m, sm, nb, faces, tol, cylinders, spheres=True, cones=True, crease=None,
+                      analytic=False):
     fset = set(faces.tolist())
     seen = set()
     regs = []
@@ -1562,15 +1745,38 @@ def _cylinder_regions(m, sm, nb, faces, tol, cylinders, spheres=True, cones=True
             cyl = fit_cylinder(m.triangles_center[comp], sm.face_normals[comp])
             if cyl is not None:
                 pts = m.vertices[np.unique(m.faces[comp])]
-                if (cyl.radius < 0.5 * m.scale and a >= 0.002 * m.area
-                        and np.percentile(cyl.distance(pts), 95) < max(4 * tol, 0.02 * cyl.radius)):
+                # the linear fit is a few hundredths off on a short, coarse
+                # hole, which is enough for a sphere through the same two
+                # circles to look better. Refine before that comparison.
+                # Noisy parts keep the unrefined residual: refining first
+                # lets a countersink pass as a cylinder.
+                if analytic:
+                    cyl = refine_cylinder(cyl, pts)
+                    cyl_ok = (np.isfinite(cyl.radius) and 0 < cyl.radius < 0.5 * m.scale
+                              and a >= 0.002 * m.area
+                              and np.percentile(cyl.distance(pts), 95) < max(4 * tol, 0.02 * cyl.radius))
+                else:
+                    cyl_ok = (cyl.radius < 0.5 * m.scale and a >= 0.002 * m.area
+                              and np.percentile(cyl.distance(pts), 95) < max(4 * tol, 0.02 * cyl.radius))
+                if cyl_ok:
                     surf = cyl
         if spheres:
-            sph = _accept_sphere(m, sm, comp, tol)
-            if sph is not None and (surf is None or np.percentile(
-                    sph.distance(m.vertices[np.unique(m.faces[comp])]), 95)
-                    < 0.75 * np.percentile(surf.distance(m.vertices[np.unique(m.faces[comp])]), 95)):
-                surf = sph
+            sph = _accept_sphere(m, sm, comp, tol, analytic=analytic)
+            if sph is not None:
+                if surf is None:
+                    surf = sph
+                else:
+                    pts = m.vertices[np.unique(m.faces[comp])]
+                    sph_err = np.percentile(sph.distance(pts), 95)
+                    old_err = np.percentile(surf.distance(pts), 95)
+                    # absolute gap only on a clean tessellation, where both
+                    # residuals are roundoff and a ratio picks the sphere
+                    if analytic:
+                        take = _better_fit(sph_err, old_err, tol, 0.75)
+                    else:
+                        take = sph_err < 0.75 * old_err
+                    if take:
+                        surf = sph
         if cones:
             cone = _accept_cone(m, sm, comp, tol)
             if cone is not None:
@@ -1581,9 +1787,18 @@ def _cylinder_regions(m, sm, nb, faces, tol, cylinders, spheres=True, cones=True
                     # its cone; only cylinders must win by a clear margin
                     pts = m.vertices[np.unique(m.faces[comp])]
                     factor = 0.95 if isinstance(surf, Sphere) else 0.75
-                    if np.percentile(cone.distance(pts), 95) < factor * np.percentile(surf.distance(pts), 95):
+                    cone_err = np.percentile(cone.distance(pts), 95)
+                    old_err = np.percentile(surf.distance(pts), 95)
+                    if analytic:
+                        take = _better_fit(cone_err, old_err, tol, factor)
+                    else:
+                        take = cone_err < factor * old_err
+                    if take:
                         surf = cone
-        if surf is None and len(comp) >= 3:
+        # one or two triangles are a CAD face. Three were required when a
+        # region was a dense patch; a quad never reached that.
+        min_plane = 1 if analytic else 3
+        if surf is None and len(comp) >= min_plane:
             pl = fit_plane(m.triangles[comp].reshape(-1, 3))
             if np.percentile(pl.distance(m.vertices[np.unique(m.faces[comp])]), 90) < 2.5 * tol:
                 if pl.normal @ m.face_normals[comp].mean(0) < 0:
@@ -1594,7 +1809,7 @@ def _cylinder_regions(m, sm, nb, faces, tol, cylinders, spheres=True, cones=True
             # unfitted component: split it along sharp creases and fit the pieces
             cr = _creases(m, sm, comp)
             sub = [] if cr is None else _cylinder_regions(m, sm, nb, comp, tol, cylinders,
-                                                         spheres, cones, crease=cr)
+                                                         spheres, cones, crease=cr, analytic=analytic)
             if len(sub) > 1 and any(r.surface is not None for r in sub):
                 regs += sub
                 continue
@@ -1627,6 +1842,10 @@ def _accept_cone(m, sm, faces, tol) -> Cone | None:
     if h.min() <= 0:
         return None
     rmax = float(cone.radius_at(h.max()))
+    # a short band of a torus fillet (boss meeting a plate) lies close to
+    # some cone. A chamfer, countersink or draft runs along its axis.
+    if float(h.max() - h.min()) < max(8.0 * tol, 0.05 * rmax):
+        return None
     if rmax > 0.5 * m.scale or np.linalg.norm(cone.apex - pts.mean(0)) > 2 * m.scale:
         return None
     # p90: boundary vertices of noisy strips belong half to the neighbours
