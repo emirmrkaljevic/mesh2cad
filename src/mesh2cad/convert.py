@@ -143,20 +143,35 @@ def _parametric_script(src: str, emit, tol: float | None, **kw):
     tols = [tol] if tol is not None else [f * 1e-3 * m.scale for f in (1.0, 0.4, 0.2)]
     seg = dict(cylinders=kw.get("cylinders", True), spheres=kw.get("spheres", True),
                cones=kw.get("cones", True))
-    for i, t in enumerate(tols):
+    failures = []
+    for t in tols:
         regions = segment(m, t, **seg)
         try:
             return emit(m, regions, t, source=Path(src).name)
-        except Unsupported:
-            if i == len(tols) - 1:
-                raise
+        except Unsupported as e:
+            failures.append((t, regions, e))
+    # A tighter tolerance can turn a short cylinder into a circumscribed sphere.
+    # Report the failure from the segmentation that did not do that, which is
+    # the same fit the STEP path keeps, instead of the last retry.
+    def _rank(regions):
+        penalty = 0
+        for r in regions:
+            kind = r.surface.kind if r.surface is not None else "faceted"
+            if kind == "sphere":
+                penalty += 10
+            elif kind == "faceted":
+                penalty += 5
+        return penalty
+
+    _t, _regions, err = min(failures, key=lambda item: (_rank(item[1]), -item[0]))
+    raise err
 
 
 def cadquery_file(src: str, dst: str, tol: float | None = None, **kw) -> dict:
     """Write an editable parametric CadQuery script for a simple part.
 
     Raises ``mesh2cad.parametric.Unsupported`` when the part is outside the
-    box/plate + pads + holes + bosses vocabulary or the script does not match."""
+    box/plate and straight-extrusion vocabulary, or the script does not match."""
     from pathlib import Path
 
     from .cadquery_code import to_cadquery
@@ -169,7 +184,7 @@ def openscad_file(src: str, dst: str, tol: float | None = None, **kw) -> dict:
     """Write an editable parametric OpenSCAD script for a simple part.
 
     Raises ``mesh2cad.parametric.Unsupported`` when the part is outside the
-    shared vocabulary, or when ``openscad`` is installed and the rendered STL
+    box/plate and straight-extrusion vocabulary, or when ``openscad`` is installed and the rendered STL
     does not match the mesh. If ``openscad`` is not on ``PATH`` the file is
     still written and ``verified`` is false.
     """
