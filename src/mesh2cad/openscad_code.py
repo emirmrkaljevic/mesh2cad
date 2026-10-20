@@ -4,7 +4,8 @@ Uses the same feature dict and parameter names as the CadQuery export
 (:mod:`mesh2cad.parametric`). The script is plain CSG: ``cube`` / ``cylinder``
 (with ``r1``/``r2`` for a draft or a chamfer; ``rotate`` when the axis is X or
 Y), ``difference`` / ``union``, and ``offset`` for the one vertical corner
-radius. Customizer annotations (``/* [Group] */``, ``// [min:max]``) are added
+radius. A straight extrusion is ``linear_extrude`` of ``polygon(outline)``.
+Customizer annotations (``/* [Group] */``, ``// [min:max]``) are added
 only where the part has a real bound.
 
 When the ``openscad`` program is on ``PATH``, the script is rendered to STL and
@@ -21,9 +22,10 @@ from pathlib import Path
 
 import trimesh
 
+from .extrude import profile_cutter, profile_parameters, profile_point_lists
 from .parametric import (Unsupported, axis_point_expr, boss_span, chamfer_is_square,
-                         deviation_problem, extract, hole_cut_span, named_parameters,
-                         openscad_axis_rotate)
+                         deviation_problem, hole_cut_span, named_parameters,
+                         openscad_axis_rotate, recognize)
 from .report import deviation
 
 # Chord error of a radius-8 circle at this count is about 0.004 mm, under the
@@ -303,8 +305,108 @@ def _model(feats: dict, tol: float) -> list[str]:
     return lines
 
 
+def _fmt_points_scad(pts) -> str:
+    rows = ["["]
+    for x, y in pts:
+        rows.append(f"  [{x!r}, {y!r}],")
+    rows.append("]")
+    return "\n".join(rows)
+
+
+def _profile_param_lines(feats: dict, tol: float) -> list[str]:
+    numbers = profile_parameters(feats, tol)
+    lists = profile_point_lists(feats)
+    width = max([len(n) for n, _, _ in numbers] + [len(n) for n, _, _ in lists])
+    # hole diameter slider: up to the shorter side of the outline's bounding box
+    outline = feats["profile"]["outline"]
+    span_u = max(p[0] for p in outline) - min(p[0] for p in outline)
+    span_v = max(p[1] for p in outline) - min(p[1] for p in outline)
+    face = min(span_u, span_v, feats["profile"]["length"])
+    lines = ["// --- parameters ---", "/* [Outline] */"]
+    for name, value, note in numbers:
+        if name.startswith("hole_") or name.startswith("boss_"):
+            continue
+        if note:
+            lines.append(f"// {note}")
+        lines.append(f"{name.ljust(width)} = {value!r};")
+    for name, pts, note in lists:
+        if note:
+            lines.append(f"// {note}")
+        lines.append(f"{name} = {_fmt_points_scad(pts)};")
+    hole_rows = [(n, v, note) for n, v, note in numbers if n.startswith("hole_")]
+    if hole_rows:
+        lines += ["", "/* [Holes] */"]
+        for name, value, note in hole_rows:
+            if note:
+                lines.append(f"// {note}")
+            line = f"{name.ljust(width)} = {value!r};"
+            if name.endswith("_d"):
+                slider = _slider(0.2, face, 0.1, value)
+                if slider:
+                    line += f" // {slider}"
+            lines.append(line)
+    lines += ["", "/* [Hidden] */",
+              f"$fn = {CIRCLE_SEGMENTS}; // circle segments"]
+    return lines
+
+
+def _profile_model(feats: dict) -> list[str]:
+    pr = feats["profile"]
+    axis = pr["axis"]
+    cut_lines = []
+    if pr["cutouts"]:
+        cut_lines.append("difference() {")
+        cut_lines.append("  polygon(outline);")
+        for i in range(1, len(pr["cutouts"]) + 1):
+            cut_lines.append(f"  polygon(cutout_{i});")
+        cut_lines.append("}")
+    else:
+        cut_lines.append("polygon(outline);")
+    profile_2d = "\n".join(cut_lines)
+    if axis == "Z":
+        placed = "translate([0, 0, extrude_0])\n  linear_extrude(extrude_len)\n" + _indent(profile_2d, 2)
+    elif axis == "Y":
+        # outline is (x, z). rotate 90° about X turns +Y of the polygon into +Z
+        # and the extrusion (local +Z) into -Y, starting from the far end.
+        placed = ("translate([0, extrude_0 + extrude_len, 0])\n"
+                  "  rotate([90, 0, 0])\n"
+                  "    linear_extrude(extrude_len)\n" + _indent(profile_2d, 3))
+    else:
+        # outline is (y, z), extruded along +X
+        placed = ("translate([extrude_0, 0, 0])\n"
+                  "  rotate([90, 0, 90])\n"
+                  "    linear_extrude(extrude_len)\n" + _indent(profile_2d, 3))
+    holes = []
+    for i, hole in enumerate(feats["holes"], 1):
+        n = f"hole_{i}"
+        start, length = profile_cutter(hole, "openscad")
+        holes.append(_side_cylinder(n, hole, f"{n}_d", start, length))
+    lines = ["// --- model ---", "module mesh2cad_part() {"]
+    if holes:
+        lines.append("  difference() {")
+        lines.append(_indent(placed, 2))
+        for h in holes:
+            lines.append(_indent(h, 2))
+        lines.append("  }")
+    else:
+        lines.append(_indent(placed, 1))
+    lines += ["}", "", "mesh2cad_part();", ""]
+    return lines
+
+
+def _render_profile(feats: dict, tol: float, source: str | None) -> str:
+    head = ["// Parametric OpenSCAD model generated by mesh2cad.",
+            "//",
+            f"// Source: {source}" if source else "// Edit the parameters below and re-render.",
+            "// Units are the mesh units (usually mm). Render (F6), then export STL.",
+            "//"]
+    return "\n".join(head + _profile_param_lines(feats, tol) + [""] + _profile_model(feats))
+
+
 def render(feats: dict, tol: float = 0.01, source: str | None = None) -> str:
     """Turn a feature dict into an OpenSCAD script with named parameters."""
+    if "profile" in feats:
+        return _render_profile(feats, tol, source)
     head = ["// Parametric OpenSCAD model generated by mesh2cad.",
             "//",
             f"// Source: {source}" if source else "// Edit the parameters below and re-render.",
@@ -356,7 +458,7 @@ def to_openscad(m: trimesh.Trimesh, regions, tol: float, source: str | None = No
     Returns ``(code, None)`` when OpenSCAD is not available: the script is
     still produced, and the caller reports it as unverified.
     """
-    code = render(extract(m, regions, tol), tol=tol, source=source)
+    code = render(recognize(m, regions, tol), tol=tol, source=source)
     if not verify or openscad_bin() is None:
         return code, None
     try:

@@ -61,9 +61,10 @@ def to_cadquery(input_path: str, output_path: str | None = None, tol: float | No
     """Write an editable parametric CadQuery script (.py) for a simple part.
 
     Works for a box/plate base with rectangular pads, holes along X, Y, or Z
-    (through, blind, and countersunk when the axis is vertical) and bosses
+    (through, blind, and countersunk when the axis is vertical), bosses
     along X, Y, or Z (straight, and drafted or chamfered when the axis is
-    vertical). Each dimension is a named parameter (e.g. hole_1_d = 6.0): edit
+    vertical), and a straight extrusion of a 2D outline along X, Y, or Z.
+    Each dimension is a named parameter (e.g. hole_1_d = 6.0, extrude_len): edit
     it and run the script with Python to regenerate the part. Returns the
     parameters and the measured deviation of the script's output from the mesh.
     Returns an "error" key when the part is outside that vocabulary.
@@ -83,8 +84,9 @@ def to_openscad(input_path: str, output_path: str | None = None, tol: float | No
 
     Same parts as to_cadquery: a box/plate base with rectangular pads, holes and
     bosses along X, Y, or Z (countersink, draft, and chamfer only when the axis
-    is vertical), and one radius on the four vertical corners. Parameter names
-    match the CadQuery script (hole_1_d, boss_1_h, fillet_r, ...). Edit one and
+    is vertical), one radius on the four vertical corners, and a straight
+    extrusion of a 2D outline. Parameter names match the CadQuery script
+    (hole_1_d, boss_1_h, fillet_r, extrude_len, ...). Edit one and
     render in OpenSCAD. Returns the parameters, whether the openscad CLI
     verified the script against the mesh, and the measured deviation when it
     did. Without the openscad program the script is still written and verified
