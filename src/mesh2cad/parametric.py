@@ -1,12 +1,18 @@
 """Shared vocabulary for parametric CadQuery and OpenSCAD export.
 
-Supported (axis-aligned) parts: a box/plate base, rectangular pads on its top
-face, holes along X, Y, or Z (through, blind; countersunk when the axis is
-+Z), bosses along X, Y, or Z (straight; drafted or chamfered when the axis is
-+Z), and one constant radius on all four vertical corners of the base.
-:func:`extract` turns fitted regions into one feature dict;
-:func:`named_parameters` turns that dict into the same parameter list for
-every emitter. Anything outside the vocabulary raises :class:`Unsupported`.
+Supported parts:
+
+* a Z-up box or plate, rectangular pads on its top face, holes along X, Y, or
+  Z (through, blind; countersunk when the axis is +Z), bosses along X, Y, or Z
+  (straight; drafted or chamfered when the axis is +Z), and one constant
+  radius on all four vertical corners of the base;
+* a straight extrusion of a 2D outline along X, Y, or Z, including a polygonal
+  through-opening in that outline and round through-holes.
+
+:func:`extract` is the box vocabulary. :func:`recognize` uses it when the box
+explains the solid, and otherwise tries the extrusion. :func:`named_parameters`
+is the box parameter list; extrusion parameters are produced next to the
+outline. Anything outside both vocabularies raises :class:`Unsupported`.
 """
 from __future__ import annotations
 
@@ -459,6 +465,96 @@ def extract(m: trimesh.Trimesh, regions, tol: float) -> dict:
     if fillet_regs:
         feats["fillet_r"] = _base_fillet_radius(m, fillet_regs, lo, hi, zmin, ztop, tol)
     return feats
+
+
+def _feature_volume(feats: dict) -> float:
+    """Analytic volume of a box-vocabulary feature dict."""
+    b = feats["base"]
+    v = float(b["x"]) * float(b["y"]) * float(b["t"])
+    if "fillet_r" in feats:
+        r = float(feats["fillet_r"])
+        v -= 4.0 * float(b["t"]) * r * r * (1.0 - math.pi / 4.0)
+
+    def cyl(radius, height):
+        return math.pi * radius * radius * height
+
+    def frust(r1, r2, height):
+        return math.pi * height * (r1 * r1 + r1 * r2 + r2 * r2) / 3.0
+
+    for pad in feats["pads"]:
+        v += float(pad["w"]) * float(pad["l"]) * float(pad["h"])
+    for boss in feats["bosses"]:
+        radius, height = float(boss["d"]) / 2.0, float(boss["h"])
+        if "draft_deg" in boss:
+            r2 = radius - height * math.tan(math.radians(float(boss["draft_deg"])))
+            v += frust(radius, r2, height)
+        elif "chamfer" in boss:
+            ch = float(boss["chamfer"])
+            cw = float(boss.get("chamfer_w", ch))
+            v += cyl(radius, height - ch) + frust(radius, radius - cw, ch)
+        else:
+            v += cyl(radius, height)
+    for hole in feats["holes"]:
+        radius = float(hole["d"]) / 2.0
+        ax = hole.get("axis", "Z")
+        depth = float(hole.get("depth", {"X": b["x"], "Y": b["y"], "Z": b["t"]}[ax]))
+        v -= cyl(radius, depth)
+        if "csk_d" in hole:
+            big = float(hole["csk_d"]) / 2.0
+            csk_h = (big - radius) / math.tan(math.radians(float(hole["csk_angle"]) / 2.0))
+            v -= frust(radius, big, csk_h) - cyl(radius, csk_h)
+    return v
+
+
+def _box_explains_mesh(m: trimesh.Trimesh, feats: dict) -> bool:
+    """False when the box solid is a different shape from the mesh.
+
+    An L or a notched plate still fits inside a bounding box, and
+    :func:`extract` will return that box. The volume gap is how that case is
+    told apart from a real box, pad, hole, or boss.
+    """
+    mv = abs(float(m.volume))
+    if mv < 1e-6:
+        return True
+    rel = abs(_feature_volume(feats) - mv) / mv
+    if m.is_watertight:
+        return rel <= 0.01
+    return rel <= 0.25
+
+
+# Box failures that only mean "this is not a rectangular box". An extruded
+# outline is allowed to have those, so the extrusion error replaces them.
+_BOX_SUPERSEDED = (
+    "plane that is not axis-aligned",
+    "pocket or step below the top face",
+    "downward-facing face above the bottom",
+    "no side faces",
+    "no bottom face",
+    "no top face",
+    "overhang",
+)
+
+
+def recognize(m: trimesh.Trimesh, regions, tol: float) -> dict:
+    """Box vocabulary when it matches the mesh, otherwise one extrusion."""
+    from .extrude import extract_extrusion
+
+    box_err = None
+    feats = None
+    try:
+        feats = extract(m, regions, tol)
+    except Unsupported as e:
+        box_err = e
+    if feats is not None and _box_explains_mesh(m, feats):
+        return feats
+    try:
+        return extract_extrusion(m, regions, tol)
+    except Unsupported as ext:
+        if box_err is None:
+            raise ext
+        if any(s in str(box_err) for s in _BOX_SUPERSEDED):
+            raise ext
+        raise box_err
 
 
 def chamfer_is_square(d: dict, tol: float) -> bool:

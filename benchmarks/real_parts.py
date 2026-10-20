@@ -19,7 +19,9 @@ import urllib.request
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 
 from mesh2cad.convert import convert_mesh  # noqa: E402
-from mesh2cad.io import load_mesh  # noqa: E402
+from mesh2cad.io import clean, load_mesh  # noqa: E402
+from mesh2cad.parametric import Unsupported  # noqa: E402
+from mesh2cad.segment import segment  # noqa: E402
 
 PIN = "529e5ad6892ce3b25015b7cca7f0481b8335a76c"
 BASE = (
@@ -61,12 +63,80 @@ def _stl(name):
     return path
 
 
+def _script_attempt(emit, mesh, regions, tol):
+    try:
+        _code, q = emit(mesh, regions, tol)
+    except Unsupported as e:
+        return {"ok": False, "error": str(e), "dev": None}
+    dev = None if q is None else q["max_deviation"]
+    return {"ok": True, "error": None, "dev": dev}
+
+
+def _fit_rank(regions):
+    """Prefer the segmentation the STEP path keeps.
+
+    A tighter tolerance can turn a short cylinder into a circumscribed sphere.
+    That fit is a worse explanation of the part than the looser one, so its
+    refusal (``sphere faces...``) must not hide the real reason.
+    """
+    penalty = 0
+    for r in regions:
+        kind = r.surface.kind if r.surface is not None else "faceted"
+        if kind == "sphere":
+            penalty += 10
+        elif kind == "faceted":
+            penalty += 5
+    return penalty
+
+
+def _parametric(mesh):
+    """Same tolerance retries as ``mesh2cad convert --cadquery/--openscad``.
+
+    One segmentation is shared by both exporters. A success is kept. When
+    every tolerance fails, the reported reason is the one from the
+    segmentation with the fewest spheres, then the fewest unfitted regions,
+    which is the same choice ``convert`` makes.
+    """
+    from mesh2cad.cadquery_code import to_cadquery
+    from mesh2cad.openscad_code import to_openscad
+
+    tols = [f * 1e-3 * mesh.scale for f in (1.0, 0.4, 0.2)]
+    out = {}
+    best_fail = {}
+    for t in tols:
+        regions = segment(mesh, t)
+        rank = (_fit_rank(regions), -t)
+        for kind, emit in (("cadquery", to_cadquery), ("openscad", to_openscad)):
+            if out.get(kind, {}).get("ok"):
+                continue
+            attempt = _script_attempt(emit, mesh, regions, t)
+            if attempt["ok"]:
+                out[kind] = attempt
+                continue
+            prev = best_fail.get(kind)
+            if prev is None or rank < prev[0]:
+                best_fail[kind] = (rank, attempt)
+        if all(v.get("ok") for v in out.values()) and len(out) == 2:
+            break
+    for kind, (_rank, attempt) in best_fail.items():
+        out.setdefault(kind, attempt)
+    return out
+
+
+def _cell(info):
+    if info.get("ok"):
+        dev = info["dev"]
+        return "yes", (f"{dev:.4f}" if dev is not None else "unverified")
+    return "no", "—"
+
+
 def main():
     print(
         "| part | triangles | method | output faces | regions | valid | "
         "Hausdorff | RMS | vol err % | time s |"
     )
     print("|---|---|---|---|---|---|---|---|---|---|")
+    parametric = []
     for name in PARTS:
         mesh = load_mesh(str(_stl(name)))
         t = time.perf_counter()
@@ -82,6 +152,20 @@ def main():
             f"{'yes' if r['output']['valid_solid'] else 'no'} | "
             f"{dev['hausdorff']:.4f} | {dev['rms']:.4f} | {vol_s} | {dt:.1f} |"
         )
+        parametric.append((name, _parametric(clean(mesh))))
+    print()
+    print("| part | cadquery | dev mm | openscad | dev mm |")
+    print("|---|---|---|---|---|")
+    reasons = []
+    for name, info in parametric:
+        cq, cq_dev = _cell(info["cadquery"])
+        sc, sc_dev = _cell(info["openscad"])
+        print(f"| {name} | {cq} | {cq_dev} | {sc} | {sc_dev} |")
+        if not info["cadquery"]["ok"] or not info["openscad"]["ok"]:
+            reason = info["cadquery"]["error"] or info["openscad"]["error"]
+            reasons.append(f"{name}: {reason}")
+    for line in reasons:
+        print(line)
 
 
 if __name__ == "__main__":

@@ -91,6 +91,43 @@ def side_hole_boss():
     return cq.Workplane(obj=block.cut(through).cut(blind).fuse(boss))
 
 
+def l_profile_y():
+    """L in the XZ plane, extruded 18 mm along Y, with an Ø6 hole along X.
+
+    The upright is the full height and the foot sticks out at the top, so the
+    shape is not a Z-up box with a pad. Outline (x, z):
+    (0, 0), (14, 0), (14, 16), (36, 16), (36, 28), (0, 28).
+    The hole axis is y=9, z=22, through the foot.
+    """
+    outline = [(0, 0), (14, 0), (14, 16), (36, 16), (36, 28), (0, 28)]
+    solid = (cq.Workplane(cq.Plane(origin=cq.Vector(0, 18, 0),
+                                    xDir=cq.Vector(1, 0, 0),
+                                    normal=cq.Vector(0, -1, 0)))
+             .polyline(outline).close().extrude(18))
+    hole = cq.Solid.makeCylinder(3.0, 50.0, cq.Vector(-5.0, 9.0, 22.0), cq.Vector(1, 0, 0))
+    return solid.cut(cq.Workplane().add(hole))
+
+
+def slanted_outline():
+    """50×32 outline with one slanted corner, extruded 12 mm along Z from z=-6.
+
+    Points (x, y): (0, 0), (50, 0), (50, 20), (34, 32), (0, 32).
+    An Ø8 hole through Z at (14, 12).
+    """
+    outline = [(0, 0), (50, 0), (50, 20), (34, 32), (0, 32)]
+    solid = cq.Workplane("XY").polyline(outline).close().extrude(12).translate((0, 0, -6))
+    hole = cq.Solid.makeCylinder(4.0, 30.0, cq.Vector(14.0, 12.0, -20.0), cq.Vector(0, 0, 1))
+    return solid.cut(cq.Workplane().add(hole))
+
+
+def slotted_plate():
+    """40×24×6 plate extruded along Z with a 16×8 rectangular through-slot."""
+    outer = [(0, 0), (40, 0), (40, 24), (0, 24)]
+    inner = [(8, 8), (24, 8), (24, 16), (8, 16)]
+    return (cq.Workplane("XY").polyline(outer).close().extrude(6)
+            .cut(cq.Workplane("XY").polyline(inner).close().extrude(6)))
+
+
 def angled_hole():
     """40×40×20 block with a hole whose axis is in the XY plane but not on X or Y."""
     block = cq.Workplane().box(40, 40, 20).val()

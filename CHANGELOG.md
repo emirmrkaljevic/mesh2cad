@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.0 — 2026-10-20
+- Parametric CadQuery and OpenSCAD export now write a straight extrusion of a 2D outline along X, Y, or Z. `extrude_len` and `extrude_0` are the length and the start. `outline` is the point list in the plane perpendicular to that axis. A polygonal through-slot is `cutout_N`. A round through-hole stays `hole_N_d` with the same position parameters as on a box.
+- The box, pad, fillet, countersink, and side-hole script is the one that is written when it already matches the mesh, so those parameters are unchanged.
+- Still refused, and the message says which: a boss on an extruded outline; a countersink, chamfer, or draft on that outline; a rounded edge; two extrusions stacked on the same axis; a hole that does not pass through; a sphere; an unfitted region; a cross-section that changes along the part.
+- plug-aligner (48 triangles, 7.3×17.7×5.5 mm) exports both scripts. The self-check deviation is 0.0000 mm. endstop-block does not: along X, 4 faces are tilted (largest 65 mm²); along Y, 4 faces are tilted (largest 73 mm²); along Z, 3 faces are tilted (largest 73 mm²). The other four Prusa parts still have unfitted regions. `benchmarks/real_parts.py` prints this next to the STEP table. A tighter tolerance that turns the endstop's short counterbore into a sphere is not the reason that gets reported.
+- Tests: an L extruded along Y with a through hole, a chamfered outline extruded along Z with a hole, and a plate with a rectangular slot, clean and at 0.05 mm noise, for both exporters. Editing one hole diameter and `extrude_len` changes the volume by the analytic amount.
+
 ## 0.8.0 — 2026-10-19
 - Clean CAD tessellations are segmented on the raw normals. A mesh whose dihedral angles sit on a few exact values (a CAD export with no noise, including faces that are a single quad) is no longer Taubin-smoothed, and a planar face of one or two triangles is kept. A boundary run of a single mesh edge is kept when the whole loop is coarse; a one-edge flicker between two long runs of the same region is still dropped.
 - Two coplanar patches merge only when they share an edge, so disconnected faces on one plane stay separate and the exact builder does not see a non-manifold vertex.
