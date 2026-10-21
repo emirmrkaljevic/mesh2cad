@@ -5,6 +5,9 @@ Uses the same feature dict and parameter names as the CadQuery export
 (with ``r1``/``r2`` for a draft or a chamfer; ``rotate`` when the axis is X or
 Y), ``difference`` / ``union``, and ``offset`` for the one vertical corner
 radius. A straight extrusion is ``linear_extrude`` of ``polygon(outline)``.
+Several of those, cut or intersected, are the same polygons under
+``intersection`` / ``difference``, and a counterbored hole is a second
+cylinder. A face tilted to X, Y, and Z is one planar clip.
 Customizer annotations (``/* [Group] */``, ``// [min:max]``) are added
 only where the part has a real bound.
 
@@ -22,10 +25,11 @@ from pathlib import Path
 
 import trimesh
 
-from .extrude import profile_cutter, profile_parameters, profile_point_lists
-from .parametric import (Unsupported, axis_point_expr, boss_span, chamfer_is_square,
-                         deviation_problem, hole_cut_span, named_parameters,
-                         openscad_axis_rotate, recognize)
+from .extrude import (profile_cbore_cutter, profile_cutter, profile_parameters,
+                      profile_point_lists)
+from .parametric import (Unsupported, axis_point_expr, boss_span, cbore_cut_span,
+                         chamfer_is_square, deviation_problem, hole_cut_span,
+                         named_parameters, openscad_axis_rotate, recognize)
 from .report import deviation
 
 # Chord error of a radius-8 circle at this count is about 0.004 mm, under the
@@ -109,6 +113,14 @@ def _customizer_range(name: str, value: float, by_name: dict[str, float]) -> str
     if csk_a and 30.0 <= value <= 150.0:
         lo, hi = (60.0, 120.0) if 60.0 <= value <= 120.0 else (30.0, 150.0)
         return _slider(lo, hi, 1.0, value)
+    cbore_d = _indexed(name, "hole_", "_cbore_d")
+    if cbore_d:
+        return _slider(by_name.get(f"hole_{cbore_d}_d", 0.2),
+                       _face_limit(by_name, _feature_axis(by_name, "hole", cbore_d)), 0.1, value)
+    cbore_depth = _indexed(name, "hole_", "_cbore_depth")
+    if cbore_depth:
+        span = {"X": by_name["base_x"], "Y": by_name["base_y"], "Z": thick}
+        return _slider(0.2, span[_feature_axis(by_name, "hole", cbore_depth)], 0.1, value)
     boss = _indexed(name, "boss_", "_d")
     if boss:
         return _slider(0.2, _face_limit(by_name, _feature_axis(by_name, "boss", boss)), 0.1, value)
@@ -182,7 +194,9 @@ def _param_lines(params: list[tuple[str, float, str]]) -> list[str]:
 def _needs_top(feats: dict) -> bool:
     if feats["pads"] or any(b.get("axis", "Z") == "Z" for b in feats["bosses"]):
         return True
-    return any(h.get("axis", "Z") == "Z" and ("depth" in h or "csk_d" in h) for h in feats["holes"])
+    return any(h.get("axis", "Z") == "Z" and (
+        "depth" in h or "csk_d" in h or ("cbore_d" in h and h.get("from", 1) > 0)
+    ) for h in feats["holes"])
 
 
 def _side_cylinder(prefix: str, feat: dict, diam: str, start: str, length: str) -> str:
@@ -250,6 +264,9 @@ def _cuts(feats: dict) -> list[str]:
         if d.get("axis", "Z") != "Z":
             start, length = hole_cut_span(n, d)
             cuts.append(_side_cylinder(n, d, f"{n}_d", start, length))
+            if "cbore_d" in d:
+                c0, clen = cbore_cut_span(n, d)
+                cuts.append(_side_cylinder(n, d, f"{n}_cbore_d", c0, clen))
             continue
         if "depth" in d:
             cuts.append(
@@ -261,6 +278,17 @@ def _cuts(feats: dict) -> list[str]:
                 f"translate([{n}_x, {n}_y, base_z0 - 1])\n"
                 f"  cylinder(h=base_t + 2, d={n}_d);"
             )
+        if "cbore_d" in d:
+            if d.get("from", 1) > 0:
+                cuts.append(
+                    f"translate([{n}_x, {n}_y, top - {n}_cbore_depth])\n"
+                    f"  cylinder(h={n}_cbore_depth + 1, d={n}_cbore_d);"
+                )
+            else:
+                cuts.append(
+                    f"translate([{n}_x, {n}_y, base_z0 - 1])\n"
+                    f"  cylinder(h={n}_cbore_depth + 1, d={n}_cbore_d);"
+                )
         if "csk_d" in d:
             cuts.append(
                 f"translate([{n}_x, {n}_y, top - {n}_csk_h])\n"
@@ -340,10 +368,17 @@ def _profile_param_lines(feats: dict, tol: float) -> list[str]:
             if note:
                 lines.append(f"// {note}")
             line = f"{name.ljust(width)} = {value!r};"
-            if name.endswith("_d"):
+            if name.endswith("_cbore_d"):
+                stem = name[: -len("_cbore_d")]
+                slider = _slider(by_name.get(f"{stem}_d", 0.2), max(face, value), 0.1, value)
+            elif name.endswith("_cbore_depth"):
+                slider = _slider(0.2, feats["profile"]["length"], 0.1, value)
+            elif name.endswith("_d"):
                 slider = _slider(0.2, face, 0.1, value)
-                if slider:
-                    line += f" // {slider}"
+            else:
+                slider = ""
+            if slider:
+                line += f" // {slider}"
             lines.append(line)
     lines += ["", "/* [Hidden] */",
               f"$fn = {CIRCLE_SEGMENTS}; // circle segments"]
@@ -381,6 +416,9 @@ def _profile_model(feats: dict) -> list[str]:
         n = f"hole_{i}"
         start, length = profile_cutter(hole, "openscad")
         holes.append(_side_cylinder(n, hole, f"{n}_d", start, length))
+        if "cbore_d" in hole:
+            c0, clen = profile_cbore_cutter(hole, n, "openscad")
+            holes.append(_side_cylinder(n, hole, f"{n}_cbore_d", c0, clen))
     lines = ["// --- model ---", "module mesh2cad_part() {"]
     if holes:
         lines.append("  difference() {")
@@ -405,6 +443,9 @@ def _render_profile(feats: dict, tol: float, source: str | None) -> str:
 
 def render(feats: dict, tol: float = 0.01, source: str | None = None) -> str:
     """Turn a feature dict into an OpenSCAD script with named parameters."""
+    if "csg" in feats:
+        from .csg import render_openscad
+        return render_openscad(feats, tol, source)
     if "profile" in feats:
         return _render_profile(feats, tol, source)
     head = ["// Parametric OpenSCAD model generated by mesh2cad.",
