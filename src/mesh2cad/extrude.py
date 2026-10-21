@@ -15,7 +15,7 @@ import numpy as np
 import trimesh
 
 from .fit import Cone, Cylinder, Plane, Sphere
-from .parametric import Unsupported, _nice, _principal_axis, _snap
+from .parametric import Segment, Unsupported, _nice, _plain_or_counterbore, _principal_axis, _snap
 from .segment import _partial_span
 
 # Right-handed profile coordinates, in the order stored in ``outline``.
@@ -455,10 +455,42 @@ def _outward(mesh, region, cyl) -> bool:
     return float(np.mean(np.sum(mesh.face_normals[region.faces] * radial, axis=1))) > 0
 
 
+def _perp_dist(axis: int, p, q) -> float:
+    d = np.asarray(p, float) - np.asarray(q, float)
+    d[axis] = 0.0
+    return float(np.linalg.norm(d))
+
+
+def _hole_segments(m, regs, ax, tol):
+    """Axial pieces of one coaxial hole. The caller snaps the ends onto planes."""
+    segs = []
+    for r in regs:
+        s = r.surface
+        verts = m.vertices[np.unique(m.faces[r.faces])]
+        along = verts[:, ax]
+        segs.append(Segment("cylinder", float(along.min()), float(along.max()),
+                            float(s.radius), float(s.radius)))
+    segs.sort(key=lambda s: s.za)
+    gap = _eps(tol)
+    for a, b in zip(segs, segs[1:]):
+        if abs(a.zb - b.za) <= gap:
+            mid = 0.5 * (a.zb + b.za)
+            a.zb = b.za = mid
+    return segs
+
+
+def _apply_cbore(feat, stepped):
+    if "cbore_d" in stepped:
+        feat["cbore_d"] = stepped["cbore_d"]
+        feat["cbore_depth"] = stepped["cbore_depth"]
+        feat["from"] = stepped["from"]
+    return feat
+
+
 def _cylinder_features(m, regions, tol, axis, origin, length, outline, cutouts):
-    """Through-holes whose axis is X, Y, or Z. Bosses and partial rounds are refused."""
+    """Through-holes and counterbored through-holes. Bosses and fillets are refused."""
     U, V = _PROFILE_AXES[axis]
-    holes = []
+    cyl_regs = []
     for r in regions:
         s = r.surface
         if not isinstance(s, Cylinder) or not len(r.faces):
@@ -473,58 +505,94 @@ def _cylinder_features(m, regions, tol, axis, origin, length, outline, cutouts):
             raise Unsupported("a rounded edge is not part of an editable outline")
         if _outward(m, r, s):
             raise Unsupported("a boss on an extruded outline is not supported yet")
-        verts = m.vertices[np.unique(m.faces[r.faces])]
-        along = verts[:, ax]
-        za, zb = float(along.min()), float(along.max())
-        name = _AXIS_NAME[ax]
+        cyl_regs.append(r)
+    # snap targets: planes perpendicular to each axis
+    plane_coords = {0: [], 1: [], 2: []}
+    for r in regions:
+        s = r.surface
+        if isinstance(s, Plane) and r.area >= _min_area(m):
+            for ax in range(3):
+                if _attitude(s.normal, ax, 4.0) == "cap":
+                    plane_coords[ax].append(_plane_coord(s, ax))
+    groups = []
+    gtol = _eps(tol, 0.35)
+    for r in cyl_regs:
+        s = r.surface
+        ax = _principal_axis(s.axis)
         pt = np.asarray(s.point, float)
+        for g in groups:
+            if g["axis"] == ax and _perp_dist(ax, g["point"], pt) <= gtol:
+                g["regs"].append(r)
+                g["point"] = g["point"] + pt
+                g["n"] += 1
+                break
+        else:
+            groups.append({"axis": ax, "point": pt.copy(), "regs": [r], "n": 1})
+    holes = []
+    gap = _eps(tol)
+    for g in groups:
+        ax = g["axis"]
+        pt = g["point"] / g["n"]
+        segs = _hole_segments(m, g["regs"], ax, tol)
+        for s in segs:
+            s.za = _snap(s.za, plane_coords[ax], gap)
+            s.zb = _snap(s.zb, plane_coords[ax], gap)
+        for a, b in zip(segs, segs[1:]):
+            if abs(a.zb - b.za) <= gap:
+                mid = 0.5 * (a.zb + b.za)
+                a.zb = b.za = mid
+        name = _AXIS_NAME[ax]
         if ax == axis:
             uv = (float(pt @ U), float(pt @ V))
             if not _inside_profile(uv, outline, cutouts):
                 raise Unsupported("hole is outside the extruded outline")
-            covered = abs(za - origin) <= _eps(tol) and abs(zb - (origin + length)) <= _eps(tol)
-            if not covered:
-                raise Unsupported("hole along the extrusion does not pass through both ends")
-            span_kind = "extrude"
-            feat = {"d": 2.0 * float(s.radius), "axis": name, "span": span_kind}
+            stepped = _plain_or_counterbore(segs, origin, origin + length, gap)
+            if stepped is None:
+                if len(segs) == 1:
+                    raise Unsupported("hole along the extrusion does not pass through both ends")
+                raise Unsupported("stepped hole is not a counterbored through-hole")
+            feat = {"d": stepped["d"], "axis": name, "span": "extrude"}
             for i, coord in enumerate("xyz"):
                 if i != ax:
                     feat[coord] = float(pt[i])
-            holes.append(feat)
+            holes.append(_apply_cbore(feat, stepped))
             continue
-        # perpendicular to the extrusion: the profile coordinate that is not
-        # the hole axis is fixed, and the hole has to cross every solid interval
         profile_axes = [i for i in range(3) if i != axis]
-        # the hole varies along `ax`, so the fixed profile axis is the other one
         fixed_world = profile_axes[0] if profile_axes[1] == ax else profile_axes[1]
-        fixed_index = profile_axes.index(fixed_world)  # 0 or 1 in (u, v)
+        fixed_index = profile_axes.index(fixed_world)
         value = float(pt[fixed_world])
         intervals = _material_intervals(outline, cutouts, fixed_index, value)
         if not intervals:
             raise Unsupported("hole is outside the extruded outline")
         lim = _eps(tol, 0.35)
+        za = min(s.za for s in segs)
+        zb = max(s.zb for s in segs)
         if not all(za - lim <= a and b <= zb + lim for a, b in intervals):
             raise Unsupported("hole does not pass through the extruded profile")
-        # also the cylinder itself must lie inside the extrusion's length
-        # (its axis point's extrusion coordinate is between the caps)
         if not (origin - lim <= float(pt[axis]) <= origin + length + lim):
             raise Unsupported("hole is outside the extruded profile")
-        vary_index = 1 - fixed_index
-        span_kind = ("outline", vary_index)
-        feat = {"d": 2.0 * float(s.radius), "axis": name, "span": span_kind}
+        # one contiguous run of material: the counterbore opens on one side of it
+        lo = min(a for a, _b in intervals)
+        hi = max(b for _a, b in intervals)
+        stepped = _plain_or_counterbore(segs, lo, hi, gap)
+        if stepped is None:
+            if len(segs) == 1:
+                raise Unsupported("hole does not pass through the extruded profile")
+            raise Unsupported("stepped hole is not a counterbored through-hole")
+        feat = {"d": stepped["d"], "axis": name, "span": ("outline", 1 - fixed_index)}
         for i, coord in enumerate("xyz"):
             if i != ax:
                 feat[coord] = float(pt[i])
-        holes.append(feat)
+        holes.append(_apply_cbore(feat, stepped))
     holes.sort(key=lambda h: (h["axis"], h.get("x", 0.0), h.get("y", 0.0), h.get("z", 0.0)))
     return holes
 
 
-def profile_cutter(hole: dict, lang: str) -> tuple[str, str]:
-    """``(start, length)`` of a through-hole cutter along its axis, past the ends by 1."""
+def profile_extent(hole: dict, lang: str) -> tuple[str, str]:
+    """``(low, high)`` of the material a hole passes through, as script expressions."""
     span = hole["span"]
     if span == "extrude":
-        return "extrude_0 - 1", "extrude_len + 2"
+        return "extrude_0", "(extrude_0 + extrude_len)"
     idx = span[1]
     if lang == "cadquery":
         lo = f"min(p[{idx}] for p in outline)"
@@ -532,7 +600,21 @@ def profile_cutter(hole: dict, lang: str) -> tuple[str, str]:
     else:
         lo = f"min([for (p = outline) p[{idx}]])"
         hi = f"max([for (p = outline) p[{idx}]])"
+    return lo, hi
+
+
+def profile_cutter(hole: dict, lang: str) -> tuple[str, str]:
+    """``(start, length)`` of a through-hole cutter along its axis, past the ends by 1."""
+    lo, hi = profile_extent(hole, lang)
     return f"({lo} - 1)", f"({hi} - ({lo}) + 2)"
+
+
+def profile_cbore_cutter(hole: dict, name: str, lang: str) -> tuple[str, str]:
+    """``(start, length)`` of the counterbore, overlapping the face it opens on by 1."""
+    lo, hi = profile_extent(hole, lang)
+    if hole.get("from", 1) < 0:
+        return f"({lo} - 1)", f"{name}_cbore_depth + 1"
+    return f"({hi} - {name}_cbore_depth)", f"{name}_cbore_depth + 1"
 
 
 def profile_parameters(feats: dict, tol: float) -> list[tuple[str, float, str]]:
@@ -549,6 +631,11 @@ def profile_parameters(feats: dict, tol: float) -> list[tuple[str, float, str]]:
         for coord in "xyz":
             if coord != d["axis"].lower() and coord in d:
                 P.append((f"{n}_{coord}", _nice(d[coord], tol), ""))
+        if "cbore_d" in d:
+            end = f"{'+' if d.get('from', 1) > 0 else '-'}{d['axis']}"
+            P.append((f"{n}_cbore_d", _nice(d["cbore_d"], tol), "counterbore diameter"))
+            P.append((f"{n}_cbore_depth", _nice(d["cbore_depth"], tol),
+                      f"counterbore depth from the {end} end"))
     return P
 
 

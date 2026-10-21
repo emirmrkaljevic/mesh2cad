@@ -93,7 +93,8 @@ def main(argv=None) -> int:
     c.add_argument("--json", action="store_true", help="print full report as JSON")
     c.add_argument("--cadquery", metavar="OUT.py",
                    help="write an editable parametric CadQuery script instead of STEP "
-                        "(add -o to also write STEP); box/plate parts and straight extrusions")
+                        "(add -o to also write STEP); boxes, straight extrusions, "
+                        "and a small boolean of those")
     c.add_argument("--openscad", metavar="OUT.scad",
                    help="write an editable parametric OpenSCAD script instead of STEP "
                         "(add -o to also write STEP); same parts as --cadquery")

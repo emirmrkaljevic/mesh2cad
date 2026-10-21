@@ -128,6 +128,47 @@ def slotted_plate():
             .cut(cq.Workplane("XY").polyline(inner).close().extrude(6)))
 
 
+def orthogonal_intersection():
+    """Intersection of a Z extrusion and an X extrusion, with an Ø6 hole along Y.
+
+    Z: z=0..12, outline (x, y) = (0, 0), (40, 0), (40, 16), (28, 28), (0, 28).
+    X: x=-4, length 48, outline (y, z) = (0, -2), (28, -2), (28, 6), (18, 6),
+    (18, 20), (0, 20).     The hole axis is y=10, z=4 and it passes through x. The Ø6 disk sits inside
+    the profile, so Ø8 still does.
+    """
+    z_outline = [(0, 0), (40, 0), (40, 16), (28, 28), (0, 28)]
+    z_solid = cq.Workplane("XY").polyline(z_outline).close().extrude(12)
+    yz = [(0, -2), (28, -2), (28, 6), (18, 6), (18, 20), (0, 20)]
+    x_solid = (cq.Workplane(cq.Plane(origin=cq.Vector(-4, 0, 0),
+                                      xDir=cq.Vector(0, 1, 0),
+                                      normal=cq.Vector(1, 0, 0)))
+               .polyline(yz).close().extrude(48))
+    hole = cq.Solid.makeCylinder(3.0, 60.0, cq.Vector(-10.0, 10.0, 4.0), cq.Vector(1, 0, 0))
+    return z_solid.intersect(x_solid).cut(cq.Workplane().add(hole))
+
+
+def cut_block():
+    """56×36×18 block with a slot cut along X and an Ø6 through-hole along Y.
+
+    The block is extruded along Z from z=0. The slot starts at x=12, runs 28 mm,
+    and its profile in YZ is (10, 8), (24, 8), (24, 22), (10, 22), so it opens
+    on the top face. The hole axis is x=6, z=4, outside the slot.
+    """
+    base = (cq.Workplane("XY").polyline([(0, 0), (56, 0), (56, 36), (0, 36)])
+            .close().extrude(18))
+    slot = (cq.Workplane(cq.Plane(origin=cq.Vector(12, 0, 0),
+                                   xDir=cq.Vector(0, 1, 0),
+                                   normal=cq.Vector(1, 0, 0)))
+            .polyline([(10, 8), (24, 8), (24, 22), (10, 22)]).close().extrude(28))
+    hole = cq.Solid.makeCylinder(3.0, 50.0, cq.Vector(6.0, -7.0, 4.0), cq.Vector(0, 1, 0))
+    return base.cut(slot).cut(cq.Workplane().add(hole))
+
+
+def counterbored_plate():
+    """40×28×14 plate with an Ø6 through-hole and an Ø12 counterbore, 4 mm deep."""
+    return cq.Workplane("XY").box(40, 28, 14).faces(">Z").workplane().cboreHole(6, 12, 4)
+
+
 def angled_hole():
     """40×40×20 block with a hole whose axis is in the XY plane but not on X or Y."""
     block = cq.Workplane().box(40, 40, 20).val()

@@ -7,12 +7,18 @@ Supported parts:
   (straight; drafted or chamfered when the axis is +Z), and one constant
   radius on all four vertical corners of the base;
 * a straight extrusion of a 2D outline along X, Y, or Z, including a polygonal
-  through-opening in that outline and round through-holes.
+  through-opening in that outline and round through-holes;
+* a counterbored through-hole (a larger cylinder opening on one face, the
+  smaller one continuing through);
+* a small boolean of those extrusions: the intersection of outlines extruded
+  along X, Y, or Z, or one extrusion minus cut extrusions along the other
+  axes, plus a planar clip where a single face is tilted to all three axes.
 
 :func:`extract` is the box vocabulary. :func:`recognize` uses it when the box
-explains the solid, and otherwise tries the extrusion. :func:`named_parameters`
-is the box parameter list; extrusion parameters are produced next to the
-outline. Anything outside both vocabularies raises :class:`Unsupported`.
+explains the solid, then one extrusion, then the combined extrusion.
+:func:`named_parameters` is the box parameter list; extrusion parameters are
+produced next to the outline. Anything outside these vocabularies raises
+:class:`Unsupported`.
 """
 from __future__ import annotations
 
@@ -22,7 +28,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import trimesh
 
-from .fit import Cone, Cylinder, Plane
+from .fit import Cone, Cylinder, Plane, Sphere
 from .segment import _partial_span
 
 Z = np.array([0.0, 0.0, 1.0])
@@ -245,6 +251,35 @@ def _axis_name(axis: int) -> str:
     return "XYZ"[axis]
 
 
+def _plain_or_counterbore(segs, lo: float, hi: float, eps: float) -> dict | None:
+    """A through cylinder, or a counterbored through-hole, spanning ``lo``..``hi``.
+
+    ``segs`` are sorted along the axis. A counterbore is the larger cylinder
+    opening on one end and the smaller one continuing to the other end.
+    Returns None when the stack is a blind hole or not this pattern; the
+    caller still handles blind holes and countersinks.
+    """
+    if not segs or any(getattr(s, "kind", "cylinder") != "cylinder" for s in segs):
+        return None
+    if len(segs) == 1:
+        c = segs[0]
+        if abs(c.za - lo) <= eps and abs(c.zb - hi) <= eps:
+            return {"d": 2.0 * float(c.ra)}
+        return None
+    if len(segs) != 2:
+        return None
+    a, b = segs
+    if abs(a.zb - b.za) > eps or abs(a.za - lo) > eps or abs(b.zb - hi) > eps:
+        return None
+    if float(b.ra) > float(a.ra) + eps:
+        return {"d": 2.0 * float(a.ra), "cbore_d": 2.0 * float(b.ra),
+                "cbore_depth": float(b.zb - b.za), "from": 1}
+    if float(a.ra) > float(b.ra) + eps:
+        return {"d": 2.0 * float(b.ra), "cbore_d": 2.0 * float(a.ra),
+                "cbore_depth": float(a.zb - a.za), "from": -1}
+    return None
+
+
 def _face_name(axis: str, sign: int) -> str:
     return f"{'+' if sign > 0 else '-'}{axis}"
 
@@ -279,6 +314,15 @@ def hole_cut_span(prefix: str, hole: dict) -> tuple[str, str]:
     if hole["from"] < 0:
         return f"{lo} - 1", f"{prefix}_depth + 1"
     return f"{hi} - {prefix}_depth", f"{prefix}_depth + 1"
+
+
+def cbore_cut_span(prefix: str, hole: dict) -> tuple[str, str]:
+    """Start and length of a counterbore cutter, along +axis, overlapping the mouth by 1."""
+    ax = hole.get("axis", "Z")
+    lo, hi = base_low_expr(ax), base_high_expr(ax)
+    if hole.get("from", 1) < 0:
+        return f"{lo} - 1", f"{prefix}_cbore_depth + 1"
+    return f"{hi} - {prefix}_cbore_depth", f"{prefix}_cbore_depth + 1"
 
 
 def boss_span(prefix: str, boss: dict) -> tuple[str, str]:
@@ -339,7 +383,8 @@ def extract(m: trimesh.Trimesh, regions, tol: float) -> dict:
     for r in planes:
         nz = r.surface.normal @ Z
         z = _plane_pos(r.surface)[2] if abs(nz) > 0.99 else 0.0
-        if nz < -0.999 and z > zmin + max(3 * tol, 0.05):
+        # a counterbore floor faces into the hole; it is on a stack, not an overhang
+        if nz < -0.999 and z > zmin + max(3 * tol, 0.05) and not on_stack(r):
             raise Unsupported("downward-facing face above the bottom (overhang)")
         if nz > 0.999:
             up.append((r, z))
@@ -389,14 +434,27 @@ def extract(m: trimesh.Trimesh, regions, tol: float) -> dict:
         if st.axis != 2:
             if not _cross_section_ok(st):
                 raise Unsupported("side feature axis is outside the base")
+            if st.outward and (len(g) != 1 or g[0].kind != "cylinder"):
+                raise Unsupported("side boss is not a plain cylinder")
+            if not st.outward and any(s.kind != "cylinder" for s in g):
+                raise Unsupported("side hole is not a plain cylinder")
+            lo_a, hi_a = box_lo[st.axis], box_hi[st.axis]
+            stepped = None if st.outward else _plain_or_counterbore(g, lo_a, hi_a, eps)
+            if stepped and "cbore_d" in stepped:
+                feat = {name: float(st.point[i]) for i, name in enumerate("xyz") if i != st.axis}
+                feat["d"] = stepped["d"]
+                feat["axis"] = _axis_name(st.axis)
+                feat["cbore_d"] = stepped["cbore_d"]
+                feat["cbore_depth"] = stepped["cbore_depth"]
+                feat["from"] = stepped["from"]
+                feats["holes"].append(feat)
+                continue
             if len(g) != 1 or g[0].kind != "cylinder":
-                kind = "hole" if not st.outward else "boss"
-                raise Unsupported(f"side {kind} is not a plain cylinder")
+                raise Unsupported("side hole is not a plain or counterbored cylinder")
             c = g[0]
             feat = {name: float(st.point[i]) for i, name in enumerate("xyz") if i != st.axis}
             feat["d"] = 2 * c.ra
             feat["axis"] = _axis_name(st.axis)
-            lo_a, hi_a = box_lo[st.axis], box_hi[st.axis]
             if not st.outward:
                 on_lo = abs(c.za - lo_a) <= eps
                 on_hi = abs(c.zb - hi_a) <= eps
@@ -425,9 +483,17 @@ def extract(m: trimesh.Trimesh, regions, tol: float) -> dict:
             continue
         if not st.outward:
             h = dict(x=st.x, y=st.y, axis="Z")
+            stepped = _plain_or_counterbore(g, zmin, ztop, eps)
+            if stepped and "cbore_d" in stepped:
+                h["d"] = stepped["d"]
+                h["cbore_d"] = stepped["cbore_d"]
+                h["cbore_depth"] = stepped["cbore_depth"]
+                h["from"] = stepped["from"]
+                feats["holes"].append(h)
+                continue
             cyl = [s for s in g if s.kind == "cylinder"]
             if len(cyl) != 1 or cyl[0] is not g[0]:
-                raise Unsupported("hole profile is not a plain or countersunk hole")
+                raise Unsupported("hole profile is not a plain, counterbored or countersunk hole")
             c = cyl[0]
             h["d"] = 2 * c.ra
             top_of_hole = c.zb
@@ -503,6 +569,9 @@ def _feature_volume(feats: dict) -> float:
             big = float(hole["csk_d"]) / 2.0
             csk_h = (big - radius) / math.tan(math.radians(float(hole["csk_angle"]) / 2.0))
             v -= frust(radius, big, csk_h) - cyl(radius, csk_h)
+        if "cbore_d" in hole:
+            big = float(hole["cbore_d"]) / 2.0
+            v -= math.pi * (big * big - radius * radius) * float(hole["cbore_depth"])
     return v
 
 
@@ -535,9 +604,55 @@ _BOX_SUPERSEDED = (
 )
 
 
+def _flatten_planar_spheres(m, regions, tol):
+    """Read a sphere as a plane when the patch really is an axis-aligned face.
+
+    Noise on a flat face (a counterbore floor, a shallow step) can beat the
+    plane fit and come back as a large sphere. A real spherical cap does not
+    put most of its vertices on one axis-aligned plane, so it is left as a
+    sphere and still refused by the vocabulary.
+    """
+    band = max(6.0 * tol, 0.25)
+    res_lim = max(4.0 * tol, 0.15)
+    for r in regions:
+        if not isinstance(r.surface, Sphere) or r.area <= 0 or len(r.faces) == 0:
+            continue
+        verts = m.vertices[np.unique(m.faces[r.faces])]
+        if len(verts) < 12:
+            continue
+        best = None
+        for axis in range(3):
+            coord = verts[:, axis]
+            med = float(np.median(coord))
+            mask = np.abs(coord - med) <= band
+            if float(mask.mean()) < 0.7:
+                continue
+            inl = verts[mask]
+            level = float(np.median(inl[:, axis]))
+            if float(np.percentile(np.abs(inl[:, axis] - level), 95)) > res_lim:
+                continue
+            span = max(float(inl[:, i].max() - inl[:, i].min())
+                       for i in range(3) if i != axis)
+            if span < max(8.0 * tol, 1.0):
+                continue
+            frac = float(mask.mean())
+            if best is None or frac > best[0]:
+                best = (frac, axis, level)
+        if best is None:
+            continue
+        _frac, axis, level = best
+        sign = 1.0 if float(np.median(m.face_normals[r.faces][:, axis])) >= 0.0 else -1.0
+        normal = np.zeros(3)
+        normal[axis] = sign
+        r.surface = Plane(normal, sign * level)
+
+
 def recognize(m: trimesh.Trimesh, regions, tol: float) -> dict:
-    """Box vocabulary when it matches the mesh, otherwise one extrusion."""
+    """Box vocabulary when it matches, else one extrusion, else a small CSG."""
+    from .csg import extract_csg
     from .extrude import extract_extrusion
+
+    _flatten_planar_spheres(m, regions, tol)
 
     box_err = None
     feats = None
@@ -547,14 +662,23 @@ def recognize(m: trimesh.Trimesh, regions, tol: float) -> dict:
         box_err = e
     if feats is not None and _box_explains_mesh(m, feats):
         return feats
+    ext = None
     try:
         return extract_extrusion(m, regions, tol)
-    except Unsupported as ext:
-        if box_err is None:
-            raise ext
-        if any(s in str(box_err) for s in _BOX_SUPERSEDED):
-            raise ext
+    except Unsupported as e:
+        ext = e
+    # A hard box failure (a sphere, an angled axis, an unfitted patch) is the
+    # reason to report. "Not a rectangular box" is not: the extrusion or the
+    # CSG may still explain the part, and its message names the real obstacle.
+    hard_box = box_err is not None and not any(s in str(box_err) for s in _BOX_SUPERSEDED)
+    if hard_box:
         raise box_err
+    try:
+        return extract_csg(m, regions, tol)
+    except Unsupported:
+        # extract_csg names the obstacle (an unfitted patch, a rounded edge,
+        # a recess that is not a straight cut, a measured deviation).
+        raise
 
 
 def chamfer_is_square(d: dict, tol: float) -> bool:
@@ -621,6 +745,10 @@ def named_parameters(feats: dict, tol: float = 0.01) -> list[tuple[str, float, s
             if "csk_d" in d:
                 p(f"{n}_csk_d", d["csk_d"], "countersink diameter")
                 p(f"{n}_csk_angle", d["csk_angle"], "countersink angle")
+            if "cbore_d" in d:
+                face = "top face" if d.get("from", 1) > 0 else "bottom face"
+                p(f"{n}_cbore_d", d["cbore_d"], "counterbore diameter")
+                p(f"{n}_cbore_depth", d["cbore_depth"], f"counterbore depth from the {face}")
         else:
             p(f"{n}_d", d["d"], f"diameter (axis {ax})")
             for coord in "xyz":
@@ -628,6 +756,10 @@ def named_parameters(feats: dict, tol: float = 0.01) -> list[tuple[str, float, s
                     p(f"{n}_{coord}", d[coord])
             if "depth" in d:
                 p(f"{n}_depth", d["depth"], f"blind depth from the {_face_name(ax, d['from'])} face")
+            if "cbore_d" in d:
+                p(f"{n}_cbore_d", d["cbore_d"], "counterbore diameter")
+                p(f"{n}_cbore_depth", d["cbore_depth"],
+                  f"counterbore depth from the {_face_name(ax, d['from'])} face")
     return P
 
 
