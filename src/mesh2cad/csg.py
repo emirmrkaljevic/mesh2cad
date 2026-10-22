@@ -293,7 +293,14 @@ def _fuse_2d(faces, fuzzy):
     sew = BRepBuilderAPI_Sewing(float(fuzzy))
     sew.Add(op.Shape())
     sew.Perform()
-    uni = ShapeUpgrade_UnifySameDomain(sew.SewedShape(), True, True, False)
+    sewn = sew.SewedShape()
+    # UnifySameDomain segfaults on a large messy union (a fitted printed part
+    # whose outline is hundreds of faces). A child process keeps the refusal
+    # path alive; a small outline stays in-process, as the tests do.
+    if len(faces) > 24:
+        from .brep import safe_unify
+        return safe_unify(sewn, float(fuzzy))
+    uni = ShapeUpgrade_UnifySameDomain(sewn, True, True, False)
     uni.Build()
     return uni.Shape()
 
