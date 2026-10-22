@@ -158,6 +158,22 @@ def segment(m: trimesh.Trimesh, tol: float, angle_deg: float = 20.0,
         out = _reclaim_coaxial_cones(m, sm, nb, out, tol)
     if cylinders:
         out = _resnap_fillets(m, nb, out, tol)
+    if analytic and cylinders:
+        # A clean tessellation still glues a chamfer to the wall it meets, and
+        # a ring of flat faces whose corners lie on a circle comes back as one
+        # cylinder or sphere. Split those real edges and refit the pieces.
+        # With cylinders disabled the hole wall has to stay unfitted so the
+        # caller falls back, which is what that flag asks for.
+        repaired, changed = _repair_sharp(m, nb, out, tol)
+        if changed:
+            out = _merge_planes(m, repaired, tol, ang_deg=merge_ang, dist=merge_dist,
+                                adjacent_only=True)
+            out = _merge_cylinders(m, out, tol, adjacent_only=True)
+            if cones:
+                out = _merge_cones(m, out, tol)
+            reclaimed = _reclaim_faceted_cylinders(m, out, tol)
+            if len(reclaimed) != len(out):
+                out = _merge_cylinders(m, reclaimed, tol, adjacent_only=True)
     return [r for r in out if len(r.faces)]
 
 
@@ -1957,3 +1973,368 @@ def _promote_cones(m, sm, regs, tol, frac=0.05):
     if not drop:
         return regs
     return [r for i, r in enumerate(regs) if i not in drop] + extra
+
+
+_SHARP_DEG = 35.0
+
+
+def _sharp_pairs(m, deg=_SHARP_DEG):
+    """Mesh edges sharper than a tessellation facet step.
+
+    A cylinder or cone exported from CAD meets the next triangle at a few
+    degrees. A real corner on these parts is 45 degrees or 90. Coarse test
+    meshes facet a hole at about 23 degrees, which stays under this cut.
+    """
+    ang = np.degrees(m.face_adjacency_angles)
+    pairs = set()
+    for e, (a, b) in enumerate(m.face_adjacency):
+        if ang[e] <= deg:
+            continue
+        a, b = int(a), int(b)
+        pairs.add((a, b) if a < b else (b, a))
+    return pairs
+
+
+def _adj_lists(m):
+    adj = [[] for _ in range(len(m.faces))]
+    for a, b in m.face_adjacency:
+        a, b = int(a), int(b)
+        adj[a].append(b)
+        adj[b].append(a)
+    return adj
+
+
+def _cut_components(faces, adj, blocked):
+    """Connected components of ``faces`` that do not cross ``blocked`` edges."""
+    fset = set(int(f) for f in faces)
+    seen = set()
+    comps = []
+    for s in faces:
+        s = int(s)
+        if s in seen or s not in fset:
+            continue
+        comp, q = [], deque([s])
+        seen.add(s)
+        while q:
+            f = q.popleft()
+            comp.append(f)
+            for g in adj[f]:
+                if g not in fset or g in seen:
+                    continue
+                key = (f, g) if f < g else (g, f)
+                if key in blocked:
+                    continue
+                seen.add(g)
+                q.append(g)
+        comps.append(np.asarray(comp, int))
+    return comps
+
+
+def _sharp_count(m, faces, sharp):
+    if not len(faces) or not sharp:
+        return 0
+    inside = np.zeros(len(m.faces), bool)
+    inside[faces] = True
+    n = 0
+    for a, b in m.face_adjacency:
+        a, b = int(a), int(b)
+        if not inside[a] or not inside[b]:
+            continue
+        key = (a, b) if a < b else (b, a)
+        if key in sharp:
+            n += 1
+    return n
+
+
+def _plane_of(m, faces, tol):
+    """Plane of ``faces`` when the vertices actually lie on one plane."""
+    faces = np.asarray(faces, int)
+    if len(faces) < 1:
+        return None
+    pts = m.vertices[np.unique(m.faces[faces])]
+    pl = fit_plane(m.triangles[faces].reshape(-1, 3))
+    if float(np.percentile(pl.distance(pts), 90)) >= 2.5 * tol:
+        return None
+    if float(pl.normal @ m.face_normals[faces].mean(0)) < 0.0:
+        pl = Plane(-pl.normal, -pl.d)
+    return pl
+
+
+def _full_turn(axis, origin, pts, limit_deg):
+    return _angular_gap(axis, origin, pts) <= np.radians(limit_deg)
+
+
+def _as_full_cylinder(m, faces, tol):
+    """Cylinder only when the patch is a full turn and the facets sit on it.
+
+    Vertices of a flat polygon lie on the circumscribed circle, so a vertex
+    residual alone accepts the polygon as a cylinder. Face centres of those
+    flats are millimetres off; a real tessellation keeps them on the surface.
+    A partial arc (a belt-profile round) is not a hole wall and is left to
+    the planar facets.
+    """
+    faces = np.asarray(faces, int)
+    if len(faces) < 8:
+        return None
+    cen = m.triangles_center[faces]
+    cyl = fit_cylinder(cen, m.face_normals[faces])
+    if cyl is None:
+        return None
+    pts = m.vertices[np.unique(m.faces[faces])]
+    cyl = refine_cylinder(cyl, pts)
+    if not np.isfinite(cyl.radius) or not 0 < cyl.radius < 0.5 * m.scale:
+        return None
+    thr = max(4.0 * tol, 0.02 * float(cyl.radius))
+    if float(np.percentile(cyl.distance(pts), 95)) > thr:
+        return None
+    if float(np.percentile(cyl.distance(cen), 90)) > thr:
+        return None
+    if not _full_turn(cyl.axis, cyl.point, pts, 40.0):
+        return None
+    return cyl
+
+
+def _as_full_cone(m, faces, tol):
+    """Right circular cone, including a short 45 degree chamfer.
+
+    ``_accept_cone`` drops a band shorter than a few tolerances so a torus
+    fillet is not stored as a cone. A chamfer's vertices lie on the cone
+    (residual is roundoff); a torus fillet does not, so a tight residual
+    keeps the chamfer and still rejects the fillet.
+    """
+    faces = np.asarray(faces, int)
+    if len(faces) < 8:
+        return None
+    cen = m.triangles_center[faces]
+    nrm = m.face_normals[faces]
+    cone = fit_cone(cen, nrm)
+    if cone is None:
+        return None
+    pts = m.vertices[np.unique(m.faces[faces])]
+    cone = refine_cone(cone, pts)
+    if not np.isfinite(cone.half_angle) or not 0.05 < cone.half_angle < np.pi / 2 - 0.05:
+        return None
+    h = (pts - cone.apex) @ cone.axis
+    if float(np.percentile(h, 8)) <= 0.0:
+        return None
+    rmax = float(cone.radius_at(float(np.max(h))))
+    if not np.isfinite(rmax) or rmax <= 1e-6 or rmax > 0.5 * m.scale:
+        return None
+    err = float(np.percentile(cone.distance(pts), 90))
+    short = float(np.max(h) - np.min(h)) < max(8.0 * tol, 0.05 * rmax)
+    if short:
+        if err > max(0.25 * tol, 1e-4):
+            return None
+    elif err > max(4.0 * tol, 0.02 * rmax):
+        return None
+    if not _full_turn(cone.axis, cone.apex, pts, 50.0):
+        return None
+    if float(np.mean(np.abs(np.sum(nrm * cone.normal(cen), axis=1)))) < 0.8:
+        return None
+    if np.linalg.norm(cone.apex - pts.mean(0)) > 2.0 * m.scale:
+        return None
+    return cone
+
+
+def _facet_planes(m, faces, tol, adj):
+    """One plane per flat facet. A single triangle is always one plane."""
+    faces = np.unique(np.asarray(faces, int))
+    member = np.zeros(len(m.faces), bool)
+    member[faces] = True
+    seen = np.zeros(len(m.faces), bool)
+    cos_t = float(np.cos(np.radians(0.5)))
+    dist_tol = max(1e-4 * float(m.scale), 1e-6)
+    fn, cen, area = m.face_normals, m.triangles_center, m.area_faces
+    out = []
+    for seed in faces[np.argsort(-area[faces])]:
+        seed = int(seed)
+        if seen[seed]:
+            continue
+        normal = fn[seed]
+        dist = float(normal @ cen[seed])
+        comp = []
+        q = deque([seed])
+        seen[seed] = True
+        while q:
+            f = q.popleft()
+            comp.append(f)
+            for g in adj[f]:
+                if not member[g] or seen[g]:
+                    continue
+                if float(fn[g] @ normal) < cos_t:
+                    continue
+                if abs(float(cen[g] @ normal - dist)) > dist_tol:
+                    continue
+                seen[g] = True
+                q.append(g)
+        comp = np.asarray(comp, int)
+        pl = _plane_of(m, comp, tol)
+        if pl is None:
+            for f in comp:
+                one = _plane_of(m, np.array([int(f)]), tol)
+                if one is not None:
+                    out.append(Region(np.array([int(f)]), one, float(area[int(f)])))
+            continue
+        out.append(Region(comp, pl, float(area[comp].sum())))
+    return out
+
+
+def _fit_piece(m, faces, tol, adj):
+    """Best analytic surface for one sharp-bounded piece, or its flat facets."""
+    faces = np.asarray(faces, int)
+    pl = _plane_of(m, faces, tol)
+    if pl is not None:
+        return [Region(faces, pl, float(m.area_faces[faces].sum()))]
+    cyl = _as_full_cylinder(m, faces, tol)
+    cone = _as_full_cone(m, faces, tol)
+    if cyl is not None and cone is not None:
+        pts = m.vertices[np.unique(m.faces[faces])]
+        cyl_err = float(np.percentile(cyl.distance(pts), 95))
+        cone_err = float(np.percentile(cone.distance(pts), 90))
+        if _better_fit(cone_err, cyl_err, tol, 0.75):
+            cyl = None
+        else:
+            cone = None
+    if cyl is not None:
+        return [Region(faces, cyl, float(m.area_faces[faces].sum()))]
+    if cone is not None:
+        return [Region(faces, cone, float(m.area_faces[faces].sum()))]
+    return _facet_planes(m, faces, tol, adj)
+
+
+def _cylinder_off(m, region, tol):
+    """True when a cylinder label does not describe the face centres."""
+    cyl = region.surface
+    if not isinstance(cyl, Cylinder) or cyl.radius <= 0 or len(region.faces) < 8:
+        return False
+    cen = m.triangles_center[region.faces]
+    thr = max(4.0 * tol, 0.02 * float(cyl.radius))
+    return float(np.percentile(cyl.distance(cen), 90)) > thr
+
+
+def _sphere_off(m, region, tol):
+    """True when a sphere label misses the vertices.
+
+    A corner cluster or a belt-profile patch can land on a circumscribed
+    sphere while its triangles sit a millimetre off that sphere.
+    """
+    sph = region.surface
+    if not isinstance(sph, Sphere) or sph.radius <= 0 or len(region.faces) < 4:
+        return False
+    pts = m.vertices[np.unique(m.faces[region.faces])]
+    thr = max(4.0 * tol, 0.02 * float(sph.radius))
+    return float(np.percentile(sph.distance(pts), 95)) > thr
+
+
+def _open_cylinder(m, region):
+    """Cylinder patch that does not close around its axis.
+
+    A hole wall leaves a gap of a few facet angles. A short arc (a rounded
+    edge that is not a tangent fillet) leaves most of the circle empty.
+    """
+    cyl = region.surface
+    if not isinstance(cyl, Cylinder) or len(region.faces) < 8:
+        return False
+    pts = m.vertices[np.unique(m.faces[region.faces])]
+    return _angular_gap(cyl.axis, cyl.point, pts) > np.radians(40.0)
+
+
+def _reclaim_faceted_cylinders(m, regs, tol):
+    """Turn a ring of single-facet planes back into one cylinder.
+
+    A chamfer cuts a hole wall into a band of triangles. Each triangle is a
+    plane, so the cone beside it sees dozens of neighbours instead of the
+    wall. Face centres of a real tessellation sit on the cylinder; centres
+    of a flat polygon do not, and those stay planes.
+    """
+    small = {i for i, r in enumerate(regs)
+             if isinstance(r.surface, Plane) and 0 < r.area < 0.01 * m.area and len(r.faces) <= 4}
+    if len(small) < 8:
+        return regs
+    label = -np.ones(len(m.faces), int)
+    for i, r in enumerate(regs):
+        if len(r.faces):
+            label[r.faces] = i
+    step = float(np.cos(np.radians(35.0)))
+    g = nx.Graph()
+    g.add_nodes_from(small)
+    if len(m.face_adjacency):
+        for a, b in label[m.face_adjacency]:
+            a, b = int(a), int(b)
+            if a == b or a not in small or b not in small:
+                continue
+            na = np.asarray(regs[a].surface.normal, float)
+            nb_ = np.asarray(regs[b].surface.normal, float)
+            if float(na @ nb_) < step:
+                continue
+            g.add_edge(a, b)
+    drop = set()
+    extra = []
+    for comp in nx.connected_components(g):
+        if len(comp) < 8:
+            continue
+        faces = np.concatenate([regs[i].faces for i in comp])
+        if len(faces) < 8:
+            continue
+        cen = m.triangles_center[faces]
+        cyl = fit_cylinder(cen, m.face_normals[faces])
+        if cyl is None:
+            continue
+        pts = m.vertices[np.unique(m.faces[faces])]
+        cyl = refine_cylinder(cyl, pts)
+        if not np.isfinite(cyl.radius) or not 0 < cyl.radius < 0.5 * m.scale:
+            continue
+        thr = max(4.0 * tol, 0.02 * float(cyl.radius))
+        if float(np.percentile(cyl.distance(pts), 95)) > thr:
+            continue
+        if float(np.percentile(cyl.distance(cen), 90)) > thr:
+            continue
+        if _angular_gap(cyl.axis, cyl.point, pts) > np.radians(40.0):
+            continue
+        dots = [abs(float(np.asarray(regs[i].surface.normal, float) @ cyl.axis)) for i in comp]
+        if float(np.median(dots)) > 0.35:
+            continue
+        drop |= set(comp)
+        extra.append(Region(faces, cyl, float(m.area_faces[faces].sum())))
+    if not drop:
+        return regs
+    return [r for i, r in enumerate(regs) if i not in drop] + extra
+
+
+def _repair_sharp(m, nb, regs, tol):
+    """Refit regions that cross a real edge or only pretend to be round.
+
+    Returns ``(regions, changed)``. A fitted fillet is left alone: its
+    triangles already lie on the tangent cylinder.
+    """
+    sharp = _sharp_pairs(m)
+    adj = _adj_lists(m)
+    changed = False
+    out = []
+    for i, region in enumerate(regs):
+        if not len(region.faces):
+            continue
+        n_sharp = _sharp_count(m, region.faces, sharp)
+        fillet = isinstance(region.surface, Cylinder) and _fillet_protected(m, nb, regs, i, tol)
+        bad_round = _cylinder_off(m, region, tol) or _sphere_off(m, region, tol)
+        # a partial cylinder that is not a tangent fillet is a flat or a
+        # profile arc; refit so a false round does not block sewing
+        open_cyl = (not fillet) and _open_cylinder(m, region)
+        # one or two sharp edges are a stray triangle, not a seam
+        seam = n_sharp >= 4 or (region.surface is None and n_sharp > 0)
+        if fillet or not (region.surface is None or seam or bad_round or open_cyl):
+            out.append(region)
+            continue
+        pieces = _cut_components(region.faces, adj, sharp) if n_sharp else [np.asarray(region.faces, int)]
+        if len(pieces) == 1 and region.surface is not None and not bad_round and not open_cyl:
+            out.append(region)
+            continue
+        replacement = []
+        for piece in pieces:
+            replacement.extend(_fit_piece(m, piece, tol, adj))
+        if not replacement:
+            out.append(region)
+            continue
+        changed = True
+        out.extend(replacement)
+    return out, changed

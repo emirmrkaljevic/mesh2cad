@@ -29,7 +29,7 @@ from OCP.TopExp import TopExp_Explorer
 from OCP.TopoDS import TopoDS, TopoDS_Shape
 
 from .fit import Cone, Cylinder, Plane, Sphere
-from .segment import Region
+from .segment import Region, _analytic_mesh
 
 
 def _curved_normal(surface, pts):
@@ -291,6 +291,44 @@ def _collapse_runs(runs):
     return runs
 
 
+def _transition_vertex(loop, prev_sid, this_sid):
+    """Mesh vertex where neighbour ``prev_sid`` hands off to ``this_sid``."""
+    for i in range(len(loop)):
+        if loop[i][2] == this_sid and loop[i - 1][2] == prev_sid:
+            return int(loop[i][0])
+    return None
+
+
+def _corner_point(m, face, prev, this, loop, prev_sid, this_sid, tol, analytic):
+    """Corner of three planes.
+
+    A CAD vertex can sit on three planes whose normals are linearly dependent
+    (two boundary edges of the face are parallel, so there is no unique
+    triple intersection). Nearly parallel planes also have an algebraic
+    intersection that lands far from the mesh. On a clean tessellation the
+    mesh vertex is that corner when it lies on all three planes. On a noisy
+    mesh the fitted intersection is the corner; swapping in the noisy vertex
+    pulls the solid off the true planes.
+    """
+    corner = _intersect3([face, prev, this])
+    if not analytic:
+        return corner
+    vert = _transition_vertex(loop, prev_sid, this_sid)
+    point = None if vert is None else np.asarray(m.vertices[vert], float)
+    near = max(4.0 * tol, 1e-3)
+    if corner is not None and (point is None or float(np.linalg.norm(np.asarray(corner, float) - point)) <= near):
+        return corner
+    if point is None:
+        return None
+    # the vertex is a tessellation point of a fitted plane, so it can sit a
+    # little further off a neighbour than the intersection test allows
+    limit = max(8.0 * tol, 1e-3)
+    for plane in (face, prev, this):
+        if float(plane.distance(point[None])[0]) > limit:
+            return None
+    return point
+
+
 def _runs(loop, min_run):
     labs = [s for _, _, s in loop]
     if not labs:
@@ -348,6 +386,20 @@ def _unit_plane(plane):
     if ln < 1e-12:
         return None, None
     return n / ln, float(plane.d) / ln
+
+
+def _same_plane(a, b, tol):
+    """True when two fitted planes are the same geometric plane."""
+    na, da = _unit_plane(a)
+    nb, db = _unit_plane(b)
+    if na is None or nb is None:
+        return False
+    if float(na @ nb) < 0.0:
+        nb = -nb
+        db = -db
+    if float(na @ nb) < 0.9999:
+        return False
+    return abs(float(da - db)) <= max(4.0 * tol, 1e-4)
 
 
 def _plane_sphere_circle(plane, sphere):
@@ -626,7 +678,7 @@ def _arc_edge(plane, cyl, p0, p1, hint):
     return edge.Edge() if edge.IsDone() else None
 
 
-def _mixed_fillet_wire(m, face, seq, regions, tol):
+def _mixed_fillet_wire(m, face, seq, regions, tol, loop=None):
     """Planar wire whose runs alternate straight edges and fillet arcs."""
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeWire
     if len(seq) < 3:
@@ -650,7 +702,19 @@ def _mixed_fillet_wire(m, face, seq, regions, tol):
         surf = regions[sid].surface
         p0, p1 = verts[i], verts[(i + 1) % len(seq)]
         if isinstance(surf, Cylinder) and _plane_cyl_circle(face, surf) is not None:
-            hint = m.triangles_center[regions[sid].faces].mean(axis=0)
+            # a fillet's triangles sit out in the arc, so their centroid picks
+            # the sweep. A hole wall's centroid sits on the axis and does not,
+            # and the shared mesh edges do.
+            cent = m.triangles_center[regions[sid].faces].mean(axis=0)
+            axis = np.asarray(surf.axis, float)
+            axis = axis / max(float(np.linalg.norm(axis)), 1e-12)
+            rel = cent - np.asarray(surf.point, float)
+            radial = rel - axis * float(rel @ axis)
+            sample = [m.vertices[a] for a, _, s in loop if s == sid] if loop is not None else []
+            if float(np.linalg.norm(radial)) > 0.3 * float(surf.radius) or not sample:
+                hint = cent
+            else:
+                hint = np.mean(sample, axis=0)
             edge = _arc_edge(face, surf, p0, p1, hint)
         else:
             edge = _line_edge(p0, p1)
@@ -754,6 +818,64 @@ def _make_fillet_cylinder(m, region, loops, regions, tol):
     return face
 
 
+def _full_circle_wire(center, normal, radius):
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire
+    from OCP.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Pnt
+    n = np.asarray(normal, float)
+    ln = float(np.linalg.norm(n))
+    if ln < 1e-12 or radius <= 0:
+        return None
+    circ = gp_Circ(gp_Ax2(gp_Pnt(*map(float, center)), gp_Dir(*map(float, n / ln))), float(radius))
+    edge = BRepBuilderAPI_MakeEdge(circ)
+    if not edge.IsDone():
+        return None
+    wire = BRepBuilderAPI_MakeWire(edge.Edge())
+    return wire.Wire() if wire.IsDone() else None
+
+
+def _split_cap_wire(m, label, regions, loop, seq, cap, cyl, tol):
+    """One circular wire split into an arc per coplanar cap fragment.
+
+    The arc ends are the same fillet vertices the cap faces use, so sewing
+    can fuse the cylinder to pads that do not share an edge with each other.
+    """
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeWire
+    points, hints = [], []
+    for i, sid in enumerate(seq):
+        prev = seq[i - 1]
+        vert = _transition_vertex(loop, prev, sid)
+        side = None
+        if vert is not None:
+            for f in np.asarray(m.vertex_faces[vert]).ravel():
+                f = int(f)
+                if f < 0:
+                    continue
+                rid = int(label[f])
+                if rid < 0:
+                    continue
+                surf = regions[rid].surface
+                if isinstance(surf, Plane) and not _same_plane(surf, cap, tol):
+                    side = surf
+                    break
+        pt = _fillet_vertex(cap, side, cyl, tol) if side is not None else None
+        if pt is None:
+            return None
+        points.append(np.asarray(pt, float))
+        sample = [m.vertices[a] for a, _, s in loop if s == sid]
+        hints.append(np.mean(sample, axis=0) if sample else points[-1])
+    edges = []
+    n = len(points)
+    for i in range(n):
+        edge = _arc_edge(cap, cyl, points[i], points[(i + 1) % n], hints[i])
+        if edge is None:
+            return None
+        edges.append(edge)
+    wire = BRepBuilderAPI_MakeWire()
+    for edge in edges:
+        wire.Add(edge)
+    return wire.Wire() if wire.IsDone() else None
+
+
 def build_planar(m: trimesh.Trimesh, regions: list[Region], tol: float):
     """Exact B-rep: plane polygons, cylindrical walls, spherical caps/zones.
     Returns None when the topology can't be resolved (caller falls back)."""
@@ -764,6 +886,7 @@ def build_planar(m: trimesh.Trimesh, regions: list[Region], tol: float):
     from OCP.gp import gp_Ax2, gp_Ax3, gp_Circ
     if any(r.surface is None for r in regions):
         return None
+    analytic = _analytic_mesh(m)
     label = -np.ones(len(m.faces), int)
     for i, r in enumerate(regions):
         label[r.faces] = i
@@ -790,28 +913,80 @@ def build_planar(m: trimesh.Trimesh, regions: list[Region], tol: float):
                     return None
                 sew.Add(face)
                 continue
-            # cylinder bounded by exactly two planar circular loops
+            # cylinder bounded by exactly two planar circular loops.
+            # A circle may be split across several coplanar cap fragments
+            # that do not touch; those ends are sewn as matching arcs.
             if len(loops) != 2:
                 return None
-            hs = []
+            ends = []
             for loop in loops:
                 seq = _runs(loop, min_run=3)
-                if len(seq) != 1:
+                if not seq:
                     return None
-                o = regions[seq[0]].surface
+                surfs = [regions[s].surface for s in seq]
+                if all(isinstance(s, Plane) for s in surfs) and all(
+                        _same_plane(surfs[0], s, tol) for s in surfs):
+                    o = surfs[0]
+                elif len(seq) == 1:
+                    o = surfs[0]
+                else:
+                    return None
                 cc = (circle_on(o, r.surface) if isinstance(o, Plane) else _ring(r.surface, o))
                 if cc is None:
                     return None
-                hs.append(cc[0])
+                ends.append((loop, seq, o, cc))
+            split = any(len(seq) > 1 for _, seq, _, _ in ends)
+            hs = [cc[0] for _, _, _, cc in ends]
             a = hs[1] - hs[0]
             h = np.linalg.norm(a)
+            if h < 1e-9:
+                return None
             a = a / h
             ax = gp_Ax3(gp_Pnt(*map(float, hs[0])), gp_Dir(*map(float, a)))
             surf = Geom_CylindricalSurface(ax, float(r.surface.radius))
-            mf = BRepBuilderAPI_MakeFace(surf, 0.0, 2 * np.pi, 0.0, float(h), 1e-7)
+            if not split:
+                mf = BRepBuilderAPI_MakeFace(surf, 0.0, 2 * np.pi, 0.0, float(h), 1e-7)
+                if not mf.IsDone():
+                    return None
+                sew.Add(mf.Face())
+                continue
+            if any(not isinstance(o, Plane) for _, _, o, _ in ends):
+                return None
+            wires = []
+            for loop, seq, cap, cc in ends:
+                if len(seq) == 1:
+                    wire = _full_circle_wire(cc[0], cc[1], r.surface.radius)
+                else:
+                    wire = _split_cap_wire(m, label, regions, loop, seq, cap, r.surface, tol)
+                if wire is None:
+                    return None
+                wires.append(wire)
+            mf = BRepBuilderAPI_MakeFace(surf, wires[0], False)
+            mf.Add(wires[1])
+            if not mf.IsDone():
+                mf = BRepBuilderAPI_MakeFace(surf, wires[0].Reversed(), False)
+                mf.Add(wires[1])
             if not mf.IsDone():
                 return None
-            sew.Add(mf.Face())
+            face = mf.Face()
+            # the two wires can come back unorientable until the face is
+            # rebuilt on the cylinder; keep the fix only when the area matches
+            if not BRepCheck_Analyzer(face).IsValid():
+                from OCP.BRepGProp import BRepGProp
+                from OCP.GProp import GProp_GProps
+                from OCP.ShapeFix import ShapeFix_Face
+                fixer = ShapeFix_Face(face)
+                fixer.SetPrecision(max(tol, 1e-6))
+                fixer.SetMaxTolerance(max(5.0 * tol, 1e-4))
+                fixer.Perform()
+                fixed = fixer.Face()
+                props = GProp_GProps()
+                BRepGProp.SurfaceProperties_s(fixed, props)
+                if (not BRepCheck_Analyzer(fixed).IsValid()
+                        or abs(props.Mass() - r.area) > 0.25 * max(r.area, 1e-9)):
+                    return None
+                face = fixed
+            sew.Add(face)
             continue
         if isinstance(r.surface, Sphere):
             # sphere bounded by planar circles (cap, or a zone between two planes)
@@ -878,7 +1053,7 @@ def build_planar(m: trimesh.Trimesh, regions: list[Region], tol: float):
                 wires.append((sa, q2, w))
                 continue
             if any(isinstance(regions[k].surface, Cylinder) for k in seq):
-                mixed = _mixed_fillet_wire(m, r.surface, seq, regions, tol)
+                mixed = _mixed_fillet_wire(m, r.surface, seq, regions, tol, loop)
                 if mixed is None:
                     return None
                 wires.append((sa, q2, mixed))
@@ -887,10 +1062,19 @@ def build_planar(m: trimesh.Trimesh, regions: list[Region], tol: float):
                 return None
             pts = []
             for i in range(len(seq)):
-                c = _intersect3([r.surface, regions[seq[i - 1]].surface, regions[seq[i]].surface])
+                c = _corner_point(m, r.surface, regions[seq[i - 1]].surface,
+                                  regions[seq[i]].surface, loop, seq[i - 1], seq[i], tol,
+                                  analytic)
                 if c is None:
                     return None
+                c = np.asarray(c, float)
+                if pts and float(np.linalg.norm(c - pts[-1])) <= 1e-7:
+                    continue
                 pts.append(c)
+            if len(pts) >= 2 and float(np.linalg.norm(pts[0] - pts[-1])) <= 1e-7:
+                pts.pop()
+            if len(pts) < 3:
+                return None
             poly = BRepBuilderAPI_MakePolygon()
             for p in pts:
                 poly.Add(gp_Pnt(*map(float, p)))
