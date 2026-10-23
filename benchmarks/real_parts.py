@@ -4,7 +4,7 @@ The synthetic benchmark tessellates a cadquery solid and then splits every
 edge to <= 2 mm. A mesh written by a CAD tool is the opposite: a few long
 triangles per face, no noise. These six files are printed parts from the
 Original Prusa i3 MK3S (Prusa Research, GPL-2.0). They are downloaded from a
-pinned commit and cached under benchmarks/.cache, which is gitignored — the
+pinned commit and cached under benchmarks/.cache, which is gitignored. The
 STLs are not part of this MIT tree.
 
     python benchmarks/real_parts.py
@@ -43,7 +43,7 @@ def _counts(d, order):
     keys = [k for k in order if d.get(k)]
     extra = [k for k in d if k not in order and d.get(k)]
     if not keys and not extra:
-        return "—"
+        return "-"
     return ", ".join(f"{d[k]} {k}" for k in keys + extra)
 
 
@@ -127,7 +127,7 @@ def _cell(info):
     if info.get("ok"):
         dev = info["dev"]
         return "yes", (f"{dev:.4f}" if dev is not None else "unverified")
-    return "no", "—"
+    return "no", "-"
 
 
 def main():
@@ -145,7 +145,7 @@ def main():
         r = res.report
         dev = r["deviation"]
         vol = r["volume_error_pct"]
-        vol_s = f"{vol:.3f}" if vol is not None else "—"
+        vol_s = f"{vol:.3f}" if vol is not None else "-"
         print(
             f"| {name} | {r['input']['faces']} | {r['method']} | "
             f"{_faces(r['output']['faces'])} | {_regions(r['regions']['by_type'])} | "

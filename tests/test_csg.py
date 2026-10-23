@@ -4,6 +4,7 @@ import re
 import shutil
 
 import pytest
+import trimesh
 
 pytest.importorskip("cadquery")
 from mesh2cad.cadquery_code import check as cq_check  # noqa: E402
@@ -147,6 +148,87 @@ def test_edit_hole_diameter_and_extrusion_length():
     wider = re.sub(r"^hole_1_d\s*=\s*[\d.]+", "hole_1_d = 8.0", code, flags=re.M)
     # the counterbore already removed the annulus, so only the remaining depth changes
     assert v0 - abs(run_script(wider).volume) == pytest.approx(math.pi * 7.0 * 10.0, rel=0.01)
+
+
+def _chamfered_side_hole():
+    """Slanted extrusion, not a box, with an Ø6 hole along X and a 0.8 mm 45° mouth chamfer.
+
+    The chamfer opens on the -X face (x=0). A 45° cone removes a ring whose
+    volume is pi * h^2 * (R + h/3).
+    """
+    import cadquery as cq
+
+    outline = [(0, 0), (50, 0), (50, 20), (34, 32), (0, 32)]
+    solid = cq.Workplane("XY").polyline(outline).close().extrude(12).translate((0, 0, -6))
+    hole = cq.Solid.makeCylinder(3.0, 80.0, cq.Vector(-10.0, 12.0, 0.0), cq.Vector(1, 0, 0))
+    cut = solid.cut(cq.Workplane().add(hole))
+    chamfer = cq.Solid.makeCone(3.8, 3.0, 0.8, cq.Vector(0.0, 12.0, 0.0), cq.Vector(1, 0, 0))
+    return cut.cut(cq.Workplane().add(chamfer))
+
+
+def _chamfer_ring(radius, height):
+    return math.pi * height * height * (radius + height / 3.0)
+
+
+def test_cadquery_side_chamfer():
+    """A 45° chamfer on a hole along X, on a combined extrusion rather than a box.
+
+    The mesh is the CAD tessellation. A 0.05 mm scan-like subdivision swallows
+    a sub-millimetre cone into the end face before this model sees it, so the
+    noise fixtures used for the plain extrusions do not apply here.
+    """
+    import cadquery as cq
+    import numpy as np
+
+    wp = _chamfered_side_hole()
+    v, f = wp.val().tessellate(0.05, 0.2)
+    ref = trimesh.Trimesh(np.array([p.toTuple() for p in v]), np.array(f), process=True)
+    res = convert_mesh(ref, tol=0.01, with_report=False)
+    code, q = to_cadquery(res.mesh, res.regions, res.tol)
+    assert q["max_deviation"] <= max(4 * res.tol, 0.1)
+    assert q["volume_error_pct"] <= 1.0
+    params = _params(code)
+    assert params["hole_1_d"] == pytest.approx(6.0, abs=0.05)
+    assert params["hole_1_chamfer"] == pytest.approx(0.8, abs=0.05)
+    assert "45 degree chamfer from the -X end" in code
+    assert "base_x" not in code
+    against = cq_check(code, ref)
+    assert against["max_deviation"] < 0.08
+    assert against["volume_error_pct"] < 0.5
+
+
+@needs_openscad
+def test_openscad_side_chamfer(tmp_path):
+    import cadquery as cq
+    import numpy as np
+
+    wp = _chamfered_side_hole()
+    v, f = wp.val().tessellate(0.05, 0.2)
+    ref = trimesh.Trimesh(np.array([p.toTuple() for p in v]), np.array(f), process=True)
+    res = convert_mesh(ref, tol=0.01, with_report=False)
+    code, q = to_openscad(res.mesh, res.regions, res.tol)
+    assert q["max_deviation"] <= max(4 * res.tol, 0.1)
+    assert q["volume_error_pct"] <= 1.0
+    assert "hole_1_chamfer" in code
+    against = scad_check(code, ref, tmp_path)
+    assert against["max_deviation"] < 0.08
+    assert against["volume_error_pct"] < 0.5
+
+
+def test_edit_side_chamfer_changes_volume():
+    import cadquery as cq
+    import numpy as np
+
+    wp = _chamfered_side_hole()
+    v, f = wp.val().tessellate(0.05, 0.2)
+    ref = trimesh.Trimesh(np.array([p.toTuple() for p in v]), np.array(f), process=True)
+    res = convert_mesh(ref, tol=0.01, with_report=False)
+    code, _ = to_cadquery(res.mesh, res.regions, res.tol)
+    v0 = abs(run_script(code).volume)
+    wider = re.sub(r"^hole_1_chamfer\s*=\s*[\d.]+", "hole_1_chamfer = 1.2", code, flags=re.M)
+    # Ø6 hole, 45° mouth, axial length 0.8 -> 1.2. The ring is the only change.
+    delta = _chamfer_ring(3.0, 1.2) - _chamfer_ring(3.0, 0.8)
+    assert v0 - abs(run_script(wider).volume) == pytest.approx(delta, rel=0.02)
 
 
 def test_exporters_share_csg_parameters():
