@@ -2301,6 +2301,23 @@ def _reclaim_faceted_cylinders(m, regs, tol):
     return [r for i, r in enumerate(regs) if i not in drop] + extra
 
 
+def _plane_off(m, region, tol):
+    """True when a plane label crosses a raised edge.
+
+    A short chamfer is two triangles, under the area cut, so the force-absorb
+    pass glues it onto the face it meets. A handful of those strips is fewer
+    sharp edges than the seam count, but the chamfer vertices sit well off
+    the plane and the boundary walk then misses the real corner.
+    """
+    pl = region.surface
+    if not isinstance(pl, Plane) or len(region.faces) < 2:
+        return False
+    pts = m.vertices[np.unique(m.faces[region.faces])]
+    if len(pts) < 3:
+        return False
+    return float(np.max(pl.distance(pts))) >= max(2.5 * tol, 1e-4)
+
+
 def _repair_sharp(m, nb, regs, tol):
     """Refit regions that cross a real edge or only pretend to be round.
 
@@ -2320,8 +2337,11 @@ def _repair_sharp(m, nb, regs, tol):
         # a partial cylinder that is not a tangent fillet is a flat or a
         # profile arc; refit so a false round does not block sewing
         open_cyl = (not fillet) and _open_cylinder(m, region)
-        # one or two sharp edges are a stray triangle, not a seam
-        seam = n_sharp >= 4 or (region.surface is None and n_sharp > 0)
+        plane_off = _plane_off(m, region, tol)
+        # one or two sharp edges are a stray triangle, not a seam, unless the
+        # vertices have already left the fitted plane (a chamfer glued on)
+        seam = (n_sharp >= 4 or (region.surface is None and n_sharp > 0)
+                or (plane_off and n_sharp > 0))
         if fillet or not (region.surface is None or seam or bad_round or open_cyl):
             out.append(region)
             continue

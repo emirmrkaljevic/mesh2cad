@@ -8,7 +8,8 @@ Unfitted regions stay faceted (hybrid fallback).
 
 Exact path (build_planar): plane polygons from triple-plane intersections,
 circles from plane ∩ cylinder and plane ∩ sphere, full cylindrical faces,
-partial fillet cylinders tangent to two planes, and spherical caps/zones.
+partial fillet cylinders tangent to two planes, spherical caps/zones, and a
+cylinder or cone band trimmed by the planes and coaxial circles it meets.
 """
 from __future__ import annotations
 
@@ -678,6 +679,259 @@ def _arc_edge(plane, cyl, p0, p1, hint):
     return edge.Edge() if edge.IsDone() else None
 
 
+def _unit_axis(v):
+    v = np.asarray(v, float)
+    n = float(np.linalg.norm(v))
+    if n < 1e-12:
+        return None
+    return v / n
+
+
+def _near(point, hint, tol, slack=1.0):
+    if hint is None or point is None:
+        return point is not None
+    return float(np.linalg.norm(np.asarray(point, float) - np.asarray(hint, float))) <= max(20.0 * tol, slack)
+
+
+def _snap_point(surfs, hint, tol):
+    """Project ``hint`` onto each surface in turn. None when it does not land on all of them."""
+    if hint is None:
+        return None
+    p = np.asarray(hint, float).reshape(1, 3)
+    for _ in range(8):
+        for surf in surfs:
+            p = np.asarray(surf.project(p), float).reshape(1, 3)
+    limit = max(8.0 * tol, 1e-3)
+    for surf in surfs:
+        if float(np.asarray(surf.distance(p)).reshape(-1)[0]) > limit:
+            return None
+    if not np.isfinite(p).all():
+        return None
+    return p.reshape(3)
+
+
+def _circle_of(a, b):
+    """Circle where ``a`` and ``b`` meet, as (center, unit normal, radius)."""
+    if isinstance(a, Cylinder) and isinstance(b, Plane):
+        a, b = b, a
+    elif isinstance(a, Cone) and isinstance(b, (Plane, Cylinder)):
+        a, b = b, a
+    if isinstance(a, Plane) and isinstance(b, Cylinder):
+        return _plane_cyl_circle(a, b)
+    if isinstance(a, Plane) and isinstance(b, Cone):
+        return _plane_cone_circle(a, b)
+    if isinstance(a, Cylinder) and isinstance(b, Cone):
+        return _cyl_cone_circle(a, b)
+    return None
+
+
+def _on_circle(point, circle, tol):
+    center, normal, radius = circle
+    normal = _unit_axis(normal)
+    if normal is None or radius <= 0:
+        return False
+    rel = np.asarray(point, float) - np.asarray(center, float)
+    off = abs(float(rel @ normal))
+    radial = float(np.linalg.norm(rel - normal * float(rel @ normal)))
+    limit = max(8.0 * tol, 1e-3)
+    return off <= limit and abs(radial - radius) <= limit
+
+
+def _pick_hit(pts, hint):
+    if not pts:
+        return None
+    if hint is None or len(pts) == 1:
+        return np.asarray(pts[0], float)
+    hint = np.asarray(hint, float)
+    return np.asarray(min(pts, key=lambda q: float(np.linalg.norm(np.asarray(q, float) - hint))), float)
+
+
+def _triple_point(host, prev, this, hint, tol, m=None, loop=None, prev_sid=None, this_sid=None,
+                  analytic=True):
+    """Point where ``host`` meets ``prev`` and ``this``.
+
+    Three planes use the same corner as a polygon face. A circle cut by the
+    third plane is the end of a chamfer arc. Anything else snaps the mesh
+    vertex onto the three surfaces, which is where a clean tessellation puts
+    the CAD vertex when the algebraic intersection is poorly conditioned.
+    """
+    if isinstance(host, Plane) and isinstance(prev, Plane) and isinstance(this, Plane):
+        if m is not None and loop is not None and prev_sid is not None:
+            return _corner_point(m, host, prev, this, loop, prev_sid, this_sid, tol, analytic)
+        corner = _intersect3([host, prev, this])
+        if corner is not None and _near(corner, hint, tol):
+            return np.asarray(corner, float)
+    for a, b, c in ((host, prev, this), (host, this, prev), (prev, this, host)):
+        circle = _circle_of(a, b)
+        if circle is None or not isinstance(c, Plane):
+            continue
+        n, d = _unit_plane(c)
+        if n is None:
+            continue
+        hit = _circle_plane_hits(circle[0], circle[1], circle[2], n, d)
+        if hit is None:
+            continue
+        point = _pick_hit(hit[0], hint)
+        if point is not None and _near(point, hint, tol, slack=2.0):
+            return point
+    return _snap_point((host, prev, this), hint, tol)
+
+
+def _arc_of(center, normal, radius, p0, p1, hint):
+    """Arc of a circle from p0 to p1 through the projection of ``hint``."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge
+    from OCP.GC import GC_MakeArcOfCircle
+    from OCP.gp import gp_Pnt
+    normal = _unit_axis(normal)
+    if normal is None or radius <= 0 or float(np.linalg.norm(p0 - p1)) < 1e-8:
+        return None
+    center = np.asarray(center, float)
+    hint = np.asarray(hint if hint is not None else (p0 + p1) / 2.0, float)
+    hint = hint - normal * (float(normal @ hint) - float(normal @ center))
+    radial = hint - center
+    ln = float(np.linalg.norm(radial))
+    if ln < 1e-9:
+        chord = np.asarray(p1, float) - np.asarray(p0, float)
+        radial = np.cross(normal, chord)
+        ln = float(np.linalg.norm(radial))
+        if ln < 1e-9:
+            return None
+    mid = center + radial / ln * float(radius)
+    try:
+        arc = GC_MakeArcOfCircle(
+            gp_Pnt(*map(float, p0)), gp_Pnt(*map(float, mid)), gp_Pnt(*map(float, p1)))
+    except Exception:
+        return None
+    if not arc.IsDone():
+        return None
+    edge = BRepBuilderAPI_MakeEdge(arc.Value())
+    return edge.Edge() if edge.IsDone() else None
+
+
+def _edge_between(host, other, p0, p1, hint, tol):
+    """Edge of ``host`` ∩ ``other`` from p0 to p1. A short arc may be the chord."""
+    p0 = np.asarray(p0, float)
+    p1 = np.asarray(p1, float)
+    if float(np.linalg.norm(p0 - p1)) < 1e-7:
+        return None
+    circle = _circle_of(host, other)
+    if circle is not None and _on_circle(p0, circle, tol) and _on_circle(p1, circle, tol):
+        edge = _arc_of(circle[0], circle[1], circle[2], p0, p1, hint)
+        if edge is not None:
+            return edge
+    return _line_edge(p0, p1)
+
+
+def _boundary_wire(m, loop, host, regions, tol, analytic):
+    """Closed wire of one region boundary. Lines on planes, arcs on circles."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeWire
+    seq = _runs(loop, min_run=1)
+    if len(seq) < 2:
+        return None
+    corners = []
+    for i, sid in enumerate(seq):
+        prev = seq[i - 1]
+        vert = _transition_vertex(loop, prev, sid)
+        hint = None if vert is None else np.asarray(m.vertices[vert], float)
+        point = _triple_point(
+            host, regions[prev].surface, regions[sid].surface, hint, tol,
+            m, loop, prev, sid, analytic)
+        if point is None:
+            return None
+        corners.append(np.asarray(point, float))
+    edges = []
+    for i, sid in enumerate(seq):
+        p0, p1 = corners[i], corners[(i + 1) % len(seq)]
+        if float(np.linalg.norm(p0 - p1)) < 1e-7:
+            continue
+        sample = [m.vertices[a] for a, _, s in loop if s == sid]
+        hint = np.mean(sample, axis=0) if sample else (p0 + p1) / 2.0
+        edge = _edge_between(host, regions[sid].surface, p0, p1, hint, tol)
+        if edge is None:
+            return None
+        edges.append(edge)
+    if len(edges) < 3:
+        return None
+    wire = BRepBuilderAPI_MakeWire()
+    for edge in edges:
+        wire.Add(edge)
+    if not wire.IsDone():
+        return None
+    return wire.Wire()
+
+
+def _revolution_geom(surface):
+    """OCCT surface for a fitted cylinder or cone. The cone reference sits off the apex."""
+    from OCP.Geom import Geom_ConicalSurface, Geom_CylindricalSurface
+    from OCP.gp import gp_Ax3, gp_Dir, gp_Pnt
+    if isinstance(surface, Cylinder):
+        axis = _unit_axis(surface.axis)
+        if axis is None or surface.radius <= 0:
+            return None
+        return Geom_CylindricalSurface(
+            gp_Ax3(gp_Pnt(*map(float, surface.point)), gp_Dir(*map(float, axis))),
+            float(surface.radius))
+    if isinstance(surface, Cone):
+        axis = _unit_axis(surface.axis)
+        alpha = float(surface.half_angle)
+        if axis is None or not 0.05 < alpha < np.pi / 2 - 0.05:
+            return None
+        radius = 1.0
+        origin = np.asarray(surface.apex, float) + axis * (radius / np.tan(alpha))
+        return Geom_ConicalSurface(
+            gp_Ax3(gp_Pnt(*map(float, origin)), gp_Dir(*map(float, axis))), alpha, radius)
+    return None
+
+
+def _face_from_wires(geom, wires, area, tol):
+    """Trim ``geom`` with ``wires``. The wire direction whose area matches is kept."""
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+    from OCP.ShapeFix import ShapeFix_Face
+    if geom is None or not wires:
+        return None
+
+    def attempt(reverse):
+        # Reversed() comes back as a shape. MakeFace wants the wire type.
+        first = TopoDS.Wire_s(wires[0].Reversed()) if reverse else wires[0]
+        made = BRepBuilderAPI_MakeFace(geom, first, True)
+        for wire in wires[1:]:
+            made.Add(wire)
+        if not made.IsDone():
+            return None
+        fixer = ShapeFix_Face(made.Face())
+        fixer.SetPrecision(max(tol, 1e-6))
+        fixer.SetMaxTolerance(max(5.0 * tol, 1e-4))
+        fixer.Perform()
+        face = fixer.Face()
+        if not BRepCheck_Analyzer(face).IsValid():
+            return None
+        props = GProp_GProps()
+        BRepGProp.SurfaceProperties_s(face, props)
+        if abs(float(props.Mass()) - area) > 0.25 * max(area, 1e-9):
+            return None
+        return face
+
+    return attempt(False) or attempt(True)
+
+
+def _trimmed_band(m, region, loops, regions, tol, analytic):
+    """Cylinder or cone whose boundary is several planes and coaxial circles.
+
+    A bore that is not a full turn, and the chamfer at its end, meet in one
+    loop: straight generators on the walls and circular arcs on the caps.
+    The full-frustum builder does not apply. The wire is the same corners
+    the neighbouring faces use, so the shell can sew.
+    """
+    wires = []
+    for loop in loops:
+        wire = _boundary_wire(m, loop, region.surface, regions, tol, analytic)
+        if wire is None:
+            return None
+        wires.append(wire)
+    return _face_from_wires(_revolution_geom(region.surface), wires, region.area, tol)
+
+
 def _mixed_fillet_wire(m, face, seq, regions, tol, loop=None):
     """Planar wire whose runs alternate straight edges and fillet arcs."""
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeWire
@@ -906,9 +1160,20 @@ def build_planar(m: trimesh.Trimesh, regions: list[Region], tol: float):
         if not loops:
             return None
         if isinstance(r.surface, Cylinder):
-            # a fillet is one loop: two tangent walls and two end caps
+            # a fillet is one loop: two tangent walls and two end caps.
+            # a bore that opens onto a slot is the same one loop, but the
+            # neighbours are walls and chamfers rather than two caps.
             if len(loops) == 1:
                 face = _make_fillet_cylinder(m, r, loops, regions, tol)
+                # A fillet that runs into a spherical corner is still one loop
+                # of planes. Trimming that cylinder would sew the corner as
+                # flat faces and call the solid exact. A bore or a chamfered
+                # hole has a cone in the same loop, which is the case this
+                # fallback is for.
+                meets_cone = any(isinstance(regions[item[2]].surface, Cone)
+                                 for item in loops[0])
+                if face is None and meets_cone:
+                    face = _trimmed_band(m, r, loops, regions, tol, analytic)
                 if face is None:
                     return None
                 sew.Add(face)
@@ -950,21 +1215,23 @@ def build_planar(m: trimesh.Trimesh, regions: list[Region], tol: float):
                     return None
                 sew.Add(mf.Face())
                 continue
-            if any(not isinstance(o, Plane) for _, _, o, _ in ends):
-                return None
+            # one end can be a full chamfer circle while the other is a cap
+            # split across coplanar pads. Only the split end has to be planar.
             wires = []
             for loop, seq, cap, cc in ends:
                 if len(seq) == 1:
                     wire = _full_circle_wire(cc[0], cc[1], r.surface.radius)
-                else:
+                elif isinstance(cap, Plane):
                     wire = _split_cap_wire(m, label, regions, loop, seq, cap, r.surface, tol)
+                else:
+                    return None
                 if wire is None:
                     return None
                 wires.append(wire)
             mf = BRepBuilderAPI_MakeFace(surf, wires[0], False)
             mf.Add(wires[1])
             if not mf.IsDone():
-                mf = BRepBuilderAPI_MakeFace(surf, wires[0].Reversed(), False)
+                mf = BRepBuilderAPI_MakeFace(surf, TopoDS.Wire_s(wires[0].Reversed()), False)
                 mf.Add(wires[1])
             if not mf.IsDone():
                 return None
@@ -1006,12 +1273,16 @@ def build_planar(m: trimesh.Trimesh, regions: list[Region], tol: float):
             continue
         if isinstance(r.surface, Cone):
             hits = []
+            simple = True
             for loop in loops:
                 seq = _runs(loop, min_run=3)
                 if len(seq) != 1:
-                    return None
+                    simple = False
+                    break
                 hits.append(_ring(r.surface, regions[seq[0]].surface))
-            face = _make_cone_face(r.surface, hits)
+            face = _make_cone_face(r.surface, hits) if simple else None
+            if face is None:
+                face = _trimmed_band(m, r, loops, regions, tol, analytic)
             if face is None:
                 return None
             sew.Add(face)
@@ -1025,13 +1296,16 @@ def build_planar(m: trimesh.Trimesh, regions: list[Region], tol: float):
             sa = 0.5 * np.sum(q2[:, 0] * np.roll(q2[:, 1], -1) - np.roll(q2[:, 0], -1) * q2[:, 1])
             seq = _runs(loop, min_run=3)
             # a fillet run can be only a couple of edges once the wings have been
-            # absorbed into the wall; min_run=3 would delete the arc
+            # absorbed into the wall; min_run=3 would delete the arc. A chamfer
+            # side is often one mesh edge between two different neighbours.
             seq_fine = _runs(loop, min_run=1)
             if any(isinstance(regions[k].surface, Cylinder) for k in seq_fine):
                 seq = _runs(loop, min_run=2)
                 fine_cyl = [k for k in seq_fine if isinstance(regions[k].surface, Cylinder)]
                 if any(k not in seq for k in fine_cyl):
                     seq = seq_fine
+            if any(isinstance(regions[k].surface, Cone) for k in seq_fine):
+                seq = seq_fine
             if len(seq) == 1 and isinstance(regions[seq[0]].surface, Cylinder):
                 cyl = regions[seq[0]].surface
                 cc = circle_on(r.surface, cyl)
@@ -1052,8 +1326,12 @@ def build_planar(m: trimesh.Trimesh, regions: list[Region], tol: float):
                 w = BRepBuilderAPI_MakeWire(BRepBuilderAPI_MakeEdge(circ).Edge()).Wire()
                 wires.append((sa, q2, w))
                 continue
-            if any(isinstance(regions[k].surface, Cylinder) for k in seq):
-                mixed = _mixed_fillet_wire(m, r.surface, seq, regions, tol, loop)
+            if any(isinstance(regions[k].surface, (Cylinder, Cone)) for k in seq):
+                mixed = None
+                if not any(isinstance(regions[k].surface, Cone) for k in seq):
+                    mixed = _mixed_fillet_wire(m, r.surface, seq, regions, tol, loop)
+                if mixed is None:
+                    mixed = _boundary_wire(m, loop, r.surface, regions, tol, analytic)
                 if mixed is None:
                     return None
                 wires.append((sa, q2, mixed))

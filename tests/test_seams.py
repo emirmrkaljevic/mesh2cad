@@ -52,6 +52,27 @@ def test_octagon_boss_is_planes_not_a_round():
     assert report["volume_error_pct"] < 0.01
 
 
+def test_horizontal_bore_with_a_short_mouth_chamfer_sews():
+    """Ø8 bore along X, 0.5 mm 45° chamfer on the -X mouth.
+
+    The chamfer is short enough to be glued onto the end cap, and the cylinder
+    then meets a cone at one end and a flat cap at the other. Both have to
+    come back as analytic faces.
+    """
+    block = cq.Workplane().box(30, 24, 16).val()
+    hole = cq.Solid.makeCylinder(4.0, 40.0, cq.Vector(-20.0, 0.0, 0.0), cq.Vector(1, 0, 0))
+    cone = cq.Solid.makeCone(4.5, 4.0, 0.5, cq.Vector(-15.0, 0.0, 0.0), cq.Vector(1, 0, 0))
+    mesh = _coarse(cq.Workplane(obj=block.cut(hole).cut(cone)), tol=0.2, ang=0.45)
+    res = convert_mesh(mesh, ref=mesh)
+    report = res.report
+    assert report["method"] == "exact"
+    assert report["output"]["valid_solid"]
+    assert report["output"]["faces"]["cylinder"] == 1
+    assert report["output"]["faces"]["cone"] == 1
+    assert report["deviation"]["hausdorff"] < 0.05
+    assert report["volume_error_pct"] < 0.5
+
+
 def test_short_countersink_keeps_the_cone():
     mesh = _coarse(_short_countersink(), tol=0.05, ang=0.3)
     res = convert_mesh(mesh, ref=mesh)
