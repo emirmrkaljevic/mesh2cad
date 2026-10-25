@@ -8,7 +8,11 @@ A part qualifies when every region is a plane, an axis-aligned cylinder, or a
   including a blind pocket that opens on one face;
 * either of those, plus round through-holes, counterbored through-holes,
   blind holes, and a 45 degree chamfer on a hole mouth or a blind hole bottom;
-* a planar clip where one face is tilted to all three axes (at most four).
+* a planar clip where one face is tilted to all three axes (at most four);
+* a union of partial-depth extrusions, when the intersection above misses the
+  mesh. Each extrusion has its own sketch and depth. A 45 degree chamfer on
+  the start face, and a clip that belongs to one extrusion, stay on that
+  extrusion. A hole then carries the span of the face it opens on.
 
 The box vocabulary and a single straight extrusion are tried first. This
 module is the fallback, and it keeps their parameter names when the part is
@@ -25,7 +29,7 @@ from scipy import ndimage
 from OCP.BRep import BRep_Tool
 from OCP.BRepCheck import BRepCheck_Analyzer
 from OCP.BRepAdaptor import BRepAdaptor_Curve
-from OCP.BRepAlgoAPI import BRepAlgoAPI_Common, BRepAlgoAPI_Cut
+from OCP.BRepAlgoAPI import BRepAlgoAPI_Common, BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
 from OCP.BRepBuilderAPI import (BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon,
                                 BRepBuilderAPI_Sewing)
 from OCP.BRepClass3d import BRepClass3d_SolidClassifier
@@ -429,6 +433,10 @@ def _holes(m, regions, tol):
                 raise Unsupported("stepped hole is not a counterbored through-hole")
             feat = _feat_from_step(stepped, ax, pt)
             _attach_chamfer(m, feat, cones, used_cones, ax, pt, gap)
+            # The chain's own ends. A union of partial extrusions must not
+            # measure a counterbore from the far end of a taller neighbour.
+            feat["span0"] = float(lo)
+            feat["span1"] = float(hi)
             holes.append(feat)
             if through:
                 # the cutter runs the whole part, so a fragment on the far
@@ -1104,10 +1112,52 @@ def _profile_face(outline, cutouts, axis, origin):
 
 
 def _prism(spec):
-    face = _profile_face(spec["outline"], spec.get("cutouts") or [], spec["axis_i"], spec["origin"])
+    origin = float(spec["origin"]) - float(spec.get("grow_lo") or 0.0)
+    length = float(spec["length"]) + float(spec.get("grow_lo") or 0.0) + float(spec.get("grow_hi") or 0.0)
+    face = _profile_face(spec["outline"], spec.get("cutouts") or [], spec["axis_i"], origin)
     vec = [0.0, 0.0, 0.0]
-    vec[spec["axis_i"]] = float(spec["length"])
+    vec[spec["axis_i"]] = length
     return BRepPrimAPI_MakePrism(face, gp_Vec(*vec), True).Shape()
+
+
+def _chamfer_wedges(shape, spec):
+    """45 degree wedges on outline edges listed in ``chamfer_at``, at the start face."""
+    dist = float(spec.get("chamfer") or 0.0)
+    idxs = spec.get("chamfer_at") or []
+    if dist <= 0.0 or not idxs or spec["axis_i"] != 2:
+        return shape
+    seq = [(float(p[0]), float(p[1])) for p in spec["outline"]]
+    z0 = float(spec["origin"])
+    n = len(seq)
+    for i in idxs:
+        a = seq[int(i) % n]
+        b = seq[(int(i) + 1) % n]
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        length = math.hypot(dx, dy)
+        if length < 1e-4:
+            continue
+        # outward for a CCW outline (material on the left)
+        ox, oy = dy / length, -dx / length
+        face_pts = [
+            (a[0], a[1], z0),
+            (a[0], a[1], z0 + dist),
+            (a[0] - ox * dist, a[1] - oy * dist, z0),
+        ]
+        mk = BRepBuilderAPI_MakePolygon()
+        for p in face_pts:
+            mk.Add(gp_Pnt(*[float(v) for v in p]))
+        mk.Close()
+        if not mk.IsDone():
+            continue
+        tool = BRepPrimAPI_MakePrism(BRepBuilderAPI_MakeFace(mk.Wire()).Face(), gp_Vec(dx, dy, 0.0), True).Shape()
+        shape = _add_cut(shape, tool)
+    return shape
+
+
+def _local_clips(shape, spec):
+    for clip in spec.get("clips") or []:
+        shape = _add_cut(shape, _clip_tool(clip))
+    return shape
 
 
 def _numeric_span(positives, axis):
@@ -1229,12 +1279,19 @@ def _clip_tool(clip):
     return BRepPrimAPI_MakePrism(face, gp_Vec(*[float(v) for v in direction * depth]), True).Shape()
 
 
-def _solid(positives, cuts, holes, clips):
+def _positive_shape(spec):
+    shape = _prism(spec)
+    shape = _local_clips(shape, spec)
+    return _chamfer_wedges(shape, spec)
+
+
+def _solid(positives, cuts, holes, clips, mode="intersect"):
     if not positives:
         return None
-    shape = _prism(positives[0])
+    shape = _positive_shape(positives[0])
     for spec in positives[1:]:
-        op = BRepAlgoAPI_Common(shape, _prism(spec))
+        other = _positive_shape(spec)
+        op = BRepAlgoAPI_Fuse(shape, other) if mode == "union" else BRepAlgoAPI_Common(shape, other)
         op.Build()
         shape = op.Shape()
     for spec in cuts:
@@ -1246,7 +1303,10 @@ def _solid(positives, cuts, holes, clips):
         shape = _add_cut(shape, _prism(grown))
     for hole in holes:
         ax = "XYZ".index(hole["axis"])
-        lo, hi = _numeric_span(positives, ax)
+        if mode == "union" and hole.get("span0") is not None:
+            lo, hi = float(hole["span0"]), float(hole["span1"])
+        else:
+            lo, hi = _numeric_span(positives, ax)
         if hi <= lo:
             continue
         for start, _ax, r1, r2, length in _hole_cutters(hole, lo, hi):
@@ -1487,6 +1547,37 @@ def _with_index(spec):
     return out
 
 
+def _try_stack(m, regions, holes, tol, samples):
+    """Partial-depth union. None when it cannot be built."""
+    try:
+        from .stack import extract_stack
+        spec = extract_stack(m, regions, holes, tol)
+    except Exception:
+        return None
+    if not spec or not spec.get("positive"):
+        return None
+    try:
+        positives = [_with_index(p) for p in spec["positive"]]
+        cuts = [_with_index(c) for c in spec["cuts"]]
+        shape = _solid(positives, cuts, spec["holes"], [], mode=spec.get("combine") or "union")
+    except Exception:
+        return None
+    return _score(shape, m, tol, samples), spec
+
+
+def _stack_result(spec, holes):
+    del holes
+    return {
+        "csg": {
+            "positive": spec["positive"],
+            "cuts": spec["cuts"],
+            "clips": [],
+            "combine": spec.get("combine") or "union",
+        },
+        "holes": spec["holes"],
+    }
+
+
 def extract_csg(m: trimesh.Trimesh, regions, tol: float) -> dict:
     """Recognise a small boolean of extrusions. Raises :class:`Unsupported`."""
     _refuse_surfaces(m, regions)
@@ -1615,6 +1706,13 @@ def extract_csg(m: trimesh.Trimesh, regions, tol: float) -> dict:
             chosen, best = trial, got
             break
     if not _ok(best, tol):
+        stacked = _try_stack(m, regions, holes, tol, samples)
+        if stacked is not None:
+            got, spec = stacked
+            if _ok(got, tol):
+                return _stack_result(spec, holes)
+            if got["max_deviation"] < best["max_deviation"]:
+                best = got
         _fail(best, tol)
     chosen = shrink(chosen, cuts, use_clips)
     # confirm the reduced solid, not a lucky sample of a larger one
@@ -1633,16 +1731,34 @@ def extract_csg(m: trimesh.Trimesh, regions, tol: float) -> dict:
 
 
 def _names(positives):
+    """Parameter names. One extrusion per axis keeps the existing names.
+
+    Two extrusions on the same axis would otherwise both be ``extrude_z_len``.
+    Those are numbered (``extrude_z1_len``, ``extrude_z2_len``) and only occur
+    on the partial-depth union.
+    """
     solo = len(positives) == 1
+    counts: dict[str, int] = {}
+    for p in positives:
+        counts[p["axis"]] = counts.get(p["axis"], 0) + 1
+    seen: dict[str, int] = {}
     named = []
     for p in positives:
         if solo:
             named.append({"len": "extrude_len", "origin": "extrude_0", "outline": "outline",
-                          "cutout": "cutout"})
+                          "cutout": "cutout", "var": "result", "stem": "extrude"})
+            continue
+        a = p["axis"].lower()
+        seen[a] = seen.get(a, 0) + 1
+        if counts[p["axis"]] == 1:
+            stem = f"extrude_{a}"
+            var = f"solid_{a}"
         else:
-            a = p["axis"].lower()
-            named.append({"len": f"extrude_{a}_len", "origin": f"extrude_{a}_0",
-                          "outline": f"outline_{a}", "cutout": f"outline_{a}_cutout"})
+            stem = f"extrude_{a}{seen[a]}"
+            var = f"solid_{a}{seen[a]}"
+        named.append({"len": f"{stem}_len", "origin": f"{stem}_0",
+                      "outline": f"outline_{stem[len('extrude_'):]}", "cutout": f"outline_{stem[len('extrude_'):]}_cutout",
+                      "var": var, "stem": stem})
     return named
 
 
@@ -1668,6 +1784,8 @@ def _span_expr(positives, names, hole_axis, lang):
 
 
 def _fmt_py(pts) -> str:
+    if pts and not isinstance(pts[0], (tuple, list)):
+        return "[" + ", ".join(repr(int(v)) for v in pts) + "]"
     rows = ["["]
     for x, y in pts:
         rows.append(f"    ({x!r}, {y!r}),")
@@ -1676,6 +1794,8 @@ def _fmt_py(pts) -> str:
 
 
 def _fmt_scad(pts) -> str:
+    if pts and not isinstance(pts[0], (tuple, list)):
+        return "[" + ", ".join(repr(int(v)) for v in pts) + "]"
     rows = ["["]
     for x, y in pts:
         rows.append(f"  [{x!r}, {y!r}],")
@@ -1693,6 +1813,7 @@ def _param_rows(feats, tol):
     csg = feats["csg"]
     positives = csg["positive"]
     names = _names(positives)
+    union = csg.get("combine") == "union"
     numbers = []
     lists = []
     for p, nm in zip(positives, names):
@@ -1703,6 +1824,18 @@ def _param_rows(feats, tol):
                       f"outline in the {plane} plane, ({coords})"))
         for i, loop in enumerate(p.get("cutouts") or [], 1):
             lists.append((f"{nm['cutout']}_{i}", loop, "through opening in the outline"))
+        if union and p.get("chamfer_at"):
+            numbers.append((f"{nm['stem']}_chamfer", p["chamfer"],
+                            "45 degree chamfer on the start face"))
+            lists.append((f"{nm['stem']}_chamfer_at", list(p["chamfer_at"]),
+                          "outline edges that carry the chamfer, counting from 0"))
+        if union:
+            for j, clip in enumerate(p.get("clips") or [], 1):
+                pre = f"{nm['stem']}_clip{j}"
+                numbers.append((f"{pre}_x", clip["x"], "outward normal of a clip on this extrusion"))
+                numbers.append((f"{pre}_y", clip["y"], ""))
+                numbers.append((f"{pre}_z", clip["z"], ""))
+                numbers.append((f"{pre}_d", clip["d"], "plane: normal · point = d"))
     for i, cut in enumerate(csg["cuts"], 1):
         plane, coords = _PLANE["XYZ".index(cut["axis"])]
         numbers.append((f"cut_{i}_len", cut["length"], f"length along {cut['axis']}"))
@@ -1732,6 +1865,10 @@ def _param_rows(feats, tol):
                 end = f"{'+' if hole.get('chamfer_from', 1) > 0 else '-'}{hole['axis']}"
                 note = f"45 degree chamfer from the {end} end"
             numbers.append((f"{n}_chamfer", hole["chamfer"], note))
+        if union and hole.get("span0") is not None:
+            ax = hole["axis"].lower()
+            numbers.append((f"{n}_{ax}0", hole["span0"], f"hole start along {hole['axis']}"))
+            numbers.append((f"{n}_{ax}1", hole["span1"], f"hole end along {hole['axis']}"))
     for i, clip in enumerate(csg["clips"], 1):
         n = f"clip_{i}"
         numbers.append((f"{n}_x", clip["x"], "outward normal"))
@@ -1739,6 +1876,26 @@ def _param_rows(feats, tol):
         numbers.append((f"{n}_z", clip["z"], ""))
         numbers.append((f"{n}_d", clip["d"], "plane: normal · point = d"))
     return numbers, lists
+
+
+def _grown_expr(origin: str, length: str, spec: dict, union: bool):
+    """Shift a union extrusion by its joint overlap. The names stay the true ends."""
+    if not union:
+        return origin, length
+    glo = float(spec.get("grow_lo") or 0.0)
+    ghi = float(spec.get("grow_hi") or 0.0)
+    if glo == 0.0 and ghi == 0.0:
+        return origin, length
+    origin_s = f"({origin} - {glo})" if glo else origin
+    length_s = f"({length} + {glo + ghi})" if (glo + ghi) else length
+    return origin_s, length_s
+
+
+def _hole_limits(hole, index, positives, names, lang, union):
+    if union and hole.get("span0") is not None:
+        ax = hole["axis"].lower()
+        return f"hole_{index}_{ax}0", f"hole_{index}_{ax}1"
+    return _span_expr(positives, names, "XYZ".index(hole["axis"]), lang)
 
 
 def _workplane(axis: str, origin: str, length: str) -> str:
@@ -1813,6 +1970,39 @@ def _cq_hole(n, hole, lo, hi):
     return lines
 
 
+def _cq_chamfer_lines(var, nm):
+    """45 degree wedges on the listed start-face edges. Same solid as ``_chamfer_wedges``."""
+    stem = nm["stem"]
+    ol = nm["outline"]
+    return [
+        f"for _i in {stem}_chamfer_at:",
+        f"    _a = {ol}[_i % len({ol})]",
+        f"    _b = {ol}[(_i + 1) % len({ol})]",
+        f"    _dx, _dy = _b[0] - _a[0], _b[1] - _a[1]",
+        f"    _L = math.hypot(_dx, _dy)",
+        f"    if _L < 1e-4:",
+        f"        continue",
+        f"    _ox, _oy = _dy / _L, -_dx / _L",
+        f"    _plane = cq.Plane(origin=cq.Vector(_a[0], _a[1], {nm['origin']}),",
+        f"                       xDir=cq.Vector(-_ox, -_oy, 0),",
+        f"                       normal=cq.Vector(_dx / _L, _dy / _L, 0))",
+        f"    {var} = {var}.cut(cq.Workplane(_plane)",
+        f"                      .polyline([(0, 0), ({stem}_chamfer, 0), (0, {stem}_chamfer)])",
+        f"                      .close().extrude(_L))",
+    ]
+
+
+def _cq_clip_lines(var, prefix, tag):
+    return [
+        f"_n{tag} = cq.Vector({prefix}_x, {prefix}_y, {prefix}_z)",
+        f"_nn{tag} = {prefix}_x*{prefix}_x + {prefix}_y*{prefix}_y + {prefix}_z*{prefix}_z",
+        f"_o{tag} = _n{tag} * ({prefix}_d / _nn{tag})",
+        f"_t{tag} = cq.Vector(0, -{prefix}_z, {prefix}_y) if abs({prefix}_x) < 0.9 else cq.Vector(-{prefix}_z, 0, {prefix}_x)",
+        f"{var} = {var}.cut(cq.Workplane(cq.Plane(origin=_o{tag}, xDir=_t{tag}, normal=_n{tag}))"
+        f".rect(400, 400).extrude(200))",
+    ]
+
+
 def render_cadquery(feats: dict, tol: float = 0.01, source: str | None = None) -> str:
     """CadQuery script for a boolean of extrusions."""
     del tol  # values are already rounded to the fit tolerance
@@ -1820,36 +2010,38 @@ def render_cadquery(feats: dict, tol: float = 0.01, source: str | None = None) -
     positives = csg["positive"]
     names = _names(positives)
     numbers, lists = _param_rows(feats, 0.01)
+    union = csg.get("combine") == "union"
     body = []
-    overlap = len(positives) > 1
+    overlap = len(positives) > 1 and not union
     vars_ = []
+    tag = 0
     for p, nm in zip(positives, names):
-        var = "result" if len(positives) == 1 else f"solid_{p['axis'].lower()}"
+        var = nm["var"]
         vars_.append(var)
-        body += _cq_extrude(var, p["axis"], nm["origin"], nm["len"], nm["outline"],
+        origin, length = _grown_expr(nm["origin"], nm["len"], p, union)
+        body += _cq_extrude(var, p["axis"], origin, length, nm["outline"],
                             p.get("cutouts") or [], nm["cutout"], overlap=overlap)
+        if union and p.get("chamfer_at") and p.get("axis") == "Z":
+            body += _cq_chamfer_lines(var, nm)
+        if union:
+            for j, _clip in enumerate(p.get("clips") or [], 1):
+                tag += 1
+                body += _cq_clip_lines(var, f"{nm['stem']}_clip{j}", tag)
     if len(vars_) > 1:
         body.append(f"result = {vars_[0]}")
+        op = "union" if union else "intersect"
         for var in vars_[1:]:
-            body.append(f"result = result.intersect({var})")
+            body.append(f"result = result.{op}({var})")
     for i, cut in enumerate(csg["cuts"], 1):
         body += _cq_extrude(f"cut_{i}_solid", cut["axis"], f"cut_{i}_0", f"cut_{i}_len",
                             f"cut_{i}", cut.get("cutouts") or [], f"cut_{i}_cutout", overlap=True)
         body.append(f"result = result.cut(cut_{i}_solid)")
     for i, hole in enumerate(feats.get("holes") or [], 1):
         n = f"hole_{i}"
-        ax = "XYZ".index(hole["axis"])
-        lo, hi = _span_expr(positives, names, ax, "cadquery")
+        lo, hi = _hole_limits(hole, i, positives, names, "cadquery", union)
         body.extend(_cq_hole(n, hole, lo, hi))
     for i, _clip in enumerate(csg["clips"], 1):
-        n = f"clip_{i}"
-        body.append(
-            f"_n{i} = cq.Vector({n}_x, {n}_y, {n}_z)\n"
-            f"_nn{i} = {n}_x*{n}_x + {n}_y*{n}_y + {n}_z*{n}_z\n"
-            f"_o{i} = _n{i} * ({n}_d / _nn{i})\n"
-            f"_t{i} = cq.Vector(0, -{n}_z, {n}_y) if abs({n}_x) < 0.9 else cq.Vector(-{n}_z, 0, {n}_x)\n"
-            f"result = result.cut(cq.Workplane(cq.Plane(origin=_o{i}, xDir=_t{i}, normal=_n{i}))"
-            f".rect(400, 400).extrude(200))")
+        body.extend(_cq_clip_lines("result", f"clip_{i}", f"c{i}"))
     width = max([len(n) for n, _, _ in numbers] + [len(n) for n, _, _ in lists] + [1])
     head = ['"""Parametric CadQuery model generated by mesh2cad.',
             "",
@@ -1945,8 +2137,8 @@ def _scad_hole_pieces(n, hole, lo, hi):
     return pieces
 
 
-def _scad_clip(i) -> str:
-    n = f"clip_{i}"
+def _scad_clip_of(prefix) -> str:
+    n = prefix
     return (
         f"translate([{n}_x, {n}_y, {n}_z] * {n}_d / ({n}_x*{n}_x + {n}_y*{n}_y + {n}_z*{n}_z))\n"
         f"  rotate(acos(max(-1, min(1, {n}_z / sqrt({n}_x*{n}_x + {n}_y*{n}_y + {n}_z*{n}_z)))),"
@@ -1954,6 +2146,40 @@ def _scad_clip(i) -> str:
         f"    translate([-200, -200, 0])\n"
         f"      cube([400, 400, 200]);"
     )
+
+
+def _scad_clip(i) -> str:
+    return _scad_clip_of(f"clip_{i}")
+
+
+def _scad_chamfer_module() -> str:
+    """45 degree wedges. The polygon's x axis is into the part, y is up, z is along the edge."""
+    return "\n".join([
+        "module mesh2cad_chamfer(outline, z0, dist, edges) {",
+        "  for (i = edges)",
+        "    let (",
+        "      a = outline[i],",
+        "      b = outline[(i + 1) % len(outline)],",
+        "      dx = b[0] - a[0],",
+        "      dy = b[1] - a[1],",
+        "      edge = sqrt(dx * dx + dy * dy)",
+        "    )",
+        "      if (edge > 0.0001)",
+        "        // Past each corner, and 0.02 mm outside the wall and below the",
+        "        // start face. A wedge that ends on the outline shares a face",
+        "        // with the extrusion, and OpenSCAD keeps that face.",
+        "        translate([a[0] - dx / edge * 0.02, a[1] - dy / edge * 0.02, z0])",
+        "          multmatrix([",
+        "            [-dy / edge, 0, dx / edge, 0],",
+        "            [ dx / edge, 0, dy / edge, 0],",
+        "            [0, 1, 0, 0],",
+        "            [0, 0, 0, 1]",
+        "          ])",
+        "            linear_extrude(edge + 0.04)",
+        "              polygon([[-0.02, -0.02], [dist, -0.02], [-0.02, dist]]);",
+        "}",
+        "",
+    ])
 
 
 def _hole_slider_limit(positives, hole) -> float:
@@ -2041,17 +2267,31 @@ def render_openscad(feats: dict, tol: float = 0.01, source: str | None = None) -
         flush(current)
     lines += ["", "/* [Hidden] */", f"$fn = {CIRCLE_SEGMENTS}; // circle segments", ""]
 
-    overlap = len(positives) > 1
+    union = csg.get("combine") == "union"
+    overlap = len(positives) > 1 and not union
     pieces = []
     for p, nm in zip(positives, names):
-        pieces.append(_scad_placed(
-            p["axis"], nm["origin"], nm["len"],
+        origin, length = _grown_expr(nm["origin"], nm["len"], p, union)
+        body = _scad_placed(
+            p["axis"], origin, length,
             _scad_profile(nm["outline"], p.get("cutouts") or [], nm["cutout"]),
-            overlap=overlap))
+            overlap=overlap)
+        local = []
+        if union and p.get("chamfer_at") and p.get("axis") == "Z":
+            local.append(
+                f"mesh2cad_chamfer({nm['outline']}, {nm['origin']}, {nm['stem']}_chamfer, {nm['stem']}_chamfer_at);")
+        if union:
+            for j in range(1, len(p.get("clips") or []) + 1):
+                local.append(_scad_clip_of(f"{nm['stem']}_clip{j}"))
+        if local:
+            body = "difference() {\n" + _indent(body, 1) + "\n" + "\n".join(
+                _indent(piece, 1) for piece in local) + "\n}"
+        pieces.append(body)
     if len(pieces) == 1:
         positive = pieces[0]
     else:
-        positive = "intersection() {\n" + "\n".join(_indent(p, 1) for p in pieces) + "\n}"
+        op = "union" if union else "intersection"
+        positive = f"{op}() {{\n" + "\n".join(_indent(p, 1) for p in pieces) + "\n}"
     sub = []
     for i, cut in enumerate(csg["cuts"], 1):
         sub.append(_scad_placed(cut["axis"], f"cut_{i}_0", f"cut_{i}_len",
@@ -2059,12 +2299,14 @@ def render_openscad(feats: dict, tol: float = 0.01, source: str | None = None) -
                                 overlap=True))
     for i, hole in enumerate(feats.get("holes") or [], 1):
         n = f"hole_{i}"
-        ax = "XYZ".index(hole["axis"])
-        lo, hi = _span_expr(positives, names, ax, "openscad")
+        lo, hi = _hole_limits(hole, i, positives, names, "openscad", union)
         sub.extend(_scad_hole_pieces(n, hole, lo, hi))
     for i in range(1, len(csg["clips"]) + 1):
         sub.append(_scad_clip(i))
-    model = ["// --- model ---", "module mesh2cad_part() {"]
+    model = ["// --- model ---"]
+    if union and any(p.get("chamfer_at") for p in positives):
+        model.append(_scad_chamfer_module().rstrip("\n"))
+    model.append("module mesh2cad_part() {")
     if sub:
         model.append("  difference() {")
         model.append(_indent(positive, 2))

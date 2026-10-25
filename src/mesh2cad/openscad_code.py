@@ -5,15 +5,16 @@ Uses the same feature dict and parameter names as the CadQuery export
 (with ``r1``/``r2`` for a draft or a chamfer; ``rotate`` when the axis is X or
 Y), ``difference`` / ``union``, and ``offset`` for the one vertical corner
 radius. A straight extrusion is ``linear_extrude`` of ``polygon(outline)``.
-Several of those, cut or intersected, are the same polygons under
-``intersection`` / ``difference``, and a counterbored hole is a second
-cylinder. A face tilted to X, Y, and Z is one planar clip.
+Several of those, cut, intersected, or stacked as partial-depth extrusions,
+are the same polygons under ``intersection`` / ``union`` / ``difference``,
+and a counterbored hole is a second cylinder. A face tilted to X, Y, and Z
+is one planar clip.
 Customizer annotations (``/* [Group] */``, ``// [min:max]``) are added
 only where the part has a real bound.
 
 When the ``openscad`` program is on ``PATH``, the script is rendered to STL and
 compared with the input mesh. Without that program the script is still
-returned, with no check — OpenSCAD is not a package dependency.
+returned, with no check. OpenSCAD is not a package dependency.
 """
 from __future__ import annotations
 
