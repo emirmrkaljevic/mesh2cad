@@ -231,8 +231,79 @@ def test_edit_side_chamfer_changes_volume():
     assert v0 - abs(run_script(wider).volume) == pytest.approx(delta, rel=0.02)
 
 
+def _stepped_shelf():
+    """L-shaped base, 8 mm tall, with a 10 mm block on one arm.
+
+    The other arm carries an Ø6 hole and an Ø12 counterbore, 3 mm deep, opening
+    on the step (z=8) rather than on the top of the block (z=18). A full-length
+    silhouette intersection fills that arm up to z=18. The counterbore is wider
+    than the 0.05 mm noise test, so that shoulder stays a separate cylinder.
+    """
+    import cadquery as cq
+
+    base = [(0, 0), (50, 0), (50, 18), (20, 18), (20, 36), (0, 36)]
+    tower = [(0, 0), (20, 0), (20, 36), (0, 36)]
+    solid = cq.Workplane("XY").polyline(base).close().extrude(8)
+    solid = solid.union(cq.Workplane("XY", origin=(0, 0, 8)).polyline(tower).close().extrude(10))
+    hole = cq.Solid.makeCylinder(3.0, 10.0, cq.Vector(35.0, 9.0, -1.0), cq.Vector(0, 0, 1))
+    cbore = cq.Solid.makeCylinder(6.0, 4.0, cq.Vector(35.0, 9.0, 5.0), cq.Vector(0, 0, 1))
+    return solid.cut(cq.Workplane().add(hole)).cut(cq.Workplane().add(cbore))
+
+
+def _z_bands(params):
+    bands = []
+    for key in params:
+        m = re.fullmatch(r"extrude_z(\d+)_0", key)
+        if m:
+            i = m.group(1)
+            bands.append((i, params[key], params[f"extrude_z{i}_len"]))
+    return bands
+
+
+@pytest.mark.parametrize("sigma", [0.0, 0.05])
+def test_cadquery_stacked_extrusion(sigma):
+    ref, res = _fit(_stepped_shelf, sigma)
+    code, q = to_cadquery(res.mesh, res.regions, res.tol)
+    assert q["max_deviation"] <= max(4 * res.tol, 0.1)
+    assert q["volume_error_pct"] <= 1.0
+    params = _params(code)
+    tol = 0.05 if sigma == 0.0 else 0.25
+    bands = _z_bands(params)
+    assert any(abs(origin) <= tol for _i, origin, _length in bands)
+    assert any(abs(origin - 8.0) <= tol and abs(length - 10.0) <= tol for _i, origin, length in bands)
+    assert params["hole_1_d"] == pytest.approx(6.0, abs=tol)
+    assert params["hole_1_cbore_d"] == pytest.approx(12.0, abs=tol)
+    assert params["hole_1_cbore_depth"] == pytest.approx(3.0, abs=tol)
+    assert params["hole_1_z0"] == pytest.approx(0.0, abs=tol)
+    assert params["hole_1_z1"] == pytest.approx(8.0, abs=tol)
+    assert ".union(" in code
+    assert "extrude_z_len" not in params
+    against = cq_check(code, ref)
+    assert against["max_deviation"] < (0.08 if sigma == 0.0 else 0.35)
+    assert against["volume_error_pct"] < 0.5
+
+
+def test_edit_stacked_length_and_hole():
+    """The block height and the hole diameter, each against the analytic delta.
+
+    The counterbore already removes the annulus over its own depth, so widening
+    the through hole only changes the 5 mm below that counterbore.
+    """
+    _ref, res = _fit(_stepped_shelf, 0.0)
+    code, _ = to_cadquery(res.mesh, res.regions, res.tol)
+    params = _params(code)
+    tower = next(i for i, origin, length in _z_bands(params)
+                 if abs(origin - 8.0) < 0.05 and abs(length - 10.0) < 0.05)
+    v0 = abs(run_script(code).volume)
+    shorter = re.sub(rf"^extrude_z{tower}_len\s*=\s*[\d.]+", f"extrude_z{tower}_len = 6.0",
+                     code, flags=re.M)
+    assert v0 - abs(run_script(shorter).volume) == pytest.approx(20.0 * 36.0 * 4.0, rel=0.01)
+    wider = re.sub(r"^hole_1_d\s*=\s*[\d.]+", "hole_1_d = 8.0", code, flags=re.M)
+    assert v0 - abs(run_script(wider).volume) == pytest.approx(math.pi * 7.0 * 5.0, rel=0.01)
+
+
 def test_exporters_share_csg_parameters():
-    for fn in (orthogonal_intersection, cut_block, counterbored_plate):
+    for fn in (orthogonal_intersection, cut_block, counterbored_plate, _stepped_shelf):
         _ref, res = _fit(fn, 0.0)
         cq, _ = to_cadquery(res.mesh, res.regions, res.tol, verify=False)
         sc, _ = to_openscad(res.mesh, res.regions, res.tol, verify=False)
@@ -240,8 +311,26 @@ def test_exporters_share_csg_parameters():
 
 
 @needs_openscad
+def test_openscad_edit_stacked_length_and_hole(tmp_path):
+    from mesh2cad.openscad_code import render_mesh
+
+    _ref, res = _fit(_stepped_shelf, 0.0)
+    code, _ = to_openscad(res.mesh, res.regions, res.tol)
+    params = _params(code)
+    tower = next(i for i, origin, length in _z_bands(params)
+                 if abs(origin - 8.0) < 0.05 and abs(length - 10.0) < 0.05)
+    v0 = abs(render_mesh(code, tmp_path / "a").volume)
+    shorter = re.sub(rf"^extrude_z{tower}_len\s*=\s*[\d.]+", f"extrude_z{tower}_len = 6.0",
+                     code, flags=re.M)
+    # a 96-gon cylinder is the only approximation; the block itself is exact
+    assert v0 - abs(render_mesh(shorter, tmp_path / "b").volume) == pytest.approx(20.0 * 36.0 * 4.0, rel=0.01)
+    wider = re.sub(r"^hole_1_d\s*=\s*[\d.]+", "hole_1_d = 8.0", code, flags=re.M)
+    assert v0 - abs(render_mesh(wider, tmp_path / "c").volume) == pytest.approx(math.pi * 7.0 * 5.0, rel=0.02)
+
+
+@needs_openscad
 @pytest.mark.parametrize("sigma", [0.0, 0.05])
-@pytest.mark.parametrize("fn", [orthogonal_intersection, cut_block, counterbored_plate])
+@pytest.mark.parametrize("fn", [orthogonal_intersection, cut_block, counterbored_plate, _stepped_shelf])
 def test_openscad_csg(fn, sigma, tmp_path):
     ref, res = _fit(fn, sigma)
     code, q = to_openscad(res.mesh, res.regions, res.tol)

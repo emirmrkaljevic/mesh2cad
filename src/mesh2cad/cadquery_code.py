@@ -7,9 +7,9 @@ along that axis; +Z features stay on the XY workplane. The four vertical
 corners of a rectangular base, when they share one radius, become
 ``edges("|Z").fillet(fillet_r)``. A straight extrusion of a 2D outline is a
 ``polyline`` extruded by ``extrude_len``. A part that is a few of those
-extrusions — their intersection, or one minus cuts along the other axes,
-plus a counterbored hole or a planar clip — is a short boolean of the same
-pieces. Anything outside that vocabulary
+extrusions (their intersection, a union of partial-depth extrusions, or one
+minus cuts along the other axes, plus a counterbored hole or a planar clip)
+is a short boolean of the same pieces. Anything outside that vocabulary
 raises :class:`Unsupported`; the generated script is checked against the input
 mesh before it is returned.
 """
