@@ -1,6 +1,7 @@
 """Region segmentation by normal-coherent region growing + primitive fits."""
 from __future__ import annotations
 
+import math
 from collections import deque
 from dataclasses import dataclass
 
@@ -2299,6 +2300,256 @@ def _reclaim_faceted_cylinders(m, regs, tol):
     if not drop:
         return regs
     return [r for i, r in enumerate(regs) if i not in drop] + extra
+
+
+def _cylinder_angles(axis, origin, pts):
+    """Angles of ``pts`` around ``axis``, and the frame they were measured in."""
+    axis = np.asarray(axis, float)
+    axis = axis / max(float(np.linalg.norm(axis)), 1e-12)
+    u = np.cross(axis, (1.0, 0.0, 0.0))
+    if float(np.linalg.norm(u)) < 0.1:
+        u = np.cross(axis, (0.0, 1.0, 0.0))
+    u = u / np.linalg.norm(u)
+    v = np.cross(axis, u)
+    rel = np.asarray(pts, float) - np.asarray(origin, float)
+    return np.arctan2(rel @ v, rel @ u), u, v
+
+
+def _arc_span(angles):
+    """Span of one arc, the second-largest gap, and the mid-arc angle.
+
+    The largest gap is the empty sector. Returns None when the points do not
+    form a single arc.
+    """
+    ang = np.sort(np.asarray(angles, float))
+    if len(ang) < 3:
+        return None
+    gaps = np.diff(ang)
+    wrap = float(ang[0] + 2.0 * np.pi - ang[-1])
+    gaps = np.concatenate([gaps, [wrap]])
+    order = np.argsort(gaps)
+    largest = float(gaps[order[-1]])
+    second = float(gaps[order[-2]]) if len(gaps) > 1 else largest
+    span = 2.0 * np.pi - largest
+    i = int(order[-1])
+    if i >= len(ang) - 1:
+        mid = 0.5 * (float(ang[0]) + float(ang[-1]))
+    else:
+        mid = float(ang[i + 1]) + 0.5 * span
+    return span, second, mid
+
+
+def _near_principal(axis, limit_deg=8.0):
+    axis = np.asarray(axis, float)
+    axis = axis / max(float(np.linalg.norm(axis)), 1e-12)
+    dots = np.abs(axis)
+    i = int(np.argmax(dots))
+    ang = math.degrees(math.acos(min(1.0, float(dots[i]))))
+    if ang > limit_deg:
+        return None
+    return i
+
+
+def _refit_on_axis(pts, axis_i):
+    """Circle in the plane perpendicular to a principal axis."""
+    free = [j for j in range(3) if j != axis_i]
+    x = pts[:, free[0]]
+    y = pts[:, free[1]]
+    design = np.c_[2.0 * x, 2.0 * y, np.ones(len(x))]
+    sol, *_ = np.linalg.lstsq(design, x * x + y * y, rcond=None)
+    cx, cy, k = (float(sol[0]), float(sol[1]), float(sol[2]))
+    r2 = k + cx * cx + cy * cy
+    if not np.isfinite(r2) or r2 <= 1e-9:
+        return None
+    point = np.zeros(3)
+    point[free[0]] = cx
+    point[free[1]] = cy
+    point[axis_i] = float(np.median(pts[:, axis_i]))
+    axis = np.zeros(3)
+    axis[axis_i] = 1.0
+    return Cylinder(axis, point, float(math.sqrt(r2)))
+
+
+def _ring_inward(m, faces, cyl, axis_i):
+    cen = m.triangles_center[faces]
+    radial = cen - np.asarray(cyl.point, float)
+    radial[:, axis_i] = 0.0
+    nrm = np.linalg.norm(radial, axis=1)
+    ok = nrm > 1e-8
+    if int(ok.sum()) < 8:
+        return False
+    radial = radial[ok] / nrm[ok, None]
+    dots = np.sum(m.face_normals[faces][ok] * radial, axis=1)
+    return float(np.median(dots)) < -0.5
+
+
+def _ring_is_empty(m, cyl, axis_i, u, v, mid, span, z0, z1):
+    """True when a sample inside the arc, at about half the radius, misses the solid."""
+    if z1 <= z0:
+        return False
+    pad = min(0.2, 0.2 * (z1 - z0))
+    zs = [z0 + pad, 0.5 * (z0 + z1), z1 - pad]
+    half = 0.25 * span
+    pts = []
+    radial = 0.55 * float(cyl.radius)
+    centre = np.asarray(cyl.point, float)
+    for z in zs:
+        for a in (mid - half, mid, mid + half):
+            p = centre + (math.cos(a) * u + math.sin(a) * v) * radial
+            p = np.array(p, float)
+            p[axis_i] = z
+            pts.append(p)
+    try:
+        inside = np.asarray(m.contains(np.asarray(pts, float)), dtype=bool)
+    except Exception:
+        return False
+    return not bool(np.any(inside))
+
+
+def partial_arc_cylinders(m, regs, tol):
+    """Partial-turn cylinders stored as a ring of planar facets.
+
+    Not called from :func:`segment`. A full turn is reclaimed there, and a
+    partial arc stays planes so the STEP faces do not change. A counterbore
+    that breaks out of a side face leaves only the arc still inside the
+    material. The arc is returned when its facets sit on one principal
+    cylinder. A tangent fillet, and a flat polygon whose corners merely lie
+    on a circle, stay planes.
+    """
+    small = []
+    limit = 0.01 * float(m.area)
+    tiny = 0.002 * float(m.area)
+    for i, r in enumerate(regs):
+        if not isinstance(r.surface, Plane) or not 0 < r.area < limit:
+            continue
+        if len(r.faces) > 4 and r.area >= tiny:
+            continue
+        small.append(i)
+    if len(small) < 8:
+        return []
+    small = set(small)
+    label = -np.ones(len(m.faces), int)
+    for i, r in enumerate(regs):
+        if len(r.faces):
+            label[r.faces] = i
+    step = float(np.cos(np.radians(35.0)))
+    g = nx.Graph()
+    g.add_nodes_from(small)
+    if len(m.face_adjacency):
+        for a, b in label[m.face_adjacency]:
+            a, b = int(a), int(b)
+            if a == b or a not in small or b not in small:
+                continue
+            na = np.asarray(regs[a].surface.normal, float)
+            nb_ = np.asarray(regs[b].surface.normal, float)
+            if float(na @ nb_) < step:
+                continue
+            g.add_edge(a, b)
+    nb = _neighbors(m)
+    found = []
+    used = set()
+    for comp in nx.connected_components(g):
+        comp = set(comp)
+        if len(comp) < 8 or comp & used:
+            continue
+        cyl = None
+        faces = None
+        for _ in range(6):
+            if len(comp) < 8:
+                cyl = None
+                break
+            faces = np.concatenate([regs[i].faces for i in comp])
+            cen = m.triangles_center[faces]
+            cyl = fit_cylinder(cen, m.face_normals[faces])
+            if cyl is None:
+                break
+            pts = m.vertices[np.unique(m.faces[faces])]
+            cyl = refine_cylinder(cyl, pts)
+            if not np.isfinite(cyl.radius) or not 0 < cyl.radius < 0.5 * m.scale:
+                cyl = None
+                break
+            thr = max(4.0 * tol, 0.02 * float(cyl.radius))
+            good = set()
+            for i in comp:
+                vp = m.vertices[np.unique(m.faces[regs[i].faces])]
+                if float(np.percentile(cyl.distance(vp), 90)) <= thr:
+                    good.add(i)
+            if good == comp:
+                break
+            if len(good) < 8:
+                cyl = None
+                break
+            comp = good
+            cyl = None
+        if cyl is None or faces is None or len(comp) < 8:
+            continue
+        faces = np.concatenate([regs[i].faces for i in comp])
+        pts = m.vertices[np.unique(m.faces[faces])]
+        cen = m.triangles_center[faces]
+        thr = max(4.0 * tol, 0.02 * float(cyl.radius))
+        if float(np.percentile(cyl.distance(pts), 95)) > thr:
+            continue
+        if float(np.percentile(cyl.distance(cen), 90)) > thr:
+            continue
+        axis_i = _near_principal(cyl.axis)
+        if axis_i is None:
+            continue
+        snapped = _refit_on_axis(pts, axis_i)
+        if snapped is None:
+            continue
+        cyl = refine_cylinder(snapped, pts)
+        if abs(float(cyl.axis[axis_i])) < math.cos(math.radians(8.0)):
+            continue
+        sign = 1.0 if float(cyl.axis[axis_i]) >= 0.0 else -1.0
+        axis = np.zeros(3)
+        axis[axis_i] = sign
+        point = np.asarray(cyl.point, float)
+        point = point - axis * float(point @ axis)
+        point[axis_i] = float(np.median(pts[:, axis_i]))
+        cyl = Cylinder(axis, point, float(cyl.radius))
+        if float(np.percentile(cyl.distance(pts), 95)) > thr:
+            continue
+        if float(np.percentile(cyl.distance(cen), 90)) > thr:
+            continue
+        dots = [abs(float(np.asarray(regs[i].surface.normal, float) @ axis)) for i in comp]
+        if float(np.median(dots)) > 0.35:
+            continue
+        ang, u, v = _cylinder_angles(axis, point, pts)
+        covered = _arc_span(ang)
+        if covered is None:
+            continue
+        span, second, mid = covered
+        if not np.radians(100.0) <= span <= np.radians(340.0):
+            continue
+        if second > np.radians(40.0):
+            continue
+        along = pts[:, axis_i]
+        z0, z1 = float(along.min()), float(along.max())
+        if z1 - z0 < max(4.0 * tol, 0.15):
+            continue
+        if not _ring_inward(m, faces, cyl, axis_i):
+            continue
+        planes, seen = [], set()
+        for f in faces:
+            for g in nb[int(f)]:
+                j = int(label[g])
+                if j >= 0 and j not in comp and j not in seen and isinstance(regs[j].surface, Plane):
+                    seen.add(j)
+                    planes.append(regs[j].surface)
+        tangent = snap_tangent_cylinder(cyl, planes, tol, pts)
+        if tangent is not None:
+            # A real fillet stays on the snapped cylinder. A hole wall that
+            # merely passes near two planes does not: the tangent radius
+            # leaves the facets.
+            old = float(np.percentile(cyl.distance(pts), 90))
+            new = float(np.percentile(tangent.distance(pts), 90))
+            if new <= max(old * 2.0, old + max(4.0 * tol, 0.05 * float(cyl.radius))):
+                continue
+        if not _ring_is_empty(m, cyl, axis_i, u, v, mid, span, z0, z1):
+            continue
+        used |= comp
+        found.append(Region(faces, cyl, float(m.area_faces[faces].sum())))
+    return found
 
 
 def _plane_off(m, region, tol):
