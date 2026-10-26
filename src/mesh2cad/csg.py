@@ -6,7 +6,8 @@ A part qualifies when every region is a plane, an axis-aligned cylinder, or a
 * the intersection of outlines extruded along X, Y, or Z;
 * one of those extrusions minus straight cut extrusions along the other axes,
   including a blind pocket that opens on one face;
-* either of those, plus round through-holes, counterbored through-holes,
+* either of those, plus round through-holes, counterbored through-holes
+  (including one whose wall is only a partial ring of planes),
   blind holes, and a 45 degree chamfer on a hole mouth or a blind hole bottom;
 * a planar clip where one face is tilted to all three axes (at most four);
 * a union of partial-depth extrusions, when the intersection above misses the
@@ -57,7 +58,7 @@ from .parametric import (
     _snap, axis_point_expr, cadquery_axis_dir, openscad_axis_rotate,
 )
 from .report import deviation, shape_to_mesh, volume
-from .segment import _analytic_mesh
+from .segment import _analytic_mesh, partial_arc_cylinders
 
 # Outline axis of an extrusion: X stores (y, z), Y stores (x, z), Z stores (x, y).
 _OUTLINE_OF = {0: {1: 0, 2: 1}, 1: {0: 0, 2: 1}, 2: {0: 0, 1: 1}}
@@ -330,8 +331,190 @@ def _feat_from_step(stepped, axis, point):
     return feat
 
 
+def _bore_empty(m, point, axis, a, b, radius, inner):
+    """True when the annulus between ``inner`` and ``radius`` misses the solid.
+
+    A counterbore that stops short of the bounding end, because a tab elsewhere
+    sets that end, leaves an empty gap. The gap is empty only outside the
+    through-hole: sampling the through-hole itself would look empty everywhere.
+    """
+    if b < a:
+        a, b = b, a
+    if b - a <= 1e-4:
+        return True
+    pad = min(0.15, 0.25 * (b - a))
+    a2, b2 = a + pad, b - pad
+    if b2 <= a2:
+        ts = np.array([0.5 * (a + b)])
+    else:
+        n = max(2, int(math.ceil((b2 - a2) / 0.45)) + 1)
+        ts = np.linspace(a2, b2, n)
+    mid_r = 0.5 * (float(inner) + float(radius))
+    outer_r = 0.5 * (mid_r + float(radius))
+    rhos = [r for r in (mid_r, outer_r) if float(inner) + 1e-3 < r < float(radius) - 1e-3]
+    if not rhos:
+        return False
+    i = (axis + 1) % 3
+    j = (axis + 2) % 3
+    centre = np.asarray(point, float)
+    pts = []
+    for t in ts:
+        for ang in np.linspace(0.0, 2.0 * math.pi, 8, endpoint=False):
+            for rho in rhos:
+                p = centre.copy()
+                p[axis] = float(t)
+                p[i] = centre[i] + rho * math.cos(float(ang))
+                p[j] = centre[j] + rho * math.sin(float(ang))
+                pts.append(p)
+    inside = _points_inside(m, np.asarray(pts, float))
+    return not bool(np.any(inside))
+
+
+def _extend_large_void(m, chain, point, axis, lo, hi, gap, inner):
+    """Pull a larger step out to a part end when that gap is already empty."""
+    for s in chain:
+        if float(s.ra) <= float(inner) + gap:
+            continue
+        if float(s.za) - float(lo) > gap and _bore_empty(m, point, axis, lo, float(s.za), float(s.ra), inner):
+            s.za = float(lo)
+        if float(hi) - float(s.zb) > gap and _bore_empty(m, point, axis, float(s.zb), hi, float(s.ra), inner):
+            s.zb = float(hi)
+
+
+def _grow_counterbore_to_span(m, stepped, point, axis, lo, hi, span_lo, span_hi, gap, inner):
+    """Measure a counterbore from the part end when the mouth sits on an empty gap.
+
+    A tab past the mouth makes a nearer cap look like the end of the hole. The
+    cutter is placed from the outline's end, so the depth has to reach the
+    shoulder from that end. The gap must be empty: a real step that still has
+    material around the hole is left where it is.
+    """
+    if stepped is None or "cbore_d" not in stepped:
+        return stepped, lo, hi
+    radius = float(stepped["cbore_d"]) / 2.0
+    stepped = dict(stepped)
+    if int(stepped.get("from", 1)) < 0 and float(span_lo) < float(lo) - gap:
+        if _bore_empty(m, point, axis, span_lo, lo, radius, inner):
+            stepped["cbore_depth"] = float(stepped["cbore_depth"]) + (float(lo) - float(span_lo))
+            lo = float(span_lo)
+    elif int(stepped.get("from", 1)) > 0 and float(span_hi) > float(hi) + gap:
+        if _bore_empty(m, point, axis, hi, span_hi, radius, inner):
+            stepped["cbore_depth"] = float(stepped["cbore_depth"]) + (float(span_hi) - float(hi))
+            hi = float(span_hi)
+    return stepped, lo, hi
+
+
+def _hole_group(m, regions, full_regs, extra_regs, ax, pt, cones, used_cones, tol):
+    """Hole features for one coaxial stack. Raises :class:`Unsupported`."""
+    gap = _eps(tol)
+    split_gap = max(1.0, 8.0 * tol)
+    regs = list(full_regs) + list(extra_regs)
+    full_small = min(float(r.surface.radius) for r in full_regs)
+    annuli = set()
+    big = max(float(r.surface.radius) for r in regs)
+    for r in regions:
+        if isinstance(r.surface, Plane) and r.area >= _min_area(m) and _annulus(m, r, ax, pt, big, tol):
+            annuli.add(id(r))
+    segs = []
+    for r in regs:
+        verts = m.vertices[np.unique(m.faces[r.faces])]
+        along = verts[:, ax]
+        rad = float(r.surface.radius)
+        segs.append(Segment("cylinder", float(along.min()), float(along.max()), rad, rad))
+    segs.sort(key=lambda s: s.za)
+    exterior = []
+    for r in regions:
+        if not isinstance(r.surface, Plane) or r.area < _min_area(m):
+            continue
+        if _attitude(r.surface.normal, ax, 4.0) != "cap":
+            continue
+        if id(r) in annuli:
+            continue
+        exterior.append(_plane_coord(r.surface, ax))
+    targets = exterior + _cap_coords([r for r in regions if id(r) in annuli], ax, set())
+    for s in segs:
+        s.za = _snap(s.za, targets, gap)
+        s.zb = _snap(s.zb, targets, gap)
+    for a, b in zip(segs, segs[1:]):
+        if abs(a.zb - b.za) <= gap:
+            mid = 0.5 * (a.zb + b.za)
+            a.zb = b.za = mid
+    span_lo, span_hi = _part_span(m, ax, exterior, tol)
+    chains = _split_chains(segs, split_gap)
+    chains.sort(key=lambda ch: -max(float(s.ra) for s in ch))
+    holes = []
+    emitted = []
+    for chain in chains:
+        if _covered_by_through(chain, emitted, ax, pt, gap):
+            continue
+        opened, lo, hi = _chain_opened(chain, exterior, gap)
+        stepped = _plain_or_counterbore(chain, lo, hi, gap) if opened else None
+        through = stepped is not None and "depth" not in (stepped or {})
+        has_large = any(float(s.ra) > full_small + gap for s in chain)
+        if stepped is None and extra_regs and has_large:
+            trial = [Segment(s.kind, float(s.za), float(s.zb), float(s.ra), float(s.rb)) for s in chain]
+            _extend_large_void(m, trial, pt, ax, span_lo, span_hi, gap, full_small)
+            occupied = [(float(s.za), float(s.zb)) for s in trial]
+            if span_hi > span_lo + gap and _span_clear(m, pt, ax, span_lo, span_hi, occupied):
+                rebuilt = _extend_small(trial, span_lo, span_hi, full_small, gap)
+                stepped = _plain_or_counterbore(rebuilt, span_lo, span_hi, gap)
+                through = stepped is not None
+                if through:
+                    lo, hi = span_lo, span_hi
+        if stepped is None:
+            r_small = min(float(s.ra) for s in chain)
+            # A partial arc must not become the through-hole diameter. Dropping
+            # it and retrying keeps the hole the full cylinders already described.
+            promote = not (extra_regs and r_small > full_small + gap)
+            occupied = [(float(s.za), float(s.zb)) for s in chain]
+            if promote and span_hi > span_lo + gap and _span_clear(m, pt, ax, span_lo, span_hi, occupied):
+                rebuilt = _extend_small(chain, span_lo, span_hi, r_small, gap)
+                stepped = _plain_or_counterbore(rebuilt, span_lo, span_hi, gap)
+                through = stepped is not None
+                if through:
+                    lo, hi = span_lo, span_hi
+        if stepped is None:
+            stepped = _blind_hole(chain, exterior, gap)
+            through = False
+        if stepped is None:
+            if len(chain) == 1:
+                raise Unsupported("hole does not pass through")
+            raise Unsupported("stepped hole is not a counterbored through-hole")
+        # Only a counterbore recovered from a partial arc is measured from the
+        # part end. A counterbore the full cylinders already described keeps
+        # the depth it had, including one that opens on an intermediate face.
+        if extra_regs:
+            stepped, lo, hi = _grow_counterbore_to_span(
+                m, stepped, pt, ax, lo, hi, span_lo, span_hi, gap, full_small)
+        feat = _feat_from_step(stepped, ax, pt)
+        _attach_chamfer(m, feat, cones, used_cones, ax, pt, gap)
+        # The chain's own ends. A union of partial extrusions must not
+        # measure a counterbore from the far end of a taller neighbour.
+        feat["span0"] = float(lo)
+        feat["span1"] = float(hi)
+        holes.append(feat)
+        if through:
+            # the cutter runs the whole part, so a fragment on the far
+            # side of a channel is the same hole and must not be repeated
+            emitted.append({
+                "axis": ax,
+                "point": pt,
+                "radius": float(stepped["d"]) / 2.0,
+                "lo": float(span_lo),
+                "hi": float(span_hi),
+            })
+    return holes, annuli
+
+
 def _holes(m, regions, tol):
-    """Through-holes, counterbores, blind holes, and a 45 degree chamfer on them."""
+    """Through-holes, counterbores, blind holes, and a 45 degree chamfer on them.
+
+    A counterbore that breaks out of a side face is only a partial ring of
+    planes. That ring is not a region cylinder (a partial arc stays planes, so
+    the STEP faces do not change). It is attached here when it is coaxial with
+    a hole and larger, and kept only when the stack is a counterbored through
+    hole. Otherwise the hole is the one the full cylinders already described.
+    """
     cyls = []
     cones = []
     for r in regions:
@@ -367,87 +550,39 @@ def _holes(m, regions, tol):
                 break
         else:
             groups.append({"axis": ax, "point": pt.copy(), "regs": [r], "n": 1})
+    for arc in partial_arc_cylinders(m, regions, tol):
+        s = arc.surface
+        ax = _principal_axis(s.axis)
+        if ax is None:
+            continue
+        pt = np.asarray(s.point, float)
+        rad = float(s.radius)
+        for g in groups:
+            centre = g["point"] / g["n"]
+            if g["axis"] != ax or _perp_dist(ax, centre, pt) > gtol:
+                continue
+            if rad <= max(float(r.surface.radius) for r in g["regs"]) + gtol:
+                continue
+            g.setdefault("partials", []).append(arc)
+            break
     holes = []
     annuli = set()
-    gap = _eps(tol)
-    # A real break between two holes, not the zero gap where a counterbore steps.
-    split_gap = max(1.0, 8.0 * tol)
     used_cones = set()
     for g in groups:
         ax = g["axis"]
         pt = g["point"] / g["n"]
-        radii = [float(r.surface.radius) for r in g["regs"]]
-        big = max(radii)
-        for r in regions:
-            if isinstance(r.surface, Plane) and r.area >= _min_area(m) and _annulus(m, r, ax, pt, big, tol):
-                annuli.add(id(r))
-        segs = []
-        for r in g["regs"]:
-            verts = m.vertices[np.unique(m.faces[r.faces])]
-            along = verts[:, ax]
-            rad = float(r.surface.radius)
-            segs.append(Segment("cylinder", float(along.min()), float(along.max()), rad, rad))
-        segs.sort(key=lambda s: s.za)
-        exterior = []
-        for r in regions:
-            if not isinstance(r.surface, Plane) or r.area < _min_area(m):
-                continue
-            if _attitude(r.surface.normal, ax, 4.0) != "cap":
-                continue
-            if id(r) in annuli:
-                continue
-            exterior.append(_plane_coord(r.surface, ax))
-        targets = exterior + _cap_coords([r for r in regions if id(r) in annuli], ax, set())
-        for s in segs:
-            s.za = _snap(s.za, targets, gap)
-            s.zb = _snap(s.zb, targets, gap)
-        for a, b in zip(segs, segs[1:]):
-            if abs(a.zb - b.za) <= gap:
-                mid = 0.5 * (a.zb + b.za)
-                a.zb = b.za = mid
-        span_lo, span_hi = _part_span(m, ax, exterior, tol)
-        chains = _split_chains(segs, split_gap)
-        chains.sort(key=lambda ch: -max(float(s.ra) for s in ch))
-        emitted = []
-        for chain in chains:
-            if _covered_by_through(chain, emitted, ax, pt, gap):
-                continue
-            opened, lo, hi = _chain_opened(chain, exterior, gap)
-            stepped = _plain_or_counterbore(chain, lo, hi, gap) if opened else None
-            through = stepped is not None and "depth" not in (stepped or {})
-            if stepped is None:
-                r_small = min(float(s.ra) for s in chain)
-                occupied = [(float(s.za), float(s.zb)) for s in chain]
-                if span_hi > span_lo + gap and _span_clear(m, pt, ax, span_lo, span_hi, occupied):
-                    rebuilt = _extend_small(chain, span_lo, span_hi, r_small, gap)
-                    stepped = _plain_or_counterbore(rebuilt, span_lo, span_hi, gap)
-                    through = stepped is not None
-                    if through:
-                        lo, hi = span_lo, span_hi
-            if stepped is None:
-                stepped = _blind_hole(chain, exterior, gap)
-                through = False
-            if stepped is None:
-                if len(chain) == 1:
-                    raise Unsupported("hole does not pass through")
-                raise Unsupported("stepped hole is not a counterbored through-hole")
-            feat = _feat_from_step(stepped, ax, pt)
-            _attach_chamfer(m, feat, cones, used_cones, ax, pt, gap)
-            # The chain's own ends. A union of partial extrusions must not
-            # measure a counterbore from the far end of a taller neighbour.
-            feat["span0"] = float(lo)
-            feat["span1"] = float(hi)
-            holes.append(feat)
-            if through:
-                # the cutter runs the whole part, so a fragment on the far
-                # side of a channel is the same hole and must not be repeated
-                emitted.append({
-                    "axis": ax,
-                    "point": pt,
-                    "radius": float(stepped["d"]) / 2.0,
-                    "lo": float(span_lo),
-                    "hi": float(span_hi),
-                })
+        partials = g.get("partials") or []
+        trial_used = set(used_cones)
+        try:
+            feats, extra = _hole_group(m, regions, g["regs"], partials, ax, pt, cones, trial_used, tol)
+        except Unsupported:
+            if not partials:
+                raise
+            feats, extra = _hole_group(m, regions, g["regs"], [], ax, pt, cones, used_cones, tol)
+        else:
+            used_cones |= trial_used
+        holes.extend(feats)
+        annuli |= extra
     holes.sort(key=lambda h: (h["axis"], h.get("x", 0.0), h.get("y", 0.0), h.get("z", 0.0)))
     return holes, annuli
 
