@@ -169,6 +169,36 @@ def counterbored_plate():
     return cq.Workplane("XY").box(40, 28, 14).faces(">Z").workplane().cboreHole(6, 12, 4)
 
 
+def partial_edge_chamfer():
+    """40×30×16 block with a 2 mm 45° chamfer on only the middle of one top edge.
+
+    The chamfer runs along X from x=-10 to x=10 on the +Y/+Z corner. The two
+    ends of that edge stay square, so every full-length silhouette is still
+    the box and the chamfer is a separate cut.
+    """
+    block = cq.Workplane("XY").box(40, 30, 16)
+    cutter = (cq.Workplane(cq.Plane(origin=cq.Vector(-10, 0, 0),
+                                     xDir=cq.Vector(0, 1, 0),
+                                     normal=cq.Vector(1, 0, 0)))
+              .polyline([(15, 8), (13, 8), (15, 6)]).close().extrude(20))
+    return block.cut(cutter)
+
+
+def breakout_slant():
+    """Plate with one slanted wall and a slot that opens into a through hole.
+
+    Outline (x, y): (-25, -18), (25, -18), (25, 10), (10, 16), (-25, 16),
+    extruded 10 mm. Ø10 hole at the origin. The slot is x=-4..4 from the -Y
+    edge into that hole, so the hole is part of the outer loop.
+    """
+    outline = [(-25, -18), (25, -18), (25, 10), (10, 16), (-25, 16)]
+    plate = cq.Workplane("XY").polyline(outline).close().extrude(10)
+    hole = cq.Solid.makeCylinder(5.0, 20.0, cq.Vector(0, 0, -5), cq.Vector(0, 0, 1))
+    slot = (cq.Workplane("XY").polyline([(-4, -18), (4, -18), (4, 0), (-4, 0)])
+            .close().extrude(10))
+    return plate.cut(cq.Workplane().add(hole)).cut(slot)
+
+
 def angled_hole():
     """40×40×20 block with a hole whose axis is in the XY plane but not on X or Y."""
     block = cq.Workplane().box(40, 40, 20).val()

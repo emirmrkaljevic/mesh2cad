@@ -1420,7 +1420,7 @@ def _positive_shape(spec):
     return _chamfer_wedges(shape, spec)
 
 
-def _solid(positives, cuts, holes, clips, mode="intersect"):
+def _solid(positives, cuts, holes, clips, mode="intersect", cones=None):
     if not positives:
         return None
     shape = _positive_shape(positives[0])
@@ -1452,6 +1452,9 @@ def _solid(positives, cuts, holes, clips, mode="intersect"):
             shape = _add_cut(shape, tool)
     for clip in clips:
         shape = _add_cut(shape, _clip_tool(clip))
+    for cone in cones or []:
+        ax = "XYZ".index(cone["axis"])
+        shape = _add_cut(shape, _cone(cone["origin"], ax, cone["r0"], cone["r1"], cone["length"]))
     return shape
 
 
@@ -1713,6 +1716,95 @@ def _stack_result(spec, holes):
     }
 
 
+def _try_refine(m, regions, holes, specs, clips, use_clips, skip, tol, samples):
+    """Wall-snapped outline, chamfer wedges, and leftover 45 degree cones.
+
+    None when the rebuild does not produce a solid. The caller keeps it only
+    when it is closer to the mesh than the silhouette boolean.
+    """
+    from .refine import chamfer_cuts, cone_cuts, wall_outline
+
+    specs = {axis: dict(spec) for axis, spec in specs.items()}
+    for axis in list(specs):
+        outline = wall_outline(m, regions, holes, axis, tol)
+        if outline is None or len(outline) < 3:
+            continue
+        if abs(_shoelace(outline)) <= abs(_shoelace(specs[axis]["outline"])) * 0.85:
+            continue
+        specs[axis] = dict(specs[axis])
+        specs[axis]["outline"] = _nice_loop(outline, tol)
+        specs[axis]["cutouts"] = []
+    chosen = [a for a in (2, 0, 1) if a in specs]
+    if not chosen:
+        return None
+    try:
+        host = _solid([specs[a] for a in chosen], [], holes, clips if use_clips else [])
+        pockets = _pocket_faces(m, regions, host, skip, tol)
+    except Exception:
+        return None
+    cuts = []
+    for comp in _components(m, pockets):
+        if sum(r.area for r in comp) < _min_area(m):
+            continue
+        try:
+            cuts.append(_round_spec(_cut_from_component(m, comp, regions, skip, tol), tol))
+        except Unsupported:
+            continue
+    for wedge in chamfer_cuts(m, regions, holes):
+        try:
+            cuts.append(_round_spec(wedge, tol))
+        except Exception:
+            continue
+    cones = []
+    for cone in cone_cuts(m, regions):
+        cones.append({
+            "axis": cone["axis"],
+            "origin": [_nice(v, tol) for v in cone["origin"]],
+            "r0": _nice(cone["r0"], tol),
+            "r1": _nice(cone["r1"], tol),
+            "length": _nice(cone["length"], tol),
+        })
+    # A floor is a constant-depth cut. On the silhouette solid it often does
+    # not help, because the outline is still wrong. Once the outline follows
+    # the walls, the same floors are the steps inside a pocket.
+    try:
+        shape = _solid([specs[a] for a in chosen], cuts, holes, clips if use_clips else [], cones=cones)
+        score = _score(shape, m, tol, samples)
+    except Exception:
+        return None
+    if score["max_deviation"] >= 1e8:
+        return None
+    if not _ok(score, tol):
+        for spec in _floor_cuts(m, regions, skip, tol):
+            trial = cuts + [_round_spec(spec, tol)]
+            try:
+                got_shape = _solid(
+                    [specs[a] for a in chosen], trial, holes, clips if use_clips else [], cones=cones)
+            except Exception:
+                continue
+            got = _score(got_shape, m, tol, samples)
+            closer = got["max_deviation"] < score["max_deviation"] - 0.01
+            same_dev = got["max_deviation"] <= score["max_deviation"] + 0.02
+            if closer or (same_dev and got["volume_error_pct"] < score["volume_error_pct"] - 0.05):
+                cuts = trial
+                score = got
+                shape = got_shape
+                if _ok(score, tol):
+                    break
+    if score["max_deviation"] >= 1e8:
+        return None
+    result = {
+        "csg": {
+            "positive": [_public(specs[a]) for a in chosen],
+            "cuts": [_public(c) for c in cuts],
+            "clips": clips if use_clips else [],
+            "cones": cones,
+        },
+        "holes": holes,
+    }
+    return score, result
+
+
 def extract_csg(m: trimesh.Trimesh, regions, tol: float) -> dict:
     """Recognise a small boolean of extrusions. Raises :class:`Unsupported`."""
     _refuse_surfaces(m, regions)
@@ -1846,6 +1938,14 @@ def extract_csg(m: trimesh.Trimesh, regions, tol: float) -> dict:
             got, spec = stacked
             if _ok(got, tol):
                 return _stack_result(spec, holes)
+            if got["max_deviation"] < best["max_deviation"]:
+                best = got
+    if not _ok(best, tol):
+        refined = _try_refine(m, regions, holes, specs, clips, use_clips, skip, tol, samples)
+        if refined is not None:
+            got, result = refined
+            if _ok(got, tol):
+                return result
             if got["max_deviation"] < best["max_deviation"]:
                 best = got
         _fail(best, tol)
@@ -2004,6 +2104,13 @@ def _param_rows(feats, tol):
             ax = hole["axis"].lower()
             numbers.append((f"{n}_{ax}0", hole["span0"], f"hole start along {hole['axis']}"))
             numbers.append((f"{n}_{ax}1", hole["span1"], f"hole end along {hole['axis']}"))
+    for i, cone in enumerate(csg.get("cones") or [], 1):
+        n = f"cone_{i}"
+        numbers.append((f"{n}_r0", cone["r0"], f"45 degree cone radius at the start, axis {cone['axis']}"))
+        numbers.append((f"{n}_r1", cone["r1"], "radius at the other end"))
+        numbers.append((f"{n}_h", cone["length"], "axial length"))
+        for coord, value in zip("xyz", cone["origin"]):
+            numbers.append((f"{n}_{coord}", value, ""))
     for i, clip in enumerate(csg["clips"], 1):
         n = f"clip_{i}"
         numbers.append((f"{n}_x", clip["x"], "outward normal"))
@@ -2175,6 +2282,13 @@ def render_cadquery(feats: dict, tol: float = 0.01, source: str | None = None) -
         n = f"hole_{i}"
         lo, hi = _hole_limits(hole, i, positives, names, "cadquery", union)
         body.extend(_cq_hole(n, hole, lo, hi))
+    for i, _cone in enumerate(csg.get("cones") or [], 1):
+        n = f"cone_{i}"
+        direction = cadquery_axis_dir(_cone["axis"])
+        body.append(
+            f"result = result.cut(cq.Workplane().add(cq.Solid.makeCone("
+            f"{n}_r0, {n}_r1, {n}_h, cq.Vector({n}_x, {n}_y, {n}_z), "
+            f"cq.Vector({direction}))))")
     for i, _clip in enumerate(csg["clips"], 1):
         body.extend(_cq_clip_lines("result", f"clip_{i}", f"c{i}"))
     width = max([len(n) for n, _, _ in numbers] + [len(n) for n, _, _ in lists] + [1])
@@ -2227,6 +2341,13 @@ def _scad_hole(prefix, hole, diam, start, length) -> str:
     return (f"translate([{point}])\n"
             f"  rotate({openscad_axis_rotate(hole['axis'])})\n"
             f"    cylinder(h={length}, d={diam});")
+
+
+def _scad_cone_at(axis, prefix) -> str:
+    """A cone cutter whose start point and radii are named parameters."""
+    return (f"translate([{prefix}_x, {prefix}_y, {prefix}_z])\n"
+            f"  rotate({openscad_axis_rotate(axis)})\n"
+            f"    cylinder(h={prefix}_h, r1={prefix}_r0, r2={prefix}_r1);")
 
 
 def _scad_cone(prefix, hole, r1, r2, start, length) -> str:
@@ -2352,6 +2473,8 @@ def render_openscad(feats: dict, tol: float = 0.01, source: str | None = None) -
     def section(name: str) -> str:
         if name.startswith("cut_"):
             return "Cuts"
+        if name.startswith("cone_"):
+            return "Cones"
         if name.startswith("hole_"):
             return "Holes"
         if name.startswith("clip_"):
@@ -2436,6 +2559,8 @@ def render_openscad(feats: dict, tol: float = 0.01, source: str | None = None) -
         n = f"hole_{i}"
         lo, hi = _hole_limits(hole, i, positives, names, "openscad", union)
         sub.extend(_scad_hole_pieces(n, hole, lo, hi))
+    for i, cone in enumerate(csg.get("cones") or [], 1):
+        sub.append(_scad_cone_at(cone["axis"], f"cone_{i}"))
     for i in range(1, len(csg["clips"]) + 1):
         sub.append(_scad_clip(i))
     model = ["// --- model ---"]
