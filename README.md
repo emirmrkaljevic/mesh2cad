@@ -2,9 +2,6 @@
 [![ci](https://github.com/emirmrkaljevic/mesh2cad/actions/workflows/ci.yml/badge.svg)](https://github.com/emirmrkaljevic/mesh2cad/actions/workflows/ci.yml)
 [![emirmrkaljevic/mesh2cad MCP server](https://glama.ai/mcp/servers/emirmrkaljevic/mesh2cad/badges/score.svg)](https://glama.ai/mcp/servers/emirmrkaljevic/mesh2cad)
 
-<p align="center"><a href="https://skintoscan.com/#packages"><img src=".github/assets/skintoscan-support.svg" width="684" alt="Support my open-source work: get a SkinToScan pack"></a><br><sub>If you find this useful, you can support me by getting a SkinToScan pack, my other project. It's a one-time purchase that directly funds my open-source work.</sub></p>
-<p align="center"><a href="https://skintoscan.com/checkout/?add-to-cart=138"><img src=".github/assets/skintoscan-pack-1.svg" width="220" alt="Buy Single Picture Check, €4.49"></a> <a href="https://skintoscan.com/checkout/?add-to-cart=139"><img src=".github/assets/skintoscan-pack-5.svg" width="220" alt="Buy 5 Picture Pack, €19.99 (popular)"></a> <a href="https://skintoscan.com/checkout/?add-to-cart=140"><img src=".github/assets/skintoscan-pack-15.svg" width="220" alt="Buy 15 Picture Pack, €54.99"></a></p>
-
 Turn 3D meshes (STL/OBJ/PLY) into **real, editable CAD (STEP)**: fitted planes, cylinders, spheres, cones, and constant-radius fillets instead of triangle soup. CLI + MCP server for AI agents. MIT, pure Python on top of OpenCascade.
 
 ![demo](https://raw.githubusercontent.com/emirmrkaljevic/mesh2cad/main/docs/demo.gif)
@@ -12,6 +9,19 @@ Turn 3D meshes (STL/OBJ/PLY) into **real, editable CAD (STEP)**: fitted planes, 
 ![before/after](https://raw.githubusercontent.com/emirmrkaljevic/mesh2cad/main/docs/before_after.png)
 
 *Left: 21k-triangle mesh with 0.1 mm noise. Right: the STEP mesh2cad writes: 10 planes + 2 cylinders, max deviation 0.05 mm from the true part.*
+
+## 30-second quickstart
+```
+pip install mesh2cad
+mesh2cad convert part.stl -o part.step --report report.md
+```
+Open `part.step` in FreeCAD, Fusion, Onshape or any CAD tool: you get real planes, cylinders and fillets you can select and dimension. `report.md` says how close the result is to the mesh, and mesh2cad falls back to faceted output instead of guessing when a fit is bad.
+
+Using an AI agent (Claude Desktop, Cursor, any MCP client)? `pip install "mesh2cad[mcp]"` and add:
+```json
+{ "mcpServers": { "mesh2cad": { "command": "mesh2cad", "args": ["mcp"] } } }
+```
+Proof on real parts: all 6 tested Original Prusa i3 MK3S parts convert to exact STEP, and 5 of 6 also to an editable CadQuery/OpenSCAD script (see [Real parts](#real-parts)).
 
 ## Install
 ```
@@ -296,5 +306,9 @@ python docs/make_demo.py   # regenerate images (needs matplotlib, pillow)
 ```
 
 License: MIT
+
+## Support
+<p align="center"><a href="https://skintoscan.com/#packages"><img src=".github/assets/skintoscan-support.svg" width="684" alt="Support my open-source work: get a SkinToScan pack"></a><br><sub>If you find this useful, you can support me by getting a SkinToScan pack, my other project. It's a one-time purchase that directly funds my open-source work.</sub></p>
+<p align="center"><a href="https://skintoscan.com/checkout/?add-to-cart=138"><img src=".github/assets/skintoscan-pack-1.svg" width="220" alt="Buy Single Picture Check, €4.49"></a> <a href="https://skintoscan.com/checkout/?add-to-cart=139"><img src=".github/assets/skintoscan-pack-5.svg" width="220" alt="Buy 5 Picture Pack, €19.99 (popular)"></a> <a href="https://skintoscan.com/checkout/?add-to-cart=140"><img src=".github/assets/skintoscan-pack-15.svg" width="220" alt="Buy 15 Picture Pack, €54.99"></a></p>
 
 <!-- mcp-name: io.github.emirmrkaljevic/mesh2cad -->
