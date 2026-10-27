@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.14.0 - 2026-10-27
 
 - Parametric export rebuilds a combined extrusion after the silhouette intersection and the partial-depth union have both missed the mesh. Each outline is a raster snapped to vertical wall planes. A hole that has broken out through a slot is closed at the two mouths, and a flare outside that cylinder is left on the loop. A planar bevel with axis-aligned walls is a triangular cut (`cut_N`) along the wide part of the face. A 45 degree cone that is not already `hole_N_chamfer` is `cone_N_r0`, `cone_N_r1`, `cone_N_h`. Shallow floors are scored again on that solid. The rebuild does not run when an earlier solid already passed the gate. The gate is unchanged.
 - y-rod-holder exports both scripts. CadQuery and OpenSCAD deviate by 0.1300 mm (volume error 0.096% and 0.089%), under the limit of 0.138 mm. On 0.13.0 the same part was refused at 0.745 mm and 0.61% volume: the Z outline followed the bore through the slot and chorded the slanted -Y wall. The Ø3.3 hole along Y at x=-11.65, z=-5 keeps the Ø6.3 counterbore. plug-aligner (0.0000 mm), endstop-block (0.0421 mm), y-belt-idler (CadQuery 0.1534 mm, OpenSCAD 0.1639 mm), and y-motor-holder (0.1843 mm) are unchanged. Exact STEP is unchanged on all six parts.
