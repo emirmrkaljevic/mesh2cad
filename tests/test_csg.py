@@ -13,7 +13,10 @@ from mesh2cad.convert import convert_mesh  # noqa: E402
 from mesh2cad.io import add_noise  # noqa: E402
 from mesh2cad.openscad_code import check as scad_check  # noqa: E402
 from mesh2cad.openscad_code import to_openscad  # noqa: E402
-from parts import counterbored_plate, cut_block, orthogonal_intersection, to_mesh  # noqa: E402
+from parts import (  # noqa: E402
+    breakout_slant, counterbored_plate, cut_block, orthogonal_intersection,
+    partial_edge_chamfer, to_mesh,
+)
 
 needs_openscad = pytest.mark.skipif(shutil.which("openscad") is None, reason="openscad is not installed")
 
@@ -326,6 +329,68 @@ def test_openscad_edit_stacked_length_and_hole(tmp_path):
     assert v0 - abs(render_mesh(shorter, tmp_path / "b").volume) == pytest.approx(20.0 * 36.0 * 4.0, rel=0.01)
     wider = re.sub(r"^hole_1_d\s*=\s*[\d.]+", "hole_1_d = 8.0", code, flags=re.M)
     assert v0 - abs(render_mesh(wider, tmp_path / "c").volume) == pytest.approx(math.pi * 7.0 * 5.0, rel=0.02)
+
+
+def _tessellate(wp):
+    import numpy as np
+
+    v, f = wp.val().tessellate(0.05, 0.2)
+    return trimesh.Trimesh(np.array([p.toTuple() for p in v]), np.array(f), process=True)
+
+
+def test_partial_edge_chamfer_is_a_cut():
+    """A 45° bevel on part of one edge is a triangular cut, not a silhouette.
+
+    The square ends of the edge keep every full-length profile a rectangle.
+    Without the bevel cut the corner is about 1.4 mm off.
+    """
+    ref = _tessellate(partial_edge_chamfer())
+    res = convert_mesh(ref, tol=0.05, with_report=False)
+    code, q = to_cadquery(res.mesh, res.regions, res.tol)
+    assert q["max_deviation"] <= max(4 * res.tol, 0.1)
+    assert q["volume_error_pct"] <= 1.0
+    params = _params(code)
+    assert params["cut_1_len"] == pytest.approx(20.0, abs=0.05)
+    assert params["cut_1_0"] == pytest.approx(-10.0, abs=0.05)
+    _same_loop(_point_block(code, "cut_1"), [(13.0, 8.0), (15.0, 6.0), (15.0, 8.0)], 0.05)
+    against = cq_check(code, ref)
+    assert against["max_deviation"] < 0.08
+    assert against["volume_error_pct"] < 0.5
+
+
+@needs_openscad
+def test_openscad_partial_edge_chamfer(tmp_path):
+    ref = _tessellate(partial_edge_chamfer())
+    res = convert_mesh(ref, tol=0.05, with_report=False)
+    code, q = to_openscad(res.mesh, res.regions, res.tol)
+    assert q["max_deviation"] <= max(4 * res.tol, 0.1)
+    assert q["volume_error_pct"] <= 1.0
+    assert "cut_1_len" in code
+    against = scad_check(code, ref, tmp_path)
+    assert against["max_deviation"] < 0.08
+    assert against["volume_error_pct"] < 0.5
+
+
+def test_wall_outline_closes_a_hole_breakout():
+    """The outer loop follows the slanted wall and meets the hole at two mouths.
+
+    A slot that opens into a hole makes the cylinder part of the boundary.
+    The rebuilt outline keeps that as the chord between the slot walls.
+    """
+    from mesh2cad.refine import wall_outline
+    from mesh2cad.segment import segment
+
+    mesh = _tessellate(breakout_slant())
+    tol = 0.05
+    regions = segment(mesh, tol)
+    holes = [{"axis": "Z", "x": 0.0, "y": 0.0, "d": 10.0}]
+    loop = wall_outline(mesh, regions, holes, 2, tol)
+    assert loop is not None and len(loop) <= 12
+    assert any(abs(x - 25) <= 0.3 and abs(y - 10) <= 0.3 for x, y in loop)
+    assert any(abs(x - 10) <= 0.3 and abs(y - 16) <= 0.3 for x, y in loop)
+    on_hole = [p for p in loop if abs(math.hypot(p[0], p[1]) - 5.0) <= 0.4]
+    assert len(on_hole) == 2
+    assert all(p[1] < 0 for p in on_hole)
 
 
 @needs_openscad
