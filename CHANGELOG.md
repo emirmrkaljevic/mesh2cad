@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.14.1 - 2026-10-28
+
+- Fix: the CLI failed to import on Python 3.10 and 3.11 with a SyntaxError, because one f-string reused double quotes inside the braces (allowed only from Python 3.12). The package declares Python 3.10 or newer, so `pip install mesh2cad` gave a broken command on those versions. CI now byte-compiles the sources on Python 3.10 as well.
+
 ## 0.14.0 - 2026-10-27
 
 - Parametric export rebuilds a combined extrusion after the silhouette intersection and the partial-depth union have both missed the mesh. Each outline is a raster snapped to vertical wall planes. A hole that has broken out through a slot is closed at the two mouths, and a flare outside that cylinder is left on the loop. A planar bevel with axis-aligned walls is a triangular cut (`cut_N`) along the wide part of the face. A 45 degree cone that is not already `hole_N_chamfer` is `cone_N_r0`, `cone_N_r1`, `cone_N_h`. Shallow floors are scored again on that solid. The rebuild does not run when an earlier solid already passed the gate. The gate is unchanged.
