@@ -55,7 +55,7 @@ def _convert(a) -> int:
         print(dumps(r))
     else:
         d = r["deviation"]
-        print(f"wrote {out}  [{r["method"]}] faces={r['output']['faces']} "
+        print(f"wrote {out}  [{r['method']}] faces={r['output']['faces']} "
               f"valid={r['output']['valid_solid']} hausdorff={d['hausdorff']:.4f} rms={d['rms']:.4f}")
     return 0
 
