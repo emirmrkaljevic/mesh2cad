@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Parametric export can cut a solid back to the real cross-section along X, Y, or Z when the silhouette intersection, the partial-depth union, and the wall-snapped rebuild have all missed the mesh. One bounding extrusion is trimmed by a cut on each span where the outer profile stays within 0.05 mm (`cut_N`, with the section kept as `cut_N_cutout_J`). A gap between two parallel faces from 0.12 mm to 0.55 mm is a polygonal cut of the section between them. An inner loop that holds its place along the axis, such as a hex pocket or a bore, is a polygonal cut over that span. The gate is unchanged.
+- y-belt-holder exports both scripts. CadQuery deviates by 0.0943 mm (volume error 0.700%) and OpenSCAD by 0.0965 mm (volume error 0.700%), under the limit of 0.154 mm. On 0.14.0 the same part was refused at 2.517 mm and 1.97% volume. The base is full height for only part of the length, a hexagonal pocket and a bore occupy part of that length, and five slits are 0.2 mm thick. plug-aligner (0.0000 mm), endstop-block (0.0421 mm), y-belt-idler (CadQuery 0.1534 mm, OpenSCAD 0.1639 mm), y-motor-holder (0.1843 mm), and y-rod-holder (0.1300 mm) are unchanged. Exact STEP is unchanged on all six parts.
+- Tests: a bar that steps down along X, with a hexagonal tunnel and a 0.3 mm pentagonal slit, for both exporters. The sweep's cuts include the polygon and the section kept inside the bounding cut.
+
 ## 0.14.1 - 2026-10-28
 
 - Fix: the CLI failed to import on Python 3.10 and 3.11 with a SyntaxError, because one f-string reused double quotes inside the braces (allowed only from Python 3.12). The package declares Python 3.10 or newer, so `pip install mesh2cad` gave a broken command on those versions. CI now byte-compiles the sources on Python 3.10 as well.

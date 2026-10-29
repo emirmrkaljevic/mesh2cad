@@ -13,7 +13,11 @@ A part qualifies when every region is a plane, an axis-aligned cylinder, or a
 * a union of partial-depth extrusions, when the intersection above misses the
   mesh. Each extrusion has its own sketch and depth. A 45 degree chamfer on
   the start face, and a clip that belongs to one extrusion, stay on that
-  extrusion. A hole then carries the span of the face it opens on.
+  extrusion. A hole then carries the span of the face it opens on;
+* one bounding extrusion along X, Y, or Z, minus the complement of the true
+  cross-section on each span where that section stays still, when the solids
+  above still miss the mesh. A thin gap between two parallel faces, and an
+  inner loop that keeps its shape along the span, are polygonal cuts.
 
 The box vocabulary and a single straight extrusion are tried first. This
 module is the fallback, and it keeps their parameter names when the part is
@@ -1944,6 +1948,18 @@ def extract_csg(m: trimesh.Trimesh, regions, tol: float) -> dict:
         refined = _try_refine(m, regions, holes, specs, clips, use_clips, skip, tol, samples)
         if refined is not None:
             got, result = refined
+            if _ok(got, tol):
+                return result
+            if got["max_deviation"] < best["max_deviation"]:
+                best = got
+    if not _ok(best, tol):
+        # The outline is whatever the part looks like from one end. A section
+        # that only exists for part of the length, and a gap thinner than the
+        # stations above, are still missing. The sweep cuts those back.
+        from .sweep import try_sweep
+        swept = try_sweep(m, regions, tol)
+        if swept is not None:
+            got, result = swept
             if _ok(got, tol):
                 return result
             if got["max_deviation"] < best["max_deviation"]:
