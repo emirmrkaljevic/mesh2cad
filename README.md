@@ -9,6 +9,8 @@ Turn 3D meshes (STL/OBJ/PLY) into **real, editable CAD (STEP)**: fitted planes, 
 
 ![demo](https://raw.githubusercontent.com/emirmrkaljevic/mesh2cad/main/docs/demo.gif)
 
+Try it in the browser: the [example gallery](https://huggingface.co/spaces/mesh2cad/mesh2cad) shows four real printer parts in 3D before and after, with the STEP files and the generated CadQuery/OpenSCAD scripts to download.
+
 ![before/after](https://raw.githubusercontent.com/emirmrkaljevic/mesh2cad/main/docs/before_after.png)
 
 *Left: 21k-triangle mesh with 0.1 mm noise. Right: the STEP mesh2cad writes: 10 planes + 2 cylinders, max deviation 0.05 mm from the true part.*
