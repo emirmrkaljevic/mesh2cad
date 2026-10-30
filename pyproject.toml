@@ -11,6 +11,13 @@ license = "MIT"
 requires-python = ">=3.10"
 dependencies = ["trimesh", "rtree", "networkx", "numpy", "scipy", "cadquery-ocp>=7.8,<8"]
 
+[project.urls]
+Homepage = "https://emirmrkaljevic.github.io/mesh2cad/"
+Source = "https://github.com/emirmrkaljevic/mesh2cad"
+Issues = "https://github.com/emirmrkaljevic/mesh2cad/issues"
+Changelog = "https://github.com/emirmrkaljevic/mesh2cad/releases"
+"Example gallery" = "https://huggingface.co/spaces/mesh2cad/mesh2cad"
+
 [project.optional-dependencies]
 mcp = ["mcp"]
 cadquery = ["cadquery"]
