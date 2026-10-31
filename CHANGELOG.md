@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.16.0 - 2026-10-31
 
 - Parametric FreeCAD export: `mesh2cad convert in.stl --freecad out.FCMacro` writes a macro for the same parts as `--cadquery` and `--openscad`. Parameter names match (`base_t`, `hole_1_d`, `hole_1_cbore_d`, `fillet_r`, `extrude_len`, `outline`, `cut_1`, `clip_1_d`, and the rest). The macro uses FreeCAD's Part API: `makeBox`, `makeCylinder`, `makeCone`, a polygon extruded along X, Y, or Z, `fuse` / `cut` / `common`, and `makeFillet` on the four vertical corners of a rectangular base.
 - `freecadcmd` runs the macro and the solid is compared with the mesh before the file is written. The gate is unchanged: max deviation at most max(4·tol, 0.1), volume error at most 1%. If `freecadcmd` is not on `PATH` the file is still written and the command reports it unverified. FreeCAD is not a Python dependency. Parts outside the vocabulary exit with code 2 and a reason. STEP output is unchanged.
