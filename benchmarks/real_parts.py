@@ -90,23 +90,25 @@ def _fit_rank(regions):
 
 
 def _parametric(mesh):
-    """Same tolerance retries as ``mesh2cad convert --cadquery/--openscad``.
+    """Same tolerance retries as ``mesh2cad convert --cadquery/--openscad/--freecad``.
 
-    One segmentation is shared by both exporters. A success is kept. When
+    One segmentation is shared by the exporters. A success is kept. When
     every tolerance fails, the reported reason is the one from the
     segmentation with the fewest spheres, then the fewest unfitted regions,
     which is the same choice ``convert`` makes.
     """
     from mesh2cad.cadquery_code import to_cadquery
+    from mesh2cad.freecad_code import to_freecad
     from mesh2cad.openscad_code import to_openscad
 
     tols = [f * 1e-3 * mesh.scale for f in (1.0, 0.4, 0.2)]
     out = {}
     best_fail = {}
+    kinds = (("cadquery", to_cadquery), ("openscad", to_openscad), ("freecad", to_freecad))
     for t in tols:
         regions = segment(mesh, t)
         rank = (_fit_rank(regions), -t)
-        for kind, emit in (("cadquery", to_cadquery), ("openscad", to_openscad)):
+        for kind, emit in kinds:
             if out.get(kind, {}).get("ok"):
                 continue
             attempt = _script_attempt(emit, mesh, regions, t)
@@ -116,7 +118,7 @@ def _parametric(mesh):
             prev = best_fail.get(kind)
             if prev is None or rank < prev[0]:
                 best_fail[kind] = (rank, attempt)
-        if all(v.get("ok") for v in out.values()) and len(out) == 2:
+        if all(v.get("ok") for v in out.values()) and len(out) == len(kinds):
             break
     for kind, (_rank, attempt) in best_fail.items():
         out.setdefault(kind, attempt)
@@ -154,16 +156,17 @@ def main():
         )
         parametric.append((name, _parametric(clean(mesh))))
     print()
-    print("| part | cadquery | dev mm | openscad | dev mm |")
-    print("|---|---|---|---|---|")
+    print("| part | cadquery | dev mm | openscad | dev mm | freecad | dev mm |")
+    print("|---|---|---|---|---|---|---|")
     reasons = []
     for name, info in parametric:
         cq, cq_dev = _cell(info["cadquery"])
         sc, sc_dev = _cell(info["openscad"])
-        print(f"| {name} | {cq} | {cq_dev} | {sc} | {sc_dev} |")
-        if not info["cadquery"]["ok"] or not info["openscad"]["ok"]:
-            reason = info["cadquery"]["error"] or info["openscad"]["error"]
-            reasons.append(f"{name}: {reason}")
+        fc, fc_dev = _cell(info["freecad"])
+        print(f"| {name} | {cq} | {cq_dev} | {sc} | {sc_dev} | {fc} | {fc_dev} |")
+        for kind in ("cadquery", "openscad", "freecad"):
+            if not info[kind]["ok"]:
+                reasons.append(f"{name} {kind}: {info[kind]['error']}")
     for line in reasons:
         print(line)
 
