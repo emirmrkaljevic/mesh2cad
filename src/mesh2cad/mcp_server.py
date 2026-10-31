@@ -104,5 +104,29 @@ def to_openscad(input_path: str, output_path: str | None = None, tol: float | No
         return {"error": str(e)}
 
 
+@mcp.tool()
+def to_freecad(input_path: str, output_path: str | None = None, tol: float | None = None) -> dict:
+    """Write an editable parametric FreeCAD macro (.FCMacro) for a simple part.
+
+    Same parts as to_cadquery: a box/plate base with rectangular pads, holes and
+    bosses along X, Y, or Z (countersink, draft, and chamfer only when the axis
+    is vertical), one radius on the four vertical corners, a straight
+    extrusion of a 2D outline, and a small boolean of those extrusions.
+    Parameter names match the CadQuery script
+    (hole_1_d, boss_1_h, fillet_r, extrude_len, ...). Edit one and run the
+    macro in FreeCAD, or with freecadcmd. Returns the parameters, whether
+    freecadcmd verified the macro against the mesh, and the measured deviation
+    when it did. Without freecadcmd the macro is still written and verified
+    is false. Returns an "error" key when the part is outside that vocabulary.
+    """
+    from .convert import freecad_file
+    from .parametric import Unsupported
+    out = output_path or str(Path(input_path).with_suffix(".FCMacro"))
+    try:
+        return freecad_file(input_path, out, tol=tol)
+    except Unsupported as e:
+        return {"error": str(e)}
+
+
 def run() -> None:
     mcp.run()

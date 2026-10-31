@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "mesh2cad"
 version = "0.15.0"
-description = "Convert STL/OBJ/PLY meshes into STEP, CadQuery, and OpenSCAD"
+description = "Convert STL/OBJ/PLY meshes into STEP, CadQuery, OpenSCAD, and FreeCAD"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
