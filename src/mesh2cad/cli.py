@@ -15,9 +15,12 @@ def _script(kind: str, path: str, a) -> int:
     if kind == "cadquery":
         from .convert import cadquery_file as write
         label, missing = "CadQuery", " (install cadquery to verify)"
-    else:
+    elif kind == "openscad":
         from .convert import openscad_file as write
         label, missing = "OpenSCAD", " (unverified: openscad not available)"
+    else:
+        from .convert import freecad_file as write
+        label, missing = "FreeCAD", " (unverified: freecadcmd not available)"
     try:
         info = write(a.input, path, **kw)
     except Unsupported as e:
@@ -35,10 +38,16 @@ def _convert(a) -> int:
         rc = _script("cadquery", a.cadquery, a)
         if rc:
             return rc
-        if not a.output and not a.openscad:
+        if not a.output and not a.openscad and not a.freecad:
             return 0
     if a.openscad:
         rc = _script("openscad", a.openscad, a)
+        if rc:
+            return rc
+        if not a.output and not a.freecad:
+            return 0
+    if a.freecad:
+        rc = _script("freecad", a.freecad, a)
         if rc:
             return rc
         if not a.output:
@@ -97,6 +106,9 @@ def main(argv=None) -> int:
                         "and a small boolean of those")
     c.add_argument("--openscad", metavar="OUT.scad",
                    help="write an editable parametric OpenSCAD script instead of STEP "
+                        "(add -o to also write STEP); same parts as --cadquery")
+    c.add_argument("--freecad", metavar="OUT.FCMacro",
+                   help="write an editable parametric FreeCAD macro instead of STEP "
                         "(add -o to also write STEP); same parts as --cadquery")
     c.add_argument("--no-cylinders", action="store_true")
     c.add_argument("--no-spheres", action="store_true")

@@ -1,4 +1,4 @@
-"""Shared vocabulary for parametric CadQuery and OpenSCAD export.
+"""Shared vocabulary for parametric CadQuery, OpenSCAD, and FreeCAD export.
 
 Supported parts:
 
@@ -110,8 +110,8 @@ def _vertical_fillets(m, regions):
 def _base_fillet_radius(m, fillet_regs, lo, hi, zmin, ztop, tol):
     """Radius when ``fillet_regs`` are the four vertical corners of the base box.
 
-    Both emitters can only round that one case (CadQuery ``edges("|Z").fillet``,
-    OpenSCAD ``offset``). Any other fillet is left to STEP.
+    The script emitters can only round that one case (CadQuery ``edges("|Z").fillet``,
+    OpenSCAD ``offset``, FreeCAD ``makeFillet``). Any other fillet is left to STEP.
     """
     if len(fillet_regs) != 4:
         raise Unsupported("fillet is not the four vertical corners of a rectangular base")
