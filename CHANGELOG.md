@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Parametric FreeCAD export: `mesh2cad convert in.stl --freecad out.FCMacro` writes a macro for the same parts as `--cadquery` and `--openscad`. Parameter names match (`base_t`, `hole_1_d`, `hole_1_cbore_d`, `fillet_r`, `extrude_len`, `outline`, `cut_1`, `clip_1_d`, and the rest). The macro uses FreeCAD's Part API: `makeBox`, `makeCylinder`, `makeCone`, a polygon extruded along X, Y, or Z, `fuse` / `cut` / `common`, and `makeFillet` on the four vertical corners of a rectangular base.
+- `freecadcmd` runs the macro and the solid is compared with the mesh before the file is written. The gate is unchanged: max deviation at most max(4·tol, 0.1), volume error at most 1%. If `freecadcmd` is not on `PATH` the file is still written and the command reports it unverified. FreeCAD is not a Python dependency. Parts outside the vocabulary exit with code 2 and a reason. STEP output is unchanged.
+- The macro is a Part script. Changing a dimension means editing the named number and running the macro again. It does not build a PartDesign body or a constrained sketch.
+- MCP tool `to_freecad(input_path, output_path?, tol?)`.
+- All six Prusa parts export the macro. plug-aligner deviates by 0.0000 mm. endstop-block by 0.0421 mm (limit 0.1 mm). y-belt-idler by 0.1693 mm (limit 0.192 mm). y-belt-holder by 0.0896 mm (limit 0.154 mm). y-motor-holder by 0.1843 mm (limit 0.266 mm). y-rod-holder by 0.1300 mm (limit 0.138 mm). Volume error stays under 1% on each, which is the same gate as CadQuery and OpenSCAD. CadQuery and OpenSCAD deviations are unchanged. Exact STEP is unchanged on all six parts.
+
 ## 0.15.0 - 2026-10-29
 
 - Parametric export can cut a solid back to the real cross-section along X, Y, or Z when the silhouette intersection, the partial-depth union, and the wall-snapped rebuild have all missed the mesh. One bounding extrusion is trimmed by a cut on each span where the outer profile stays within 0.05 mm (`cut_N`, with the section kept as `cut_N_cutout_J`). A gap between two parallel faces from 0.12 mm to 0.55 mm is a polygonal cut of the section between them. An inner loop that holds its place along the axis, such as a hex pocket or a bore, is a polygonal cut over that span. The gate is unchanged.

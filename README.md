@@ -26,7 +26,7 @@ Using an AI agent (Claude Desktop, Cursor, any MCP client)? `pip install "mesh2c
 ```json
 { "mcpServers": { "mesh2cad": { "command": "mesh2cad", "args": ["mcp"] } } }
 ```
-Proof on real parts: all 6 tested Original Prusa i3 MK3S parts convert to exact STEP, and all 6 also to an editable CadQuery/OpenSCAD script (see [Real parts](#real-parts)).
+Proof on real parts: all 6 tested Original Prusa i3 MK3S parts convert to exact STEP, and all 6 also to an editable CadQuery, OpenSCAD, or FreeCAD script (see [Real parts](#real-parts)).
 
 ## Install
 ```
@@ -35,6 +35,8 @@ pip install "mesh2cad[mcp]"       # + MCP server
 pip install "mesh2cad[cadquery]"  # + run/verify generated CadQuery scripts
 ```
 OpenSCAD scripts are plain text. Verifying one needs the `openscad` program ([openscad.org](https://openscad.org)); it is not a Python dependency. Without it the `.scad` file is still written.
+
+FreeCAD macros are plain text too. Verifying one needs `freecadcmd` (the FreeCAD console, from [freecad.org](https://www.freecad.org)). It is not a Python dependency. Without it the `.FCMacro` file is still written. Ubuntu 24.04 does not ship a `freecad` apt package, so install the console build and put `freecadcmd` on `PATH`.
 
 ## Use
 ```
@@ -166,11 +168,43 @@ Re-render (F6) and export STL. A drafted boss is a `cylinder` with `r1`/`r2`, a 
 
 Same honesty as CadQuery. Before writing, mesh2cad renders the script with the `openscad` CLI and compares the STL to the mesh (sampled Hausdorff and volume, same limits as the CadQuery check). If `openscad` is not installed the file is still written and the command says it was unverified. If the part is outside this vocabulary, or the render does not match, nothing is written and the command exits with code 2 and the reason. Circles are `$fn = 96` polygons; on these parts that is a few thousandths of a millimetre, not an analytic solid. STEP remains the path for everything else.
 
+### Editable parametric FreeCAD macro
+The same parts can be written as a FreeCAD macro. Names and values match the CadQuery script. `--freecad` can be combined with `--cadquery`, `--openscad`, and `-o`.
+```
+mesh2cad convert plate.stl --freecad plate.FCMacro
+freecadcmd plate.FCMacro
+```
+A 40×30×6 plate with a Ø10 hole comes out as below (the file also has a short header and, when you run it, creates a `Part::Feature` and writes `plate.step` next to the macro):
+
+```python
+# --- parameters ---
+base_x   = 40.0  # base length (X)
+base_y   = 30.0  # base width (Y)
+base_t   = 6.0  # base thickness (Z)
+base_cx  = 0.0
+base_cy  = 0.0
+base_z0  = -3.0  # bottom face height
+hole_1_d = 10.0  # diameter
+hole_1_x = 0.0
+hole_1_y = 0.0
+
+# --- model ---
+result = Part.makeBox(base_x, base_y, base_t, App.Vector(base_cx - base_x / 2, base_cy - base_y / 2, base_z0))
+top = base_z0 + base_t
+result = result.cut(Part.makeCylinder(hole_1_d / 2, base_t + 2, App.Vector(hole_1_x, hole_1_y, base_z0 - 1), App.Vector(0, 0, 1)))
+```
+
+Make the hole 2 mm bigger: set `hole_1_d = 12.0` and run the macro again. A drafted or chamfered boss is `Part.makeCone`. The four vertical corners of a rectangular base are `result.makeFillet(fillet_r, ...)` on the edges parallel to Z. A hole or boss whose axis is X or Y is the same cylinder, with `App.Vector(1, 0, 0)` or `App.Vector(0, 1, 0)`. A straight extrusion is `_extrude(outline, "Z", extrude_0, extrude_len)` (or `"X"` / `"Y"`). A polygonal slot is a second extrusion subtracted from the first. Several extrusions are `.common()` (intersection) or `.fuse()` (a partial-depth union). A cut extrusion, a hole, a counterbore, a 45 degree chamfer, and a planar clip are `.cut()`. Names match the other scripts (`extrude_len`, `outline`, `hole_1_d`, `hole_1_cbore_d`, `cut_1`, `clip_1_d`).
+
+The solid in FreeCAD is analytic: cylinders and cones, not a `$fn` polygon. The macro is a Part script with named numbers at the top. It does not build a PartDesign body or a constrained sketch, so the edit is the number, then run the macro again.
+
+Same honesty as the other two. Before writing, mesh2cad runs the macro with `freecadcmd` and compares a fine tessellation of the solid to the mesh (sampled Hausdorff and volume, same limits). If `freecadcmd` is not installed the file is still written and the command says it was unverified. If the part is outside this vocabulary, or the solid does not match, nothing is written and the command exits with code 2 and the reason. STEP remains the path for everything else.
+
 ### MCP server (Claude Desktop, Cursor, …)
 ```json
 { "mcpServers": { "mesh2cad": { "command": "mesh2cad", "args": ["mcp"] } } }
 ```
-Tools: `convert(input_path, output_path?, tol?, cylinders?, spheres?, cones?)`, `analyze(input_path, tol?, cylinders?, spheres?, cones?)`, `report(input_path, tol?, cylinders?, spheres?, cones?)`, `to_cadquery(input_path, output_path?, tol?)`, `to_openscad(input_path, output_path?, tol?)`. Both script tools return the parameters and, when the script was run or rendered, the measured deviation. `to_openscad` also returns `verified: false` when the `openscad` program is absent. `spheres` and `cones` default on.
+Tools: `convert(input_path, output_path?, tol?, cylinders?, spheres?, cones?)`, `analyze(input_path, tol?, cylinders?, spheres?, cones?)`, `report(input_path, tol?, cylinders?, spheres?, cones?)`, `to_cadquery(input_path, output_path?, tol?)`, `to_openscad(input_path, output_path?, tol?)`, `to_freecad(input_path, output_path?, tol?)`. The script tools return the parameters and, when the script was run or rendered, the measured deviation. `to_openscad` returns `verified: false` when the `openscad` program is absent. `to_freecad` returns `verified: false` when `freecadcmd` is absent. `spheres` and `cones` default on.
 
 Listed on [Glama](https://glama.ai/mcp/servers/emirmrkaljevic/mesh2cad) and the [TensorBlock MCP catalog](https://tensorblock.co/mcp/servers/github-emirmrkaljevic-mesh2cad-0f1c0e66).
 
@@ -182,7 +216,7 @@ Listed on [Glama](https://glama.ai/mcp/servers/emirmrkaljevic/mesh2cad) and the 
 5. Fidelity report against the input mesh.
 
 ## Self-test benchmark
-Ground-truth cadquery parts → tessellated + subdivided (≤ 2 mm edges) → Gaussian vertex noise → mesh2cad → compared with the truth. 3 seeds, worst case shown (`python benchmarks/run.py`); the same cases run in CI. Numbers are **STEP / B-rep fidelity** (Hausdorff, RMS, volume, face counts). Parametric OpenSCAD and CadQuery export are verified separately when you pass `--openscad` / `--cadquery` (or the MCP `to_openscad` / `to_cadquery` tools); they are not rows in this table.
+Ground-truth cadquery parts → tessellated + subdivided (≤ 2 mm edges) → Gaussian vertex noise → mesh2cad → compared with the truth. 3 seeds, worst case shown (`python benchmarks/run.py`); the same cases run in CI. Numbers are **STEP / B-rep fidelity** (Hausdorff, RMS, volume, face counts). Parametric OpenSCAD, CadQuery, and FreeCAD export are verified separately when you pass `--openscad` / `--cadquery` / `--freecad` (or the MCP `to_openscad` / `to_cadquery` / `to_freecad` tools); they are not rows in this table.
 
 | part | noise σ (mm) | exact | faces (plane/cyl[/sph[/cone]]) | radius err (mm) | Hausdorff (mm) | RMS (mm) | vol err % | time s |
 |---|---|---|---|---|---|---|---|---|
@@ -233,7 +267,7 @@ Ground-truth cadquery parts → tessellated + subdivided (≤ 2 mm edges) → Ga
 
 ## Real parts
 
-The table above subdivides every edge to ≤ 2 mm, so a planar face is many triangles. An STL written by a CAD tool is the other way around: long triangles, very uneven size, no noise. `python benchmarks/real_parts.py` downloads six printed parts from the Original Prusa i3 MK3S, converts them at the default tolerance, and tries `--cadquery` and `--openscad` on each. The files are Prusa Research's, GPL-2.0, from [prusa3d/Original-Prusa-i3](https://github.com/prusa3d/Original-Prusa-i3) at commit `529e5ad` (`Printed-Parts/STL/<name>.stl`). They are cached under `benchmarks/.cache` and are not part of this repository. CI does not run the script (it needs the network). A coarse, unsubdivided cadquery mesh of the same kind is what `tests/test_coarse.py` checks.
+The table above subdivides every edge to ≤ 2 mm, so a planar face is many triangles. An STL written by a CAD tool is the other way around: long triangles, very uneven size, no noise. `python benchmarks/real_parts.py` downloads six printed parts from the Original Prusa i3 MK3S, converts them at the default tolerance, and tries `--cadquery`, `--openscad`, and `--freecad` on each. The files are Prusa Research's, GPL-2.0, from [prusa3d/Original-Prusa-i3](https://github.com/prusa3d/Original-Prusa-i3) at commit `529e5ad` (`Printed-Parts/STL/<name>.stl`). They are cached under `benchmarks/.cache` and are not part of this repository. CI does not run the script (it needs the network). A coarse, unsubdivided cadquery mesh of the same kind is what `tests/test_coarse.py` checks.
 
 | part | triangles | method | output faces | regions | valid | Hausdorff | RMS | vol err % | time s |
 |---|---|---|---|---|---|---|---|---|---|
@@ -260,14 +294,16 @@ y-rod-holder is exact: 158 planes, 8 cylinders and 11 cones, Hausdorff 0.2178 mm
 
 y-belt-idler exports both scripts as well. The solid is the intersection of an X extrusion (`extrude_x_len` 23 mm from x=-11.5) and a Y extrusion (`extrude_y_len` 34 mm from y=-14.3). The Y outline is a raster of the mesh, because fusing the projected faces came out smaller than the part. The X outline stays analytic, which keeps the outer 45 degree corner. Fifteen cuts remove the belt grooves, three hex pockets, and two logo floors (a logo keeps its letter islands as `cut_N_cutout_J`). `hole_1` is an Ø3.2 hole along X at y=0, z=0 with an Ø5.6 counterbore 4 mm deep from the +X end. `hole_2` is an Ø3 blind hole, 0.5 mm deep from the +Y end, at x=-7.5, z=-15, with a 45 degree taper of 0.5 mm at the inner end (`hole_2_chamfer`). `hole_3` and `hole_4` are Ø3.3 holes along Z with a 0.4 mm 45 degree chamfer from the -Z end (`hole_3_chamfer`, `hole_4_chamfer`). The CadQuery self-check is 0.1534 mm (volume error 0.144%) and the OpenSCAD self-check is 0.1639 mm (volume error 0.145%). The limit is max(4·tol, 0.1) = 0.192 mm, the same gate as every other script. `python benchmarks/real_parts.py` prints:
 
-| part | cadquery | dev mm | openscad | dev mm |
-|---|---|---|---|---|
-| plug-aligner | yes | 0.0000 | yes | 0.0000 |
-| endstop-block | yes | 0.0421 | yes | 0.0421 |
-| y-belt-idler | yes | 0.1534 | yes | 0.1639 |
-| y-belt-holder | yes | 0.0943 | yes | 0.0965 |
-| y-motor-holder | yes | 0.1843 | yes | 0.1843 |
-| y-rod-holder | yes | 0.1300 | yes | 0.1300 |
+| part | cadquery | dev mm | openscad | dev mm | freecad | dev mm |
+|---|---|---|---|---|---|---|
+| plug-aligner | yes | 0.0000 | yes | 0.0000 | yes | 0.0000 |
+| endstop-block | yes | 0.0421 | yes | 0.0421 | yes | 0.0421 |
+| y-belt-idler | yes | 0.1534 | yes | 0.1639 | yes | 0.1693 |
+| y-belt-holder | yes | 0.0943 | yes | 0.0965 | yes | 0.0896 |
+| y-motor-holder | yes | 0.1843 | yes | 0.1843 | yes | 0.1843 |
+| y-rod-holder | yes | 0.1300 | yes | 0.1300 | yes | 0.1300 |
+
+FreeCAD passes the same gate on all six. plug-aligner is 0.0000 mm. endstop-block is 0.0421 mm (limit 0.1 mm). y-belt-idler is 0.1693 mm (limit 0.192 mm). y-belt-holder is 0.0896 mm (limit 0.154 mm). y-motor-holder is 0.1843 mm (limit 0.266 mm). y-rod-holder is 0.1300 mm (limit 0.138 mm). Each of those also stayed under the 1% volume gate, or the macro would not have been written. The idler is 0.0054 mm farther than the OpenSCAD mesh and 0.0159 mm farther than CadQuery; the holder is slightly closer than both. The other four match CadQuery's deviation.
 
 y-motor-holder exports both scripts as well. The intersection of the full-length silhouettes is 7.924 mm off (30.07% volume), over the limit of 0.266 mm, so the script is a union of partial-depth extrusions instead. The base runs from z=0 to z=8 (`extrude_z1_len`). A block and a sloped roof stand on part of it from z=8 to z=19, each clipped by its own plane (`extrude_z2_clip1_d`, `extrude_z3_clip1_d`). Three 45 degree edge bevels are short prisms with their own clips. Cuts remove the 0.5 mm slots, two hexagonal pockets, and two shallow pockets in the bottom face (an island in a pocket is `cut_N_cutout_1`). The base has a 0.4 mm 45 degree chamfer on the edges that are chamfered (`extrude_z1_chamfer`, `extrude_z1_chamfer_at`). `hole_3` and `hole_4` are Ø3.2 holes along Z from z=0 to z=8 (`hole_3_z0`, `hole_3_z1`), with an Ø5.6 counterbore 3 mm deep from z=8 and a 0.4 mm chamfer at z=0. The CadQuery self-check is 0.1843 mm (volume error 0.306%) and the OpenSCAD self-check is 0.1843 mm (volume error 0.298%).
 
@@ -303,6 +339,8 @@ When the wall-snapped rebuild also misses the gate, the part is cut back from on
 Still refused, and the command says which: a boss on an extruded outline; a countersink, chamfer, or draft on a single extruded outline; a bevel whose walls are not axis-aligned, or whose section is not the right triangle of the face; a rounded edge that is not the four vertical corners of a rectangular base; a stepped hole that is not a counterbored through-hole; more than four faces tilted to X, Y, and Z (that check runs before the partial-depth union); a recess that is not a straight cut, a shallow floor, or a section cut of the kind above; a sphere; an unfitted region. A flat patch that the fitter returned as a sphere is written as the plane its vertices lie on, so a noisy counterbore floor is not refused as a sphere. Free-form surfaces stay on the STEP path.
 
 On the 60×40×36 block (Ø8 through hole along X at y=0, z=−6; Ø6 blind hole, 12 deep, opening on +Y at x=−12, z=8; Ø10 boss, 8 tall, on +X at y=10, z=8) both scripts recover those dimensions with no noise and at 0.05 mm noise. With no noise the CadQuery script matches the mesh to 0.006 mm (volume error 0.004%) and the OpenSCAD script to 0.006 mm (volume error 0.003%). At 0.05 mm noise the check against that noisy mesh is 0.139 mm / 0.015% for CadQuery and 0.149 mm / 0.016% for OpenSCAD, under the same limit as every other script, max(4·tol, 0.1) = 0.20 mm. The blind end is not its own plane on this part (the disk stays in the cylinder region), so the depth is the median of the vertices clustered at that end. The exact STEP builder does not sew that cylinder; STEP export of this block falls back to a valid faceted solid, Hausdorff 0.004 mm from the mesh. Anything else outside this vocabulary stays on the STEP path.
+
+The FreeCAD macro is that same vocabulary and the same refusal list. `fillet_r` is still only the four vertical corners, applied with `makeFillet`. A boss on an extruded outline, a countersink that is not 45 degrees on a combined extrusion, a sphere, and an unfitted region are still refused, and the message says which. The macro's cylinders and cones are analytic. The check meshes the solid at 0.01 mm linear deflection, which on these parts is a few thousandths of a millimetre, the same kind of gap as OpenSCAD's `$fn = 96`. The file you edit is a Part script, not a PartDesign tree, so a dimension change is one number at the top and another run of the macro.
 
 ## Development
 ```

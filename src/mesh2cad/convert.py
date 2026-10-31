@@ -180,6 +180,23 @@ def cadquery_file(src: str, dst: str, tol: float | None = None, **kw) -> dict:
     return {"output_path": dst, "parameters": _script_parameters(code), "check": q}
 
 
+def freecad_file(src: str, dst: str, tol: float | None = None, **kw) -> dict:
+    """Write an editable parametric FreeCAD macro for a simple part.
+
+    Raises ``mesh2cad.parametric.Unsupported`` when the part is outside the
+    box/plate and straight-extrusion vocabulary, or when ``freecadcmd`` is
+    installed and the solid does not match the mesh. If ``freecadcmd`` is not
+    on ``PATH`` the file is still written and ``verified`` is false.
+    """
+    from pathlib import Path
+
+    from .freecad_code import to_freecad
+    code, q = _parametric_script(src, to_freecad, tol, **kw)
+    Path(dst).write_text(code)
+    return {"output_path": dst, "parameters": _script_parameters(code), "check": q,
+            "verified": q is not None}
+
+
 def openscad_file(src: str, dst: str, tol: float | None = None, **kw) -> dict:
     """Write an editable parametric OpenSCAD script for a simple part.
 
