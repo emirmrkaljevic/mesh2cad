@@ -1,14 +1,14 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
   "name": "io.github.emirmrkaljevic/mesh2cad",
-  "description": "Mesh (STL/OBJ/PLY) to editable STEP, CadQuery, OpenSCAD, or FreeCAD: primitive fitting, fidelity report",
+  "description": "Mesh (STL/OBJ/PLY) to editable STEP, CadQuery, OpenSCAD or FreeCAD, with a fidelity report",
   "repository": {"url": "https://github.com/emirmrkaljevic/mesh2cad", "source": "github"},
-  "version": "0.15.0",
+  "version": "0.16.0",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "mesh2cad",
-      "version": "0.15.0",
+      "version": "0.16.0",
       "transport": {"type": "stdio"},
       "packageArguments": [{"type": "positional", "value": "mcp"}]
     }
