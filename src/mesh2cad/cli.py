@@ -79,6 +79,60 @@ def _report(a) -> int:
     return 0
 
 
+def _params(a) -> int:
+    from .params import ParamError, format_parameters, list_parameters
+    try:
+        info = list_parameters(a.script)
+    except ParamError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    print(format_parameters(info), end="")
+    return 0
+
+
+def _parse_set(item: str) -> tuple[str, str]:
+    if "=" not in item:
+        raise ValueError(f"expected name=value, got {item!r}")
+    name, raw = item.split("=", 1)
+    name, raw = name.strip(), raw.strip()
+    if not name.isidentifier():
+        raise ValueError(f"not a parameter name: {name!r}")
+    if not raw:
+        raise ValueError(f"{name} needs a value")
+    return name, raw
+
+
+def _edit(a) -> int:
+    from .params import GeometryError, ParamError, edit_script, format_report
+    if a.in_place and a.output_script:
+        print("pass only one of --in-place and --output-script", file=sys.stderr)
+        return 2
+    changes: dict[str, str] = {}
+    try:
+        for item in a.set or []:
+            name, raw = _parse_set(item)
+            if name in changes:
+                print(f"{name} was passed more than once", file=sys.stderr)
+                return 2
+            changes[name] = raw
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if not changes:
+        print("pass at least one --set name=value", file=sys.stderr)
+        return 2
+    try:
+        info = edit_script(
+            a.script, changes, output_path=a.output,
+            in_place=a.in_place, output_script=a.output_script,
+        )
+    except (ParamError, GeometryError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    print(format_report(info), end="")
+    return 0
+
+
 def _mcp(a) -> int:
     try:
         from .mcp_server import run
@@ -122,6 +176,17 @@ def main(argv=None) -> int:
     r.add_argument("--no-spheres", action="store_true")
     r.add_argument("--no-cones", action="store_true")
     r.set_defaults(fn=_report)
+    p = sub.add_parser("params", help="list editable parameters in a script mesh2cad generated")
+    p.add_argument("script", help="CadQuery .py, OpenSCAD .scad, or FreeCAD .FCMacro")
+    p.set_defaults(fn=_params)
+    e = sub.add_parser("edit", help="change parameters in a generated script and re-render it")
+    e.add_argument("script", help="CadQuery .py, OpenSCAD .scad, or FreeCAD .FCMacro")
+    e.add_argument("--set", action="append", required=True, metavar="NAME=VALUE",
+                   help="absolute value, or a delta when it starts with + or - (repeatable)")
+    e.add_argument("-o", "--output", help="write the re-rendered solid (.step or .stl)")
+    e.add_argument("--in-place", action="store_true", help="rewrite this script")
+    e.add_argument("--output-script", metavar="PATH", help="write the edited script to PATH")
+    e.set_defaults(fn=_edit)
     mm = sub.add_parser("mcp", help="run the MCP server (stdio) for AI agents")
     mm.set_defaults(fn=_mcp)
     a = ap.parse_args(argv)
