@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- `mesh2cad params script.py` lists the named parameters of a CadQuery, OpenSCAD, or FreeCAD script mesh2cad generated: name, value, kind, and unit when one is known (`base_x`, `hole_1_d`, `hole_1_depth`, `fillet_r`, `extrude_len`, `outline`, and the rest). `mesh2cad edit script.py --set hole_1_d=8 --set base_x=+2` rewrites those numbers and leaves every other byte unchanged. A leading `+` or `-` is a delta. It re-renders with CadQuery in-process, or with `openscad` / `freecadcmd` when that program is on `PATH`, and prints volume and bounding box before and after, and whether the solid is valid. `--in-place` or `--output-script` writes the script. `-o` writes STEP or STL. OpenSCAD writes STL. If the program is missing, the script can still be rewritten and the command says it did not render. `-o` in that case writes nothing.
+- An unknown parameter is refused and the message lists the valid names. An edit that is not one valid solid, or a hole larger than the wall it sits in, is refused and no file is written. Outline point lists are listed and are not edited as a single number.
+- MCP tools `list_params(script_path)` and `edit_params(script_path, changes, output_path?)`. `edit_params` updates the script in place and returns the old and new values, the rendered path, validity, the volume and bounding-box delta, and warnings.
+
 ## 0.16.0 - 2026-10-31
 
 - Parametric FreeCAD export: `mesh2cad convert in.stl --freecad out.FCMacro` writes a macro for the same parts as `--cadquery` and `--openscad`. Parameter names match (`base_t`, `hole_1_d`, `hole_1_cbore_d`, `fillet_r`, `extrude_len`, `outline`, `cut_1`, `clip_1_d`, and the rest). The macro uses FreeCAD's Part API: `makeBox`, `makeCylinder`, `makeCone`, a polygon extruded along X, Y, or Z, `fuse` / `cut` / `common`, and `makeFillet` on the four vertical corners of a rectangular base.

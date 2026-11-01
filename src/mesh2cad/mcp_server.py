@@ -128,5 +128,55 @@ def to_freecad(input_path: str, output_path: str | None = None, tol: float | Non
         return {"error": str(e)}
 
 
+@mcp.tool()
+def list_params(script_path: str) -> dict:
+    """List the editable parameters of a CadQuery, OpenSCAD, or FreeCAD script mesh2cad generated.
+
+    Args:
+        script_path: path to a .py, .scad, or .FCMacro file written by mesh2cad.
+    Returns name, value, kind, and unit for each parameter. Outline and cutout
+    point lists are included and are not single numbers. Returns an "error" key
+    when the file is not a script mesh2cad generated.
+    """
+    from .params import ParamError, list_parameters
+    try:
+        return list_parameters(script_path)
+    except ParamError as exc:
+        out = {"error": str(exc)}
+        if exc.valid:
+            out["valid_parameters"] = exc.valid
+        return out
+
+
+@mcp.tool()
+def edit_params(script_path: str, changes: dict, output_path: str | None = None) -> dict:
+    """Change named parameters in a script mesh2cad generated and re-render the solid.
+
+    Args:
+        script_path: path to a .py, .scad, or .FCMacro file written by mesh2cad.
+        changes: mapping of parameter name to a new number, or to a string that
+            starts with + or - to add that delta (for example {"hole_1_d": 8, "base_x": "+2"}).
+        output_path: STEP or STL to write. CadQuery and FreeCAD accept .step or .stl.
+            OpenSCAD accepts .stl. When omitted, a .step (or .stl for OpenSCAD) is
+            written next to the script if that backend is available.
+    The script is updated in place. Every byte outside the replaced numbers stays
+    the same. Unknown names are refused with the valid list. An edit that does
+    not produce one valid solid, or a hole larger than the wall it sits in, is
+    refused and nothing is written. Returns old and new values, the rendered
+    path, validity, volume and bounding-box delta, and warnings. Returns an
+    "error" key when the edit is refused or the backend needed for output_path
+    is not available.
+    """
+    from .params import GeometryError, ParamError, edit_script
+    try:
+        return edit_script(script_path, changes, output_path=output_path,
+                           in_place=True, default_render=output_path is None)
+    except (ParamError, GeometryError) as exc:
+        out = {"error": str(exc)}
+        if exc.valid:
+            out["valid_parameters"] = exc.valid
+        return out
+
+
 def run() -> None:
     mcp.run()
