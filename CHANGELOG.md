@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.17.0 - 2026-11-01
 
 - `mesh2cad params script.py` lists the named parameters of a CadQuery, OpenSCAD, or FreeCAD script mesh2cad generated: name, value, kind, and unit when one is known (`base_x`, `hole_1_d`, `hole_1_depth`, `fillet_r`, `extrude_len`, `outline`, and the rest). `mesh2cad edit script.py --set hole_1_d=8 --set base_x=+2` rewrites those numbers and leaves every other byte unchanged. A leading `+` or `-` is a delta. It re-renders with CadQuery in-process, or with `openscad` / `freecadcmd` when that program is on `PATH`, and prints volume and bounding box before and after, and whether the solid is valid. `--in-place` or `--output-script` writes the script. `-o` writes STEP or STL. OpenSCAD writes STL. If the program is missing, the script can still be rewritten and the command says it did not render. `-o` in that case writes nothing.
 - An unknown parameter is refused and the message lists the valid names. An edit that is not one valid solid, or a hole larger than the wall it sits in, is refused and no file is written. Outline point lists are listed and are not edited as a single number.
