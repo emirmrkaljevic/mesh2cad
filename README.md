@@ -65,7 +65,7 @@ hole_1_y         = 0.0
 hole_1_csk_d     = 12.0  # countersink diameter
 hole_1_csk_angle = 90.0  # countersink angle
 ```
-Make the hole 2 mm bigger: set `hole_1_d = 8.0` and run it again. A plate or block whose four vertical corners share one radius also gets `fillet_r` and `.edges("|Z").fillet(fillet_r)`, so the same edit grows the round.
+Make the hole 2 mm bigger: `mesh2cad edit bracket.py --set hole_1_d=8 --in-place -o bracket.step`, or set `hole_1_d = 8.0` and run the script yourself. A plate or block whose four vertical corners share one radius also gets `fillet_r` and `.edges("|Z").fillet(fillet_r)`, so the same edit grows the round.
 
 A hole or boss on a side face uses the same kind of parameter. This is the block below (60×40×36, an Ø8 hole through X, an Ø6 hole 12 deep opening on +Y, an Ø10 boss 8 tall on +X):
 
@@ -200,11 +200,36 @@ The solid in FreeCAD is analytic: cylinders and cones, not a `$fn` polygon. The 
 
 Same honesty as the other two. Before writing, mesh2cad runs the macro with `freecadcmd` and compares a fine tessellation of the solid to the mesh (sampled Hausdorff and volume, same limits). If `freecadcmd` is not installed the file is still written and the command says it was unverified. If the part is outside this vocabulary, or the solid does not match, nothing is written and the command exits with code 2 and the reason. STEP remains the path for everything else.
 
+### Change a parameter and re-render
+`params` and `edit` close the loop on a script mesh2cad already wrote. They do not fit a mesh.
+
+```
+mesh2cad params bracket.py
+mesh2cad edit bracket.py --set hole_1_d=8 --set base_x=+2 --in-place -o bracket.step
+```
+
+`params` lists every named value in a CadQuery `.py`, an OpenSCAD `.scad`, or a FreeCAD `.FCMacro`: name, current value, kind, and unit when one is known. Kinds are the ones those scripts use (`diameter`, `length`, `depth`, `radius`, `angle`, `position`, and `points` for an outline or a cutout). Units are millimetres, or degrees for an angle (`hole_1_csk_angle`, `boss_1_draft_deg`). Names are the ones in the scripts above: `base_x`, `base_y`, `base_t`, `hole_1_d`, `hole_1_depth`, `hole_1_cbore_d`, `fillet_r`, `extrude_len`, `outline`, and the same names with an axis or an index (`extrude_z_len`, `outline_z`, `cut_1`).
+
+`edit` replaces the numeric token and leaves every other byte of the file as it was. `hole_1_d=8` sets that value. `base_x=+2` adds 2 mm, and `base_x=-1` subtracts 1 mm. A leading `+` or `-` is always a delta, so it is not how you type an absolute negative: move `base_z0` by a delta from its current value. `--in-place` rewrites the script. `--output-script new.py` writes a copy. With neither flag the script on disk stays as it is. `-o` writes the solid. CadQuery and FreeCAD write `.step` or `.stl`. OpenSCAD writes `.stl`.
+
+The command prints volume and the bounding box before and after, and whether the result is one valid solid.
+
+Limits, plainly:
+
+- Only scripts mesh2cad generated, the ones with the parameter block it writes. A hand-written CadQuery file is refused.
+- Outline and cutout point lists are listed and are not edited as a single number. Changing a corner of `outline` is still a text edit.
+- An unknown name is refused, and the message lists the names that exist.
+- A hole wider than the wall it is cut through, a counterbore or countersink that no longer clears the through-hole, a fillet that eats the short side of the base, or a draft that closes a boss, is refused. So is a render that is empty or is not one valid solid. Nothing is written in those cases.
+- The wall check uses the rectangular base, or the outline the script extruded. It is the obvious case (the hole does not fit in that face), not a full constraint solver.
+- CadQuery runs in-process (`pip install 'mesh2cad[cadquery]'`). OpenSCAD and FreeCAD use the `openscad` and `freecadcmd` programs on `PATH`. If the program is missing, the script can still be rewritten and the command says the solid was not rendered. `-o` in that case writes nothing.
+- Values from `--set` are numbers substituted into the existing literal. The script is executed only the same way a render already executes it.
+- This does not build a PartDesign body or a constrained sketch. The number changes, then the same script runs again.
+
 ### MCP server (Claude Desktop, Cursor, …)
 ```json
 { "mcpServers": { "mesh2cad": { "command": "mesh2cad", "args": ["mcp"] } } }
 ```
-Tools: `convert(input_path, output_path?, tol?, cylinders?, spheres?, cones?)`, `analyze(input_path, tol?, cylinders?, spheres?, cones?)`, `report(input_path, tol?, cylinders?, spheres?, cones?)`, `to_cadquery(input_path, output_path?, tol?)`, `to_openscad(input_path, output_path?, tol?)`, `to_freecad(input_path, output_path?, tol?)`. The script tools return the parameters and, when the script was run or rendered, the measured deviation. `to_openscad` returns `verified: false` when the `openscad` program is absent. `to_freecad` returns `verified: false` when `freecadcmd` is absent. `spheres` and `cones` default on.
+Tools: `convert(input_path, output_path?, tol?, cylinders?, spheres?, cones?)`, `analyze(input_path, tol?, cylinders?, spheres?, cones?)`, `report(input_path, tol?, cylinders?, spheres?, cones?)`, `to_cadquery(input_path, output_path?, tol?)`, `to_openscad(input_path, output_path?, tol?)`, `to_freecad(input_path, output_path?, tol?)`, `list_params(script_path)`, `edit_params(script_path, changes, output_path?)`. `list_params` and `edit_params` take a script mesh2cad already wrote. `edit_params` updates that script in place. A change is a number, or a string that starts with `+` or `-` for a delta. `output_path` is the STEP or STL. When it is omitted, a `.step` (`.stl` for OpenSCAD) is written next to the script if that backend can run. The result includes the old and new values, the rendered path, validity, the volume and bounding-box delta, and warnings. An unknown name or an edit that is not one valid solid comes back under `error`, and nothing is written. The script tools return the parameters and, when the script was run or rendered, the measured deviation. `to_openscad` returns `verified: false` when the `openscad` program is absent. `to_freecad` returns `verified: false` when `freecadcmd` is absent. `spheres` and `cones` default on.
 
 Listed on [Glama](https://glama.ai/mcp/servers/emirmrkaljevic/mesh2cad) and the [TensorBlock MCP catalog](https://tensorblock.co/mcp/servers/github-emirmrkaljevic-mesh2cad-0f1c0e66).
 
