@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.18.0 - 2026-11-02
 
 - A fillet between a plane and a coaxial cylinder is rebuilt as one torus face in the STEP solid, tangent to both neighbours. A boss base and a rounded hole rim use the inner equator (major radius = cylinder radius + minor radius). The floor of a blind hole uses the outer equator (major radius = cylinder radius minus the minor radius). The fidelity report counts torus faces and lists each major and minor radius.
 - On a plate with an Ø16 boss and a 2 mm base fillet this is exact on 3 of 3 seeds at 0 and at 0.05 mm noise. With no noise the minor radius error is 0.008 mm (major 10.012 mm, Hausdorff 0.026 mm). At 0.05 mm the worst minor error is 0.279 mm and the Hausdorff is 0.150 mm. An Ø12 hole with a 1.5 mm top round is exact with no noise (minor error 0.068 mm, major 7.451 mm, Hausdorff 0.026 mm) and on 2 of 3 seeds at 0.05 mm (worst minor error 0.247 mm). The third seed is a valid faceted solid, Hausdorff 0.633 mm. Both rims at 1.2 mm are exact with no noise (minor error 0.061 mm). An Ø10 blind hole with a 1.5 mm floor fillet is exact with no noise (minor 1.463 mm, major 3.529 mm, Hausdorff 0.021 mm).
