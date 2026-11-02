@@ -48,11 +48,11 @@ def _counts(d, order):
 
 
 def _faces(f):
-    return _counts(f, ("plane", "cylinder", "sphere", "cone", "other"))
+    return _counts(f, ("plane", "cylinder", "sphere", "cone", "torus", "other"))
 
 
 def _regions(by_type):
-    return _counts(by_type, ("plane", "cylinder", "sphere", "cone", "faceted"))
+    return _counts(by_type, ("plane", "cylinder", "sphere", "cone", "torus", "faceted"))
 
 
 def _stl(name):

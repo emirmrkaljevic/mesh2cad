@@ -212,10 +212,40 @@ def filleted_bracket():
             .close().extrude(12).edges("|Z").fillet(3))
 
 
+def filleted_boss():
+    """40×40×6 plate with an Ø16 boss, 10 mm tall, and a 2 mm fillet at the base."""
+    return (cq.Workplane().box(40, 40, 6).faces(">Z").workplane().circle(8).extrude(10)
+            .edges(cq.NearestToPointSelector((0, 0, 3))).fillet(2.0))
+
+
+def rounded_hole():
+    """40×40×8 plate with an Ø12 hole and a 1.5 mm round on the top rim."""
+    part = cq.Workplane().box(40, 40, 8).faces(">Z").workplane().hole(12)
+    return part.edges(cq.NearestToPointSelector((6, 0, 4))).fillet(1.5)
+
+
+def rounded_hole_both():
+    """40×40×8 plate with an Ø12 hole and a 1.2 mm round on both rims."""
+    part = cq.Workplane().box(40, 40, 8).faces(">Z").workplane().hole(12)
+    return part.edges("%CIRCLE").fillet(1.2)
+
+
+def filleted_blind_hole():
+    """40×40×20 block with an Ø10 blind hole, 12 mm deep, and a 1.5 mm floor fillet.
+
+    The floor meets the wall in a concave quarter torus (major radius 3.5 mm).
+    """
+    part = cq.Workplane().box(40, 40, 20).faces(">Z").workplane().hole(10, 12)
+    return part.edges(cq.NearestToPointSelector((5, 0, -2))).fillet(1.5)
+
+
 PLANAR = {"cube": cube, "l_bracket": l_bracket, "stepped_block": stepped_block}
 FILLETS = {"filleted_plate": filleted_plate, "filleted_box": filleted_box,
            "filleted_bracket": filleted_bracket}
 FILLET_RADIUS = {"filleted_plate": 5.0, "filleted_box": 2.0, "filleted_bracket": 3.0}
+TORI = {"filleted_boss": filleted_boss, "rounded_hole": rounded_hole}
+TORUS_MINOR = {"filleted_boss": 2.0, "rounded_hole": 1.5}
+TORUS_MAJOR = {"filleted_boss": 10.0, "rounded_hole": 7.5}
 CURVED = {"plate_with_hole": plate_with_hole, "boss": boss, "ribbed_plate": ribbed_plate}
 CONES = {"countersunk_plate": countersunk_plate, "tapered_boss": tapered_boss,
          "chamfered_boss": chamfered_boss}
