@@ -8,8 +8,9 @@ Unfitted regions stay faceted (hybrid fallback).
 
 Exact path (build_planar): plane polygons from triple-plane intersections,
 circles from plane ∩ cylinder and plane ∩ sphere, full cylindrical faces,
-partial fillet cylinders tangent to two planes, spherical caps/zones, and a
-cylinder or cone band trimmed by the planes and coaxial circles it meets.
+partial fillet cylinders tangent to two planes, spherical caps/zones, a
+cylinder or cone band trimmed by the planes and coaxial circles it meets, and
+a quarter torus tangent to a plane and a coaxial cylinder.
 """
 from __future__ import annotations
 
@@ -29,13 +30,15 @@ from OCP.TopAbs import TopAbs_SHELL
 from OCP.TopExp import TopExp_Explorer
 from OCP.TopoDS import TopoDS, TopoDS_Shape
 
-from .fit import Cone, Cylinder, Plane, Sphere
+from .fit import Cone, Cylinder, Plane, Sphere, Torus
 from .segment import Region, _analytic_mesh
 
 
 def _curved_normal(surface, pts):
-    """Unit surface normal used to linearise a cylinder or sphere constraint."""
+    """Unit surface normal used to linearise a curved constraint."""
     if isinstance(surface, Cone):
+        return surface.normal(pts)
+    if isinstance(surface, Torus):
         return surface.normal(pts)
     if isinstance(surface, Cylinder):
         rad = surface._radial(pts)
@@ -501,6 +504,35 @@ def _cyl_cone_circle(cyl, cone):
     return cone.apex + cone.axis * h, cone.axis, float(cyl.radius)
 
 
+def _plane_torus_circle(plane, torus):
+    """Plane ∩ torus at the tangent circle, or None when they are not tangent."""
+    n, d = _unit_plane(plane)
+    if n is None or torus.minor <= 0 or torus.major <= 0:
+        return None
+    if abs(float(n @ torus.axis)) < 0.995:
+        return None
+    centre = torus.center + torus.axis * ((d - float(n @ torus.center)) / float(n @ torus.axis))
+    if abs(float(np.linalg.norm(centre - torus.center)) - torus.minor) > max(1e-4, 1e-3 * torus.minor):
+        return None
+    return centre, n, float(torus.major)
+
+
+def _cyl_torus_circle(cyl, torus):
+    """Coaxial cylinder ∩ torus at the tangent equator."""
+    if abs(float(cyl.axis @ torus.axis)) < 0.995 or cyl.radius <= 0 or torus.minor <= 0:
+        return None
+    target = (torus.major - torus.minor) if torus.inner else (torus.major + torus.minor)
+    if abs(float(cyl.radius) - target) > max(1e-3, 0.02 * float(cyl.radius)):
+        return None
+    axis = torus.axis / max(float(np.linalg.norm(torus.axis)), 1e-12)
+    centre = np.asarray(torus.center, float)
+    # the equator lies in the plane through the tube centre
+    off = np.asarray(cyl.point, float) - centre
+    if float(np.linalg.norm(off - axis * float(off @ axis))) > 0.05 * float(cyl.radius):
+        return None
+    return centre, axis, float(cyl.radius)
+
+
 def _ring(surface, other):
     """Circle where a cone/cylinder region meets a neighbouring region."""
     if isinstance(surface, Cone):
@@ -510,7 +542,44 @@ def _ring(surface, other):
             return _cyl_cone_circle(other, surface)
     if isinstance(surface, Cylinder) and isinstance(other, Cone):
         return _cyl_cone_circle(surface, other)
+    if isinstance(surface, Cylinder) and isinstance(other, Torus):
+        return _cyl_torus_circle(surface, other)
     return None
+
+
+def _make_torus_face(torus, pts, normals):
+    """Quarter-torus face, oriented so its normal agrees with the mesh."""
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+    from OCP.BRepLProp import BRepLProp_SLProps
+    from OCP.Geom import Geom_ToroidalSurface
+    from OCP.gp import gp_Ax3, gp_Dir
+    if torus.major <= 0 or torus.minor <= 0:
+        return None
+    v0, v1 = (np.pi / 2, np.pi) if torus.inner else (0.0, np.pi / 2)
+    try:
+        ax = gp_Ax3(gp_Pnt(*map(float, torus.center)), gp_Dir(*map(float, torus.axis)))
+        surf = Geom_ToroidalSurface(ax, float(torus.major), float(torus.minor))
+        mf = BRepBuilderAPI_MakeFace(surf, 0.0, 2 * np.pi, v0, v1, 1e-7)
+        if not mf.IsDone():
+            return None
+        face = mf.Face()
+    except Exception:
+        return None
+    pred = torus.normal(pts)
+    agree = float(np.mean(np.sum(pred * normals, axis=1)))
+    props = BRepLProp_SLProps(BRepAdaptor_Surface(face), 0.0, 0.5 * (v0 + v1), 1, 1e-6)
+    if not props.IsNormalDefined():
+        return face
+    occ = props.Normal()
+    occ_n = np.array([occ.X(), occ.Y(), occ.Z()])
+    point = props.Value()
+    want = torus.normal(np.array([[point.X(), point.Y(), point.Z()]]))[0]
+    if agree < 0.0:
+        want = -want
+    if float(occ_n @ want) < 0.0:
+        face = face.Reversed()
+    return face
 
 
 def _make_cone_face(cone, hits):
@@ -1255,6 +1324,16 @@ def build_planar(m: trimesh.Trimesh, regions: list[Region], tol: float):
                 face = fixed
             sew.Add(face)
             continue
+        if isinstance(r.surface, Torus):
+            # one full ring: the tangent circle on the plane and the tangent
+            # equator on the cylinder. A partial torus is not this face.
+            if len(loops) != 2:
+                return None
+            face = _make_torus_face(r.surface, m.triangles_center[r.faces], m.face_normals[r.faces])
+            if face is None:
+                return None
+            sew.Add(face)
+            continue
         if isinstance(r.surface, Sphere):
             # sphere bounded by planar circles (cap, or a zone between two planes)
             planes = []
@@ -1312,6 +1391,15 @@ def build_planar(m: trimesh.Trimesh, regions: list[Region], tol: float):
                 if cc is None:
                     return None
                 circ = gp_Circ(gp_Ax2(gp_Pnt(*map(float, cc[0])), gp_Dir(*map(float, cc[1]))), float(cyl.radius))
+                w = BRepBuilderAPI_MakeWire(BRepBuilderAPI_MakeEdge(circ).Edge()).Wire()
+                wires.append((sa, q2, w))
+                continue
+            if len(seq) == 1 and isinstance(regions[seq[0]].surface, Torus):
+                hit = _plane_torus_circle(r.surface, regions[seq[0]].surface)
+                if hit is None:
+                    return None
+                cc, nrm, rho = hit
+                circ = gp_Circ(gp_Ax2(gp_Pnt(*map(float, cc)), gp_Dir(*map(float, nrm))), float(rho))
                 w = BRepBuilderAPI_MakeWire(BRepBuilderAPI_MakeEdge(circ).Edge()).Wire()
                 wires.append((sa, q2, w))
                 continue

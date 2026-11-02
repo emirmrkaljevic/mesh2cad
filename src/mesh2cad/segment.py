@@ -9,7 +9,7 @@ import networkx as nx
 import numpy as np
 import trimesh
 
-from .fit import (Cone, Cylinder, Plane, Sphere, fit_cylinder, fit_plane, fit_sphere,
+from .fit import (Cone, Cylinder, Plane, Sphere, Torus, fit_cylinder, fit_plane, fit_sphere,
                   refine_cylinder, refine_sphere, fit_cone, refine_cone, fit_cone_about_axis,
                   snap_tangent_cylinder)
 
@@ -175,6 +175,10 @@ def segment(m: trimesh.Trimesh, tol: float, angle_deg: float = 20.0,
             reclaimed = _reclaim_faceted_cylinders(m, out, tol)
             if len(reclaimed) != len(out):
                 out = _merge_cylinders(m, reclaimed, tol, adjacent_only=True)
+    if cylinders:
+        # a fillet between a plane and a coaxial cylinder is a torus. Claim it
+        # last so a miss leaves the planes, cylinders and cones alone.
+        out = _claim_tori(m, nb, out, tol)
     return [r for r in out if len(r.faces)]
 
 
@@ -2609,3 +2613,641 @@ def _repair_sharp(m, nb, regs, tol):
         changed = True
         out.extend(replacement)
     return out, changed
+
+
+def _axis_polar(axis, origin, pts):
+    """Signed height and radius of ``pts`` about an axis line."""
+    axis = np.asarray(axis, float)
+    origin = np.asarray(origin, float)
+    v = np.asarray(pts, float) - origin
+    h = v @ axis
+    radial = v - np.outer(h, axis)
+    return h, np.linalg.norm(radial, axis=1)
+
+
+def _covering_span(angles):
+    """Length of the shortest arc that covers every angle, in radians."""
+    ang = np.sort(np.asarray(angles, float) % (2.0 * np.pi))
+    if len(ang) < 3:
+        return 0.0
+    gaps = np.diff(ang)
+    wrap = float(ang[0] + 2.0 * np.pi - ang[-1])
+    return float(2.0 * np.pi - max(float(gaps.max()) if len(gaps) else 0.0, wrap))
+
+
+def _disk_plane(m, region, axis, origin, tol):
+    """Plane of the flat faces in ``region`` when they close around ``axis``.
+
+    A blind-hole floor is absorbed into the fillet and comes back as a sphere.
+    The floor triangles are still coplanar and perpendicular to the hole.
+    """
+    if not len(region.faces):
+        return None
+    ang = np.abs(m.face_normals[region.faces] @ axis)
+    flat = region.faces[ang > 0.96]
+    if len(flat) < 8:
+        return None
+    # the fillet's tangent ring is curved; the floor is the cluster that
+    # survives a few passes of "close to the fitted plane"
+    for _ in range(3):
+        pl = fit_plane(m.triangles[flat].reshape(-1, 3))
+        if float(pl.normal @ m.face_normals[flat].mean(0)) < 0.0:
+            pl = Plane(-pl.normal, -pl.d)
+        dist = pl.distance(m.triangles_center[flat])
+        nxt = flat[dist <= max(4.0 * tol, 0.1)]
+        if len(nxt) < 8 or len(nxt) == len(flat):
+            flat = nxt if len(nxt) >= 8 else flat
+            break
+        flat = nxt
+    if len(flat) < 8:
+        return None
+    pts = m.vertices[np.unique(m.faces[flat])]
+    pl = fit_plane(m.triangles[flat].reshape(-1, 3))
+    if float(pl.normal @ m.face_normals[flat].mean(0)) < 0.0:
+        pl = Plane(-pl.normal, -pl.d)
+    if abs(float(pl.normal @ axis)) < 0.96:
+        return None
+    if float(np.percentile(pl.distance(pts), 90)) > max(3.0 * tol, 0.05):
+        return None
+    _h, rho = _axis_polar(axis, origin, m.triangles_center[flat])
+    # a tangent ring sits at one radius; the floor disk reaches inward
+    if len(rho) and float(np.min(rho)) > 0.75 * float(np.percentile(rho, 90)):
+        return None
+    return pl
+
+
+def _junction_cylinder(m, region, tol):
+    """Axis, origin and radius of a full-turn cylinder, or None.
+
+    Radius is fit on wall faces only. A fillet band glued onto the wall
+    pulls a free fit off by a few hundredths, which is enough to miss the
+    tangent torus.
+    """
+    cyl = region.surface
+    if not isinstance(cyl, Cylinder) or not len(region.faces) or cyl.radius <= 0.4:
+        return None
+    axis = np.asarray(cyl.axis, float)
+    axis = axis / max(float(np.linalg.norm(axis)), 1e-12)
+    origin = np.asarray(cyl.point, float)
+    origin = origin - axis * float(origin @ axis)
+    cen = m.triangles_center
+    h, rho = _axis_polar(axis, origin, cen)
+    ang = np.abs(m.face_normals @ axis)
+    Rc0 = float(cyl.radius)
+    band = max(1.0, 0.18 * Rc0)
+    wall = np.zeros(len(m.faces), bool)
+    wall[region.faces] = True
+    # neighbouring single-facet planes are the same wall when a fillet
+    # shattered the cylinder. They are not another hole: the radius matches.
+    wall |= (ang < 0.38) & (np.abs(rho - Rc0) < band)
+    wall &= ang < 0.45
+    wall &= np.abs(rho - Rc0) < band
+    if int(wall.sum()) < 16:
+        return None
+    pts = m.vertices[np.unique(m.faces[np.where(wall)[0]])]
+    hv, rv = _axis_polar(axis, origin, pts)
+    keep = np.abs(rv - Rc0) < band
+    if int(keep.sum()) < 16:
+        return None
+    pts = pts[keep]
+    gap = _angular_gap(axis, origin, pts)
+    if gap > np.radians(50.0):
+        return None
+    guess = Cylinder(axis, origin, float(np.median(rv[keep])))
+    fit = refine_cylinder(guess, pts)
+    if abs(float(fit.axis @ axis)) < 0.995:
+        return None
+    if abs(float(fit.radius) - Rc0) > max(0.6, 0.12 * Rc0):
+        return None
+    Rc = float(fit.radius)
+    if not np.isfinite(Rc) or Rc <= 0.4 or Rc > 0.5 * m.scale:
+        return None
+    return axis, origin, Rc, wall
+
+
+def _score_torus_radius(rho, h, phi, ang, Rc, h_plane, rad, sgn, side, tol):
+    """p70 residual of one tangent torus, or None when the arc is not a fillet."""
+    pad = max(2.0 * tol, 0.1 * rad)
+    centre_h = h_plane + side * rad
+    centre_rho = Rc + sgn * rad
+    if centre_rho <= max(0.3, 0.25 * rad):
+        return None
+    if sgn > 0.0:
+        rho_lo, rho_hi = Rc - pad, Rc + rad + pad
+    else:
+        rho_lo, rho_hi = Rc - rad - pad, Rc + pad
+    h_lo = min(h_plane, centre_h) - pad
+    h_hi = max(h_plane, centre_h) + pad
+    box = (rho >= rho_lo) & (rho <= rho_hi) & (h >= h_lo) & (h <= h_hi)
+    # wall and cap triangles sit at the ends of the same box; the arc is the
+    # band whose normals have already left both of them
+    arc = box & (ang > 0.18) & (ang < 0.92)
+    if int(arc.sum()) < 20:
+        return None
+    dr = rho[arc] - centre_rho
+    dh = h[arc] - centre_h
+    err = np.abs(np.hypot(dr, dh) - rad)
+    if _covering_span(np.arctan2(dh, dr)) < np.radians(55.0):
+        return None
+    if _covering_span(np.arctan2(dh, dr)) > np.radians(130.0):
+        return None
+    along = np.abs(h[arc] - h_plane)
+    if float(np.percentile(along, 10)) > 0.55 * rad:
+        return None
+    if float(np.percentile(along, 90)) < 0.45 * rad:
+        return None
+    if _angular_gap(np.array([0.0, 0.0, 1.0]), np.zeros(3),
+                    np.c_[np.cos(phi[arc]), np.sin(phi[arc]), np.zeros(int(arc.sum()))]) > np.radians(42.0):
+        return None
+    return float(np.percentile(err, 70))
+
+
+def _outer_minor(m, measure, origin, Rc, h_plane, rad, sgn, side, tol):
+    """Minor radius from the outer vertices of the fillet band.
+
+    A subdivided chord lies inside the tube, so a centroid fit comes out
+    short. The vertices that the tessellation left on the surface are the
+    outer envelope.
+    """
+    cen = m.triangles_center
+    h, rho = _axis_polar(measure, origin, cen)
+    ang = np.abs(m.face_normals @ measure)
+    pad = max(2.0 * tol, 0.12 * rad)
+    centre_h = h_plane + side * rad
+    if sgn > 0.0:
+        box = (rho > Rc - pad) & (rho < Rc + rad + pad)
+    else:
+        box = (rho > Rc - rad - pad) & (rho < Rc + pad)
+    box &= (h > min(h_plane, centre_h) - pad) & (h < max(h_plane, centre_h) + pad)
+    box &= (ang > 0.2) & (ang < 0.9)
+    if int(box.sum()) < 16:
+        return rad
+    pts = m.vertices[np.unique(m.faces[np.where(box)[0]])]
+    hv, rv = _axis_polar(measure, origin, pts)
+    best = None
+    hi = min(rad * 1.35, 0.9 * Rc)
+    for trial in np.linspace(rad * 0.9, max(rad * 0.91, hi), 19):
+        c_h = h_plane + side * trial
+        c_rho = Rc + sgn * trial
+        if c_rho <= 0.3:
+            continue
+        dist = np.hypot(rv - c_rho, hv - c_h)
+        # stay on this band; vertices of the opposite cap are not in ``pts``
+        err = abs(float(np.percentile(dist, 90)) - trial)
+        width = float(np.percentile(np.abs(dist - trial), 60))
+        score = err + 0.25 * width
+        if best is None or score < best[0]:
+            best = (score, float(trial))
+    if best is None or best[0] > max(4.0 * tol, 0.08 * rad):
+        return rad
+    return best[1]
+
+
+def _fit_junction_torus(m, axis, origin, Rc, plane, tol):
+    """Torus tangent to ``plane`` and the cylinder, or None."""
+    n = np.asarray(plane.normal, float)
+    n = n / max(float(np.linalg.norm(n)), 1e-12)
+    if abs(float(n @ axis)) < 0.98:
+        return None
+    # measure height along the plane normal so a one-degree tilt does not
+    # shear the circle
+    measure = n if float(n @ axis) >= 0.0 else -n
+    origin = np.asarray(origin, float)
+    origin = origin - measure * float(origin @ measure)
+    cen = m.triangles_center
+    h, rho = _axis_polar(measure, origin, cen)
+    ang = np.abs(m.face_normals @ measure)
+    d = float(plane.d) / max(float(np.linalg.norm(plane.normal)), 1e-12)
+    # origin lies in the plane through the world origin perpendicular to
+    # ``measure``, so a point's height is ``p · measure`` and the cap is at
+    # ``h_plane``.
+    h_plane = float(n @ measure) * d
+    phi = _cylinder_angles(measure, origin, cen)[0]
+    r_min = max(0.35, 3.0 * tol)
+    r_max = min(0.85 * Rc, max(6.0, 12.0 * tol))
+    if r_max <= r_min + 0.2:
+        return None
+    grid = np.linspace(r_min, r_max, 48)
+    best = None
+    for sgn, inner in ((1.0, True), (-1.0, False)):
+        for side in (1.0, -1.0):
+            for rad in grid:
+                score = _score_torus_radius(rho, h, phi, ang, Rc, h_plane, float(rad), sgn, side, tol)
+                if score is None:
+                    continue
+                if best is None or score < best[0]:
+                    best = (score, float(rad), sgn, side, inner)
+    if best is None:
+        return None
+    score, rad, sgn, side, inner = best
+    fine = np.linspace(max(r_min, rad * 0.9), min(r_max, rad * 1.1), 17)
+    for trial in fine:
+        got = _score_torus_radius(rho, h, phi, ang, Rc, h_plane, float(trial), sgn, side, tol)
+        if got is not None and got < score:
+            score, rad = got, float(trial)
+    if score > max(6.0 * tol, 0.08 * rad) or score > 0.12 * rad:
+        return None
+    # centroids sit inside each chord, so the circle they pick is small.
+    # vertices of the same band reach the true tube; the outer ones are the radius.
+    rad = _outer_minor(m, measure, origin, Rc, h_plane, rad, sgn, side, tol)
+    centre_h = h_plane + side * rad
+    major = Rc + sgn * rad
+    if major <= max(0.3, 0.3 * rad):
+        return None
+    # axis points from the tube centre toward the plane
+    axis_out = -side * measure
+    centre = origin + measure * centre_h
+    torus = Torus(axis_out, centre, float(major), float(rad), inner)
+    return torus, measure, origin, h_plane, side
+
+
+def _torus_ring(m, nb, torus, measure, origin, Rc, h_plane, side, tol):
+    """Face ids of the fillet ring, or None when it does not close."""
+    cen = m.triangles_center
+    h, rho = _axis_polar(measure, origin, cen)
+    dist = torus.distance(cen)
+    d_plane = np.abs(h - h_plane)
+    d_cyl = np.abs(rho - Rc)
+    rad = float(torus.minor)
+    pad = max(2.5 * tol, 0.15 * rad)
+    centre_h = h_plane + side * rad
+    if torus.inner:
+        rho_lo, rho_hi = Rc - pad, Rc + rad + pad
+    else:
+        rho_lo, rho_hi = Rc - rad - pad, Rc + pad
+    h_lo = min(h_plane, centre_h) - pad
+    h_hi = max(h_plane, centre_h) + pad
+    box = (rho >= rho_lo) & (rho <= rho_hi) & (h >= h_lo) & (h <= h_hi)
+    margin = max(2.0 * tol, 0.08 * rad)
+    gate = max(5.0 * tol, 0.15 * rad)
+    core = box & (dist + margin < d_plane) & (dist + margin < d_cyl) & (dist <= gate)
+    if int(core.sum()) < 16:
+        return None
+    selected = core.copy()
+    # thicken the ring out to the plane and the cylinder, but not past them
+    loose = max(gate, 0.22 * rad)
+    stack = list(np.where(core)[0])
+    seen = selected.copy()
+    while stack:
+        f = int(stack.pop())
+        for g in nb[f]:
+            if seen[g] or not box[g]:
+                continue
+            seen[g] = True
+            if dist[g] > loose or dist[g] > d_plane[g] + margin or dist[g] > d_cyl[g] + margin:
+                continue
+            selected[g] = True
+            stack.append(g)
+    faces = np.where(selected)[0]
+    if len(faces) < 16:
+        return None
+    comps = []
+    fset = set(int(f) for f in faces)
+    visited = set()
+    for s in faces:
+        s = int(s)
+        if s in visited:
+            continue
+        comp, q = [], deque([s])
+        visited.add(s)
+        while q:
+            f = q.popleft()
+            comp.append(f)
+            for g in nb[f]:
+                if g in fset and g not in visited:
+                    visited.add(g)
+                    q.append(g)
+        comps.append(np.asarray(comp, int))
+    comps.sort(key=len, reverse=True)
+    faces = comps[0]
+    if len(faces) < 16:
+        return None
+    gap = _angular_gap(measure, origin, m.triangles_center[faces])
+    if gap > np.radians(36.0):
+        return None
+    pts = m.vertices[np.unique(m.faces[faces])]
+    err = float(np.percentile(torus.distance(pts), 90))
+    if err > max(6.0 * tol, 0.1 * rad) or err > 0.16 * rad:
+        return None
+    crown = 0.0
+    hc, rhoc = _axis_polar(measure, origin, m.triangles_center[faces])
+    both = np.minimum(np.abs(hc - h_plane), np.abs(rhoc - Rc))
+    crown = float(np.percentile(both, 90))
+    if crown < max(3.0 * tol, 0.12 * rad):
+        return None
+    expected = (np.pi ** 2) * float(torus.major) * rad
+    area = float(m.area_faces[faces].sum())
+    if area < 0.12 * expected or area > 1.6 * expected:
+        return None
+    cens = m.triangles_center[faces]
+    cone = fit_cone(cens, m.face_normals[faces])
+    if cone is not None:
+        ce = float(np.percentile(cone.distance(pts), 80))
+        te = float(np.percentile(torus.distance(pts), 80))
+        if ce + max(2.0 * tol, 1e-4) < te:
+            return None
+    return faces
+
+
+def _claim_tori(m, nb, regs, tol):
+    """Rebuild a plane-cylinder fillet as one torus, tangent to both.
+
+    The fillet is a quarter torus: inner equator for a boss base or a rounded
+    hole rim, outer equator for the floor of a blind hole. A chamfer is the
+    straight chord of that quarter and does not pass the residual test. A
+    miss returns ``regs`` unchanged.
+    """
+    total = float(m.area_faces.sum()) or 1.0
+    claims = []
+    used = np.zeros(len(m.faces), bool)
+    for ci, region in enumerate(regs):
+        got = _junction_cylinder(m, region, tol)
+        if got is None:
+            continue
+        axis, origin, Rc, wall = got
+        caps = []
+        for i, reg in enumerate(regs):
+            if isinstance(reg.surface, Plane) and abs(float(reg.surface.normal @ axis)) > 0.96:
+                if reg.area >= 0.012 * total:
+                    caps.append((i, reg.surface, False))
+            elif isinstance(reg.surface, Sphere) and 0 < reg.area < 0.2 * total:
+                pl = _disk_plane(m, reg, axis, origin, tol)
+                if pl is not None:
+                    caps.append((i, pl, True))
+        if not caps or len(region.faces) < 8:
+            continue
+        for cap_i, plane, virtual in caps:
+            fit = _fit_junction_torus(m, axis, origin, Rc, plane, tol)
+            if fit is None:
+                continue
+            torus, measure, origin_m, h_plane, side = fit
+            # keep a cap that actually meets this wall. The far face of a
+            # plate is parallel too, and a loose window fits the real fillet
+            # to the wrong plane.
+            wall_ids = np.where(wall)[0]
+            wall_h, _ = _axis_polar(measure, origin_m, m.triangles_center[wall_ids])
+            w_lo, w_hi = np.percentile(wall_h, [5, 95])
+            reach = max(4.0, 0.35 * float(w_hi - w_lo), 1.4 * float(torus.minor))
+            if not (w_lo - reach <= h_plane <= w_hi + reach):
+                continue
+            # the fillet has to fit between this plane and the opposite one
+            others = [c[1] for c in caps if c[0] != cap_i and not c[2]]
+            too_thick = False
+            for other in others:
+                on = np.asarray(other.normal, float)
+                on = on / max(float(np.linalg.norm(on)), 1e-12)
+                if abs(float(on @ measure)) < 0.96:
+                    continue
+                od = float(other.d) / max(float(np.linalg.norm(other.normal)), 1e-12)
+                oh = float(on @ measure) * od
+                if abs(oh - h_plane) < 1.6 * float(torus.minor):
+                    too_thick = True
+                    break
+            if too_thick:
+                continue
+            faces = _torus_ring(m, nb, torus, measure, origin_m, Rc, h_plane, side, tol)
+            if faces is None or used[faces].any():
+                continue
+            # snap the cylinder onto the same axis the torus uses, keeping the
+            # radius the fillet was built against
+            cyl_axis = np.asarray(region.surface.axis, float)
+            sign = 1.0 if float(cyl_axis @ measure) >= 0.0 else -1.0
+            cyl = Cylinder(sign * measure, np.asarray(torus.center, float), float(Rc))
+            claims.append({
+                "faces": faces,
+                "torus": torus,
+                "cyl_index": ci,
+                "cyl": cyl,
+                "cap_index": cap_i,
+                "cap_plane": plane,
+                "virtual": virtual,
+                "Rc": float(Rc),
+                "measure": measure,
+            })
+            used[faces] = True
+    if not claims:
+        return regs
+    return _apply_torus_claims(m, nb, regs, claims, tol)
+
+
+def _apply_torus_claims(m, nb, regs, claims, tol):
+    """Cut claimed fillet faces out of their regions and sew in the tori."""
+    nface = len(m.faces)
+    which = -np.ones(nface, int)
+    for k, claim in enumerate(claims):
+        which[claim["faces"]] = k
+    claimed = which >= 0
+    area = m.area_faces
+    total = float(area.sum()) or 1.0
+    cyl_of = {}
+    for claim in claims:
+        cyl_of[claim["cyl_index"]] = claim
+    # small planar facets of a shattered wall, joined back onto that cylinder
+    drop_region = set()
+    extra_cyl = {ci: [] for ci in cyl_of}
+    for i, reg in enumerate(regs):
+        if not isinstance(reg.surface, Plane) or not len(reg.faces) or reg.area > 0.02 * total:
+            continue
+        faces = reg.faces[~claimed[reg.faces]]
+        if len(faces) < 3:
+            continue
+        for ci, claim in cyl_of.items():
+            measure = claim["measure"]
+            origin = np.asarray(claim["cyl"].point, float)
+            origin = origin - measure * float(origin @ measure)
+            _h, rho = _axis_polar(measure, origin, m.triangles_center[faces])
+            ang = np.abs(m.face_normals[faces] @ measure)
+            if float(np.median(np.abs(rho - claim["Rc"]))) > max(4.0 * tol, 0.06 * claim["Rc"]):
+                continue
+            if float(np.median(ang)) > 0.45:
+                continue
+            extra_cyl[ci].append(faces)
+            drop_region.add(i)
+            break
+    # a noisy cap swallows wall triangles. Those still sit on the cylinder;
+    # leaving them in the cap opens the tube's end loop.
+    out = []
+    for i, reg in enumerate(regs):
+        if i in drop_region or not len(reg.faces):
+            continue
+        keep = reg.faces[~claimed[reg.faces]]
+        surf = reg.surface
+        if len(keep) == 0:
+            if i not in cyl_of:
+                continue
+            surf = cyl_of[i]["cyl"]
+            extra = [e for e in extra_cyl.get(i, []) if len(e)]
+            if not extra:
+                continue
+            keep = np.unique(np.concatenate(extra))
+            out.append(Region(keep, surf, float(area[keep].sum())))
+            continue
+        if len(keep) != len(reg.faces):
+            pts = m.vertices[np.unique(m.faces[keep])]
+            eaten = (len(reg.faces) - len(keep)) / max(len(reg.faces), 1)
+            if isinstance(surf, Plane):
+                surf = _refit(m.triangles, area, keep, surf)
+            elif isinstance(surf, (Cone, Sphere)) and eaten > 0.3:
+                # the fillet was stored as a cone or a sphere. What is left
+                # is a sliver, the blind floor, or neither.
+                host = -1
+                if np.any(which[reg.faces] >= 0):
+                    host = int(np.bincount(which[reg.faces][which[reg.faces] >= 0]).argmax())
+                folded = False
+                if host >= 0:
+                    limit = max(6.0 * tol, 0.2 * claims[host]["torus"].minor)
+                    if float(np.percentile(claims[host]["torus"].distance(pts), 90)) <= limit:
+                        which[keep] = host
+                        folded = True
+                if folded:
+                    continue
+                pl = fit_plane(m.triangles[keep].reshape(-1, 3))
+                if float(np.percentile(pl.distance(pts), 90)) <= max(4.0 * tol, 0.08):
+                    if float(pl.normal @ m.face_normals[keep].mean(0)) < 0.0:
+                        pl = Plane(-pl.normal, -pl.d)
+                    surf = pl
+                elif len(keep) < 12:
+                    continue
+            elif isinstance(surf, Cylinder) and len(keep) >= 8 and i not in cyl_of:
+                surf = refine_cylinder(surf, pts)
+            elif isinstance(surf, Cone) and len(keep) >= 8:
+                surf = refine_cone(surf, pts)
+            elif isinstance(surf, Sphere) and len(keep) >= 8:
+                surf = refine_sphere(surf, pts)
+        if isinstance(surf, Sphere):
+            for claim in claims:
+                if claim["cap_index"] != i or not claim["virtual"]:
+                    continue
+                floor = m.vertices[np.unique(m.faces[keep])]
+                if float(np.percentile(claim["cap_plane"].distance(floor), 90)) <= max(4.0 * tol, 0.08):
+                    surf = claim["cap_plane"]
+                    break
+        if i in cyl_of and isinstance(regs[i].surface, Cylinder):
+            surf = cyl_of[i]["cyl"]
+            extra = [e for e in extra_cyl.get(i, []) if len(e)]
+            if extra:
+                keep = np.unique(np.concatenate([keep, *extra]))
+        out.append(Region(keep, surf, float(area[keep].sum())))
+    for k, claim in enumerate(claims):
+        faces = np.where(which == k)[0]
+        if len(faces) < 8:
+            continue
+        out.append(Region(faces, claim["torus"], float(area[faces].sum())))
+    out = _snap_tori_to_caps(m, nb, [r for r in out if len(r.faces)])
+    return _dissolve_boundary_specks(m, out, tol)
+
+
+def _dissolve_boundary_specks(m, regs, tol):
+    """Move a one-triangle nick on a cap into the torus it touches.
+
+    Noise leaves two or three edges where the cap still touches the cylinder
+    through the fillet. That nick is its own loop and the plane cannot be
+    trimmed to one circle.
+    """
+    from .brep import _loops
+    regs = [r for r in regs if len(r.faces)]
+    for _ in range(4):
+        label = -np.ones(len(m.faces), int)
+        for i, reg in enumerate(regs):
+            if len(reg.faces):
+                label[reg.faces] = i
+        moved = False
+        for i, reg in enumerate(regs):
+            if not isinstance(reg.surface, Plane) or not len(reg.faces):
+                continue
+            loops = _loops(m, label, i)
+            if not loops:
+                continue
+            give = {}
+            for loop in loops:
+                # one triangle, bounded by the torus and the cylinder
+                if len(loop) > 4:
+                    continue
+                hosts = [s for _, _, s in loop if isinstance(regs[s].surface, Torus)]
+                if not hosts:
+                    continue
+                host = hosts[0]
+                torus = regs[host].surface
+                verts = {int(a) for a, _, _ in loop}
+                faces = []
+                for f in reg.faces:
+                    tri = {int(v) for v in m.faces[int(f)]}
+                    if tri <= verts:
+                        faces.append(int(f))
+                if len(faces) != 1:
+                    continue
+                cen = m.triangles_center[np.asarray(faces, int)]
+                if float(torus.distance(cen)[0]) > max(4.0 * tol, 0.2 * torus.minor):
+                    continue
+                give.setdefault(host, []).extend(faces)
+            if not give:
+                continue
+            drop = set()
+            for host, faces in give.items():
+                faces = np.unique(np.asarray(faces, int))
+                drop.update(int(f) for f in faces)
+                kept = regs[host].faces
+                regs[host] = Region(np.unique(np.concatenate([kept, faces])), regs[host].surface,
+                                    float(m.area_faces[np.unique(np.concatenate([kept, faces]))].sum()))
+            keep = np.asarray([int(f) for f in reg.faces if int(f) not in drop], int)
+            if len(keep) == 0:
+                regs[i] = Region(keep, reg.surface, 0.0)
+            else:
+                surf = _refit(m.triangles, m.area_faces, keep, reg.surface)
+                regs[i] = Region(keep, surf, float(m.area_faces[keep].sum()))
+            moved = True
+        regs = [r for r in regs if len(r.faces)]
+        if not moved:
+            break
+    return regs
+
+
+def _snap_tori_to_caps(m, nb, regs):
+    """Put each torus exactly ``minor`` off the cap it was sewn to.
+
+    Refitting the floor after the fillet triangles are removed moves the
+    plane by a few hundredths. The torus is rebuilt on that plane so the
+    tangent circle is one curve, not two.
+    """
+    label = -np.ones(len(m.faces), int)
+    for i, reg in enumerate(regs):
+        if len(reg.faces):
+            label[reg.faces] = i
+    out = []
+    for i, reg in enumerate(regs):
+        torus = reg.surface
+        if not isinstance(torus, Torus):
+            out.append(reg)
+            continue
+        seen = set()
+        snapped = torus
+        for f in reg.faces:
+            for g in nb[int(f)]:
+                j = int(label[g])
+                if j < 0 or j in seen or not isinstance(regs[j].surface, Plane):
+                    continue
+                seen.add(j)
+                snapped = _snap_torus_plane(snapped, regs[j].surface)
+        out.append(Region(reg.faces, snapped, reg.area))
+    return out
+
+
+def _snap_torus_plane(torus, plane):
+    n = np.asarray(plane.normal, float)
+    ln = float(np.linalg.norm(n))
+    if ln < 1e-12:
+        return torus
+    n = n / ln
+    d = float(plane.d) / ln
+    axis = np.asarray(torus.axis, float)
+    axis = axis / max(float(np.linalg.norm(axis)), 1e-12)
+    denom = float(n @ axis)
+    if abs(denom) < 0.98:
+        return torus
+    centre = np.asarray(torus.center, float)
+    t = (d - float(n @ centre)) / denom
+    if abs(abs(t) - torus.minor) > max(0.08, 0.08 * torus.minor):
+        return torus
+    signed = math.copysign(float(torus.minor), t if t != 0.0 else 1.0)
+    centre = centre + axis * (t - signed)
+    return Torus(axis, centre, float(torus.major), float(torus.minor), torus.inner)
