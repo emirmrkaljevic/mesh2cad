@@ -61,11 +61,14 @@ def test_spherical_corner_falls_back_valid():
     assert r["method"] in ("faceted-hybrid", "faceted")
 
 
-def test_boss_base_fillet_falls_back_valid():
-    """A plane-cylinder fillet is a torus and is not rebuilt."""
+def test_coarse_boss_base_fillet_is_a_torus():
+    """A coarser tessellation of a boss-base fillet is still one torus."""
     part = (cq.Workplane().box(30, 30, 6).faces(">Z").workplane().circle(6).extrude(8)
             .edges(cq.NearestToPointSelector((0, 0, 3))).fillet(1.0))
     m = to_mesh(part, tol=0.2, ang=0.5, max_edge=3.0)
     r = convert_mesh(m, tol=0.05).report
+    assert r["method"] == "exact"
     assert r["output"]["valid_solid"]
-    assert r["method"] in ("faceted-hybrid", "faceted")
+    assert r["output"]["faces"].get("torus") == 1
+    assert r["tori"][0]["minor"] == pytest.approx(1.0, abs=0.08)
+    assert r["tori"][0]["major"] == pytest.approx(7.0, abs=0.08)

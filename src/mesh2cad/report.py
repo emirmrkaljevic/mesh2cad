@@ -10,7 +10,7 @@ from OCP.BRep import BRep_Tool
 from OCP.BRepAdaptor import BRepAdaptor_Surface
 from OCP.BRepGProp import BRepGProp
 from OCP.BRepMesh import BRepMesh_IncrementalMesh
-from OCP.GeomAbs import GeomAbs_Cone, GeomAbs_Cylinder, GeomAbs_Plane, GeomAbs_Sphere
+from OCP.GeomAbs import GeomAbs_Cone, GeomAbs_Cylinder, GeomAbs_Plane, GeomAbs_Sphere, GeomAbs_Torus
 from OCP.GProp import GProp_GProps
 from OCP.TopAbs import TopAbs_FACE, TopAbs_REVERSED
 from OCP.TopExp import TopExp_Explorer
@@ -24,7 +24,7 @@ def face_types(shape) -> dict:
     while exp.More():
         t = BRepAdaptor_Surface(TopoDS.Face_s(exp.Current())).GetType()
         kind = {GeomAbs_Plane: "plane", GeomAbs_Cylinder: "cylinder", GeomAbs_Sphere: "sphere",
-                GeomAbs_Cone: "cone"}.get(t, "other")
+                GeomAbs_Cone: "cone", GeomAbs_Torus: "torus"}.get(t, "other")
         c[kind] += 1
         exp.Next()
     return dict(c)
@@ -80,7 +80,9 @@ def build_report(src: trimesh.Trimesh, shape, regions, valid: bool, ref=None) ->
         fitted[r.surface.kind if r.surface is not None else "faceted"] += r.area
     vin = abs(target.volume) if target.is_volume else float("nan")
     vout = volume(shape)
-    return {
+    tori = [{"major": float(r.surface.major), "minor": float(r.surface.minor)}
+            for r in regions if getattr(r.surface, "kind", None) == "torus"]
+    out = {
         "input": {"vertices": len(src.vertices), "faces": len(src.faces),
                   "watertight": bool(src.is_watertight)},
         "regions": {"count": len(regions),
@@ -90,6 +92,9 @@ def build_report(src: trimesh.Trimesh, shape, regions, valid: bool, ref=None) ->
         "volume_error_pct": float(abs(vout - vin) / vin * 100) if vin == vin and vin > 0 else None,
         "deviation": deviation(target, out_mesh),
     }
+    if tori:
+        out["tori"] = tori
+    return out
 
 
 def to_markdown(r: dict) -> str:
@@ -101,6 +106,9 @@ def to_markdown(r: dict) -> str:
              "- Area fitted: " + ", ".join(f"{k} {v:.1%}" for k, v in r["area_fraction"].items()),
              f"- Volume error: {r['volume_error_pct']:.3f}%" if r["volume_error_pct"] is not None else "- Volume error: n/a",
              f"- Deviation: Hausdorff {d['hausdorff']:.4f}, mean {d['mean']:.4f}, RMS {d['rms']:.4f}, p95 {d['p95']:.4f}"]
+    if r.get("tori"):
+        bits = [f"major {t['major']:.3f}, minor {t['minor']:.3f}" for t in r["tori"]]
+        lines.append("- Tori: " + "; ".join(bits))
     return "\n".join(lines) + "\n"
 
 

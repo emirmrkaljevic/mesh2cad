@@ -504,3 +504,62 @@ def fit_cone_about_axis(origin, axis, pts, normals=None) -> Cone | None:
     if float(np.percentile(along, 8)) <= 0:
         return None
     return Cone(np.asarray(apex, float), np.asarray(axis, float), float(alpha))
+
+
+@dataclass
+class Torus:
+    """Quarter torus tangent to one plane and one coaxial cylinder.
+
+    ``axis`` points from the tube centre toward the tangent plane.
+    ``center`` is the centre of the tube circle. ``major`` is the tube-circle
+    radius and ``minor`` is the tube radius. ``inner`` is true when the
+    cylinder meets the inner equator (``major - minor``): a boss-base fillet
+    or a rounded hole rim. False when the cylinder meets the outer equator
+    (``major + minor``): the floor of a blind hole.
+    """
+
+    axis: np.ndarray
+    center: np.ndarray
+    major: float
+    minor: float
+    inner: bool = True
+    kind: str = field(default="torus", init=False)
+
+    def _polar(self, pts):
+        v = np.asarray(pts, float) - self.center
+        h = v @ self.axis
+        radial = v - np.outer(h, self.axis)
+        rho = np.linalg.norm(radial, axis=1)
+        return h, rho, radial
+
+    def distance(self, pts):
+        h, rho, _ = self._polar(pts)
+        return np.abs(np.hypot(rho - self.major, h) - self.minor)
+
+    def normal(self, pts):
+        """Unit normal pointing away from the tube centre."""
+        h, rho, radial = self._polar(pts)
+        er = radial / np.maximum(rho, 1e-12)[:, None]
+        meridional = er * (rho - self.major)[:, None] + self.axis * h[:, None]
+        nrm = np.linalg.norm(meridional, axis=1, keepdims=True)
+        bad = nrm[:, 0] < 1e-12
+        nrm[bad] = 1.0
+        out = meridional / nrm
+        if np.any(bad):
+            out[bad] = self.axis
+        return out
+
+    def project(self, pts):
+        h, rho, radial = self._polar(pts)
+        er = radial / np.maximum(rho, 1e-12)[:, None]
+        dr = rho - self.major
+        dist = np.hypot(dr, h)
+        scale = self.minor / np.maximum(dist, 1e-12)
+        new_rho = self.major + dr * scale
+        new_h = h * scale
+        # a point on the tube circle has no meridional direction; leave it
+        on_centre = dist < 1e-12
+        if np.any(on_centre):
+            new_rho = np.where(on_centre, self.major + self.minor, new_rho)
+            new_h = np.where(on_centre, 0.0, new_h)
+        return self.center + new_h[:, None] * self.axis + new_rho[:, None] * er
