@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.19.0 - 2026-11-03
 
 - Parametric CadQuery, OpenSCAD, and FreeCAD export write a quarter-torus fillet on the box vocabulary as a named parameter. `boss_N_fillet` is the round at the base of a straight vertical boss. `hole_N_rim_r` and `hole_N_bot_rim_r` are the rounds on the top and bottom rims of a vertical hole. `hole_N_floor_r` is the fillet where a blind hole's floor meets the wall. `mesh2cad edit script.py --set boss_1_fillet=3` (or `hole_1_rim_r`, or `hole_1_floor_r`) rebuilds the solid. A fillet whose axis is not Z is refused. `fillet_r` is still the four vertical corners of a rectangular base. An L-bracket fillet and a spherical corner stay on the STEP path.
 - With no noise the usual gate holds (max deviation at most max(4·tol, 0.1) = 0.1 mm, volume error at most 1%). The Ø16 boss with a 2 mm base fillet recovers `boss_1_fillet = 2.0`. CadQuery deviates by 0.0099 mm (volume error 0.020%), OpenSCAD by 0.0099 mm (0.015%), FreeCAD by 0.0099 mm (0.025%). The Ø12 hole with a 1.5 mm top round recovers `hole_1_rim_r = 1.43`. CadQuery 0.0274 mm (0.045%), OpenSCAD 0.0274 mm (0.043%), FreeCAD 0.0274 mm (0.047%). Both rims at 1.2 mm recover 1.14. CadQuery 0.0224 mm (0.027%), OpenSCAD 0.0224 mm (0.025%), FreeCAD 0.0224 mm (0.029%). The Ø10 blind hole with a 1.5 mm floor fillet recovers `hole_1_floor_r = 1.46` and depth 12.0. CadQuery 0.0143 mm (0.006%), OpenSCAD 0.0138 mm (0.007%), FreeCAD 0.0141 mm (0.005%).
