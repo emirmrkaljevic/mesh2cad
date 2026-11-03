@@ -4,7 +4,9 @@ Uses the same feature dict and parameter names as the CadQuery and OpenSCAD
 exports (:mod:`mesh2cad.parametric`). The macro is plain Python for FreeCAD's
 Part API: ``makeBox`` / ``makeCylinder`` / ``makeCone``, a polygon extruded
 along X, Y, or Z, ``fuse`` / ``cut`` / ``common``, and ``makeFillet`` for the
-one vertical corner radius. A part that is a few extrusions (their
+one vertical corner radius and for a quarter-torus fillet on a vertical boss
+or hole (``boss_N_fillet``, ``hole_N_rim_r``, ``hole_N_bot_rim_r``,
+``hole_N_floor_r``). A part that is a few extrusions (their
 intersection, a union of partial-depth extrusions, or one minus cuts along
 the other axes, plus a counterbored hole or a planar clip) is the same
 boolean. Every dimension is a named parameter at the top of the file
@@ -269,6 +271,35 @@ def _finish(head, params, helpers, body) -> str:
     return "\n".join(chunks)
 
 
+_CIRCLE_EDGES = '''
+def _circle_edges(shape, x, y, z, radius):
+    """Circular edges whose centre and radius match."""
+    found = []
+    for edge in shape.Edges:
+        curve = edge.Curve
+        if getattr(curve, "TypeId", "") != "Part::GeomCircle":
+            continue
+        center = curve.Center
+        if (abs(center.x - x) < 1e-4 and abs(center.y - y) < 1e-4
+                and abs(center.z - z) < 1e-4 and abs(curve.Radius - radius) < 1e-3):
+            found.append(edge)
+    if not found:
+        raise RuntimeError("fillet edge not found")
+    return found
+'''.strip("\n")
+
+
+def _needs_circle_edges(feats: dict) -> bool:
+    if any("fillet" in b for b in feats.get("bosses", ())):
+        return True
+    return any("rim_r" in h or "rim_lo" in h or "floor_r" in h for h in feats.get("holes", ()))
+
+
+def _fc_fillet(point: str, radius: str, fillet: str) -> str:
+    return (f"result = result.makeFillet({fillet}, "
+            f"_circle_edges(result, {point}, {radius}))")
+
+
 def _fillet_lines() -> list[str]:
     return [
         "_fillet_edges = []",
@@ -328,6 +359,8 @@ def _render_box(feats: dict, tol: float, source: str | None) -> str:
                 f"result = result.fuse(Part.makeCylinder({n}_d / 2, {n}_h, "
                 f"App.Vector({n}_x, {n}_y, top), App.Vector(0, 0, 1)))"
             )
+            if "fillet" in d:
+                body.append(_fc_fillet(f"{n}_x, {n}_y, top", f"{n}_d / 2", f"{n}_fillet"))
     for i, d in enumerate(feats["holes"], 1):
         n = f"hole_{i}"
         if d.get("axis", "Z") != "Z":
@@ -369,8 +402,16 @@ def _render_box(feats: dict, tol: float, source: str | None) -> str:
                     f"result = result.cut(Part.makeCylinder({n}_cbore_d / 2, {n}_cbore_depth + 1, "
                     f"App.Vector({n}_x, {n}_y, base_z0 - 1), App.Vector(0, 0, 1)))"
                 )
+        if "rim_r" in d:
+            body.append(_fc_fillet(f"{n}_x, {n}_y, top", f"{n}_d / 2", f"{n}_rim_r"))
+        if "rim_lo" in d:
+            body.append(_fc_fillet(f"{n}_x, {n}_y, base_z0", f"{n}_d / 2", f"{n}_bot_rim_r"))
+        if "floor_r" in d:
+            floor_z = f"top - {n}_depth" if d.get("floor_end", "low") == "low" else f"base_z0 + {n}_depth"
+            body.append(_fc_fillet(f"{n}_x, {n}_y, {floor_z}", f"{n}_d / 2", f"{n}_floor_r"))
     params = _number_lines(named_parameters(feats, tol), [])
-    return _finish(_head(source), params, [], body)
+    helpers = [_CIRCLE_EDGES] if _needs_circle_edges(feats) else []
+    return _finish(_head(source), params, helpers, body)
 
 
 def _extrude_lines(var, axis, origin, length, outline, cutouts, cutout_prefix) -> list[str]:

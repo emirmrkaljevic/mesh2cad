@@ -4,8 +4,11 @@ Supported parts:
 
 * a Z-up box or plate, rectangular pads on its top face, holes along X, Y, or
   Z (through, blind; countersunk when the axis is +Z), bosses along X, Y, or Z
-  (straight; drafted or chamfered when the axis is +Z), and one constant
-  radius on all four vertical corners of the base;
+  (straight; drafted or chamfered when the axis is +Z), one constant radius on
+  all four vertical corners of the base, and a quarter-torus fillet on a
+  vertical boss or hole: ``boss_N_fillet`` at the base of a straight boss,
+  ``hole_N_rim_r`` / ``hole_N_bot_rim_r`` on a through-hole rim, and
+  ``hole_N_floor_r`` where a blind-hole floor meets the wall;
 * a straight extrusion of a 2D outline along X, Y, or Z, including a polygonal
   through-opening in that outline and round through-holes;
 * a counterbored through-hole (a larger cylinder opening on one face, the
@@ -28,7 +31,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import trimesh
 
-from .fit import Cone, Cylinder, Plane, Sphere
+from .fit import Cone, Cylinder, Plane, Sphere, Torus
 from .segment import _partial_span
 
 Z = np.array([0.0, 0.0, 1.0])
@@ -45,6 +48,10 @@ class Segment:
     zb: float
     ra: float  # radius at za
     rb: float  # radius at zb
+    # end ("za" or "zb") -> (radius, kind) for a quarter-torus fillet.
+    # kind is "boss" (base of an outward cylinder), "rim" (hole mouth), or
+    # "floor" (blind-hole floor).
+    fillets: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -333,6 +340,148 @@ def boss_span(prefix: str, boss: dict) -> tuple[str, str]:
     return base_high_expr(ax), f"{prefix}_h"
 
 
+def quarter_ring_volume(wall_r: float, minor: float, outside: bool) -> float:
+    """Volume of one revolved square-minus-quarter-disk.
+
+    ``outside`` is true when the ring sits outside the cylinder wall (a boss
+    base fillet, or the round removed from a hole rim) and false when it sits
+    inside the wall (the material a blind-hole floor fillet puts back).
+    """
+    if minor <= 0.0 or wall_r <= 0.0:
+        return 0.0
+    area = minor * minor * (1.0 - math.pi / 4.0)
+    # distance from the sharp corner to the centroid, toward the square interior
+    frac = (0.5 - (math.pi / 4.0) * (1.0 - 4.0 / (3.0 * math.pi))) / (1.0 - math.pi / 4.0)
+    centre = wall_r + (minor * frac if outside else -minor * frac)
+    if centre <= 0.0:
+        return 0.0
+    return 2.0 * math.pi * centre * area
+
+
+def _apply_torus_fillets(stacks, tori, plane_coords, tol: float) -> None:
+    """Extend each straight cylinder through a tangent quarter-torus fillet.
+
+    The cylinder region stops where the fillet starts, so the nominal boss or
+    hole would come out short. The end is moved out to the tangent plane and
+    the minor radius is stored on that end. A fillet whose axis is not Z is
+    refused: the emitters only write the vertical case.
+    """
+    if not tori:
+        return
+    slack = max(8.0 * tol, 0.4)
+    snap = max(10.0 * tol, 0.55)
+    for reg in tori:
+        torus = reg.surface
+        if not isinstance(torus, Torus) or torus.minor <= 0.0 or torus.major <= 0.0:
+            raise Unsupported("torus fillet has no usable radius")
+        ax = _principal_axis(torus.axis)
+        if ax is None:
+            raise Unsupported("torus fillet whose axis is not aligned with X, Y or Z")
+        if ax != 2:
+            raise Unsupported(
+                "torus fillet on a hole or boss whose axis is not Z is not supported yet"
+            )
+        direction = np.asarray(torus.axis, float)
+        direction = direction / max(float(np.linalg.norm(direction)), 1e-12)
+        centre = np.asarray(torus.center, float)
+        plane_c = float(centre[ax] + direction[ax] * float(torus.minor))
+        plane_c = _snap(plane_c, plane_coords.get(ax, ()), snap)
+        centre_c = float(centre[ax])
+        minor = float(torus.minor)
+        wall = (float(torus.major) - minor) if torus.inner else (float(torus.major) + minor)
+        coaxial = [st for st in stacks
+                   if st.axis == ax and _perp_dist(ax, st.point, centre) <= max(5.0 * tol, 0.25)]
+        if not coaxial:
+            raise Unsupported(
+                "torus fillet is not the base of a straight boss, the rim of a hole, "
+                "or the floor of a blind hole"
+            )
+        match = None
+        radius_hit = False
+        for st in coaxial:
+            close = [s for s in st.segs if abs(float(s.ra) - wall) <= max(slack, 0.5)
+                     or abs(float(s.rb) - wall) <= max(slack, 0.5)]
+            if not close:
+                continue
+            radius_hit = True
+            if len(st.segs) != 1 or st.segs[0].kind != "cylinder":
+                raise Unsupported(
+                    "torus fillet on a drafted, chamfered or stepped feature is not supported yet"
+                )
+            seg = st.segs[0]
+            for end, end_c in (("za", float(seg.za)), ("zb", float(seg.zb))):
+                if end in seg.fillets:
+                    continue
+                if abs(end_c - centre_c) > max(slack, 0.55 * minor):
+                    continue
+                other = float(seg.zb if end == "za" else seg.za)
+                # the plane is beyond this end, away from the rest of the cylinder
+                if (plane_c - end_c) * (other - end_c) > 0.0:
+                    continue
+                if abs(abs(plane_c - end_c) - minor) > max(slack, 0.45 * minor):
+                    continue
+                match = (seg, end, plane_c, st)
+                break
+            if match:
+                break
+        if match is None:
+            if not radius_hit:
+                raise Unsupported(
+                    "torus fillet is not the base of a straight boss, the rim of a hole, "
+                    "or the floor of a blind hole"
+                )
+            raise Unsupported(
+                "torus fillet does not meet the end of its cylinder"
+            )
+        seg, end, plane_c, st = match
+        if st.outward:
+            if not torus.inner:
+                raise Unsupported("torus on a boss is not a base fillet")
+            kind = "boss"
+        else:
+            kind = "floor" if not torus.inner else "rim"
+        if end == "za":
+            seg.za = plane_c
+        else:
+            seg.zb = plane_c
+        if seg.za > seg.zb:
+            raise Unsupported("torus fillet reverses its cylinder")
+        seg.fillets[end] = (minor, kind)
+
+
+def _hole_fillets(seg, hole: dict) -> None:
+    """Copy rim and floor fillets from ``seg`` onto a hole feature."""
+    for end, rim_key in (("zb", "rim_r"), ("za", "rim_lo")):
+        info = seg.fillets.get(end)
+        if not info:
+            continue
+        radius, kind = info
+        if kind == "rim":
+            hole[rim_key] = radius
+        elif kind == "floor":
+            if "floor_r" in hole:
+                raise Unsupported("a hole has more than one floor fillet")
+            hole["floor_r"] = radius
+            hole["floor_end"] = "high" if end == "zb" else "low"
+        else:
+            raise Unsupported("torus on a hole is not a rim or a floor fillet")
+
+
+def _boss_fillet(seg, from_sign: int, boss: dict) -> None:
+    """Copy a base fillet onto a boss. A round on the free end is refused."""
+    base = "za" if from_sign > 0 else "zb"
+    free = "zb" if base == "za" else "za"
+    if seg.fillets.get(free):
+        raise Unsupported("round on the free end of a boss is not supported yet")
+    info = seg.fillets.get(base)
+    if not info:
+        return
+    radius, kind = info
+    if kind != "boss":
+        raise Unsupported("torus on a boss is not a base fillet")
+    boss["fillet"] = radius
+
+
 def cadquery_axis_dir(axis: str) -> str:
     return {"X": "1, 0, 0", "Y": "0, 1, 0", "Z": "0, 0, 1"}[axis]
 
@@ -347,8 +496,9 @@ def extract(m: trimesh.Trimesh, regions, tol: float) -> dict:
     if any(r.surface is None for r in regions):
         raise Unsupported("part has unfitted (faceted) regions")
     planes = [r for r in regions if isinstance(r.surface, Plane)]
+    tori = [r for r in regions if isinstance(r.surface, Torus)]
     for r in regions:
-        if not isinstance(r.surface, (Plane, Cylinder, Cone)):
+        if not isinstance(r.surface, (Plane, Cylinder, Cone, Torus)):
             raise Unsupported(f"{r.surface.kind} faces are not supported yet")
     for r in planes:
         n = np.abs(r.surface.normal)
@@ -367,7 +517,10 @@ def extract(m: trimesh.Trimesh, regions, tol: float) -> dict:
     # them look like bosses that do not start on the top face
     fillet_regs = _vertical_fillets(m, regions)
     fillet_ids = {id(r) for r in fillet_regs}
-    stacks = _stacks(m, [r for r in regions if id(r) not in fillet_ids], tol, plane_coords)
+    stacks = _stacks(m, [r for r in regions
+                         if id(r) not in fillet_ids and not isinstance(r.surface, Torus)],
+                     tol, plane_coords)
+    _apply_torus_fillets(stacks, tori, plane_coords, tol)
 
     def on_stack(r):
         v = _verts(m, r)
@@ -468,6 +621,7 @@ def extract(m: trimesh.Trimesh, regions, tol: float) -> dict:
                     feat["from"] = 1
                 else:
                     raise Unsupported("side hole does not open on a face of the base")
+                _hole_fillets(c, feat)
                 feats["holes"].append(feat)
             else:
                 # the wall starts on a side face and runs outward, past that face
@@ -479,6 +633,7 @@ def extract(m: trimesh.Trimesh, regions, tol: float) -> dict:
                     feat["from"] = -1
                 else:
                     raise Unsupported("side boss does not start on a side face of the base")
+                _boss_fillet(c, feat["from"], feat)
                 feats["bosses"].append(feat)
             continue
         if not st.outward:
@@ -509,6 +664,7 @@ def extract(m: trimesh.Trimesh, regions, tol: float) -> dict:
             if c.za > zmin + eps:
                 h["depth"] = ztop - c.za
                 h["from"] = 1
+            _hole_fillets(c, h)
             feats["holes"].append(h)
         else:
             b = dict(x=st.x, y=st.y, axis="Z")
@@ -527,6 +683,7 @@ def extract(m: trimesh.Trimesh, regions, tol: float) -> dict:
                 b["chamfer_w"] = g[1].ra - g[1].rb
             else:
                 raise Unsupported("boss profile is not straight, drafted or chamfered")
+            _boss_fillet(g[0], b["from"], b)
             feats["bosses"].append(b)
     if fillet_regs:
         feats["fillet_r"] = _base_fillet_radius(m, fillet_regs, lo, hi, zmin, ztop, tol)
@@ -560,6 +717,8 @@ def _feature_volume(feats: dict) -> float:
             v += cyl(radius, height - ch) + frust(radius, radius - cw, ch)
         else:
             v += cyl(radius, height)
+        if "fillet" in boss:
+            v += quarter_ring_volume(radius, float(boss["fillet"]), True)
     for hole in feats["holes"]:
         radius = float(hole["d"]) / 2.0
         ax = hole.get("axis", "Z")
@@ -572,6 +731,12 @@ def _feature_volume(feats: dict) -> float:
         if "cbore_d" in hole:
             big = float(hole["cbore_d"]) / 2.0
             v -= math.pi * (big * big - radius * radius) * float(hole["cbore_depth"])
+        if "rim_r" in hole:
+            v -= quarter_ring_volume(radius, float(hole["rim_r"]), True)
+        if "rim_lo" in hole:
+            v -= quarter_ring_volume(radius, float(hole["rim_lo"]), True)
+        if "floor_r" in hole:
+            v += quarter_ring_volume(radius, float(hole["floor_r"]), False)
     return v
 
 
@@ -716,6 +881,8 @@ def named_parameters(feats: dict, tol: float = 0.01) -> list[tuple[str, float, s
         if ax == "Z":
             p(f"{n}_d", d["d"], "diameter at the top face")
             p(f"{n}_h", d["h"], "height")
+            if "fillet" in d:
+                p(f"{n}_fillet", d["fillet"], "fillet at the base")
             p(f"{n}_x", d["x"])
             p(f"{n}_y", d["y"])
             if "draft_deg" in d:
@@ -730,6 +897,8 @@ def named_parameters(feats: dict, tol: float = 0.01) -> list[tuple[str, float, s
             face = _face_name(ax, d["from"])
             p(f"{n}_d", d["d"], "diameter")
             p(f"{n}_h", d["h"], f"height from the {face} face")
+            if "fillet" in d:
+                p(f"{n}_fillet", d["fillet"], f"fillet at the {face} face")
             for coord in "xyz":
                 if coord != ax.lower() and coord in d:
                     p(f"{n}_{coord}", d[coord])
@@ -742,6 +911,12 @@ def named_parameters(feats: dict, tol: float = 0.01) -> list[tuple[str, float, s
             p(f"{n}_y", d["y"])
             if "depth" in d:
                 p(f"{n}_depth", d["depth"], "blind depth from top face")
+            if "floor_r" in d:
+                p(f"{n}_floor_r", d["floor_r"], "fillet where the floor meets the wall")
+            if "rim_r" in d:
+                p(f"{n}_rim_r", d["rim_r"], "round on the top rim")
+            if "rim_lo" in d:
+                p(f"{n}_bot_rim_r", d["rim_lo"], "round on the bottom rim")
             if "csk_d" in d:
                 p(f"{n}_csk_d", d["csk_d"], "countersink diameter")
                 p(f"{n}_csk_angle", d["csk_angle"], "countersink angle")
@@ -756,6 +931,14 @@ def named_parameters(feats: dict, tol: float = 0.01) -> list[tuple[str, float, s
                     p(f"{n}_{coord}", d[coord])
             if "depth" in d:
                 p(f"{n}_depth", d["depth"], f"blind depth from the {_face_name(ax, d['from'])} face")
+            if "floor_r" in d:
+                p(f"{n}_floor_r", d["floor_r"], "fillet where the floor meets the wall")
+            if "rim_r" in d:
+                face = _face_name(ax, 1)
+                p(f"{n}_rim_r", d["rim_r"], f"round on the {face} rim")
+            if "rim_lo" in d:
+                face = _face_name(ax, -1)
+                p(f"{n}_bot_rim_r", d["rim_lo"], f"round on the {face} rim")
             if "cbore_d" in d:
                 p(f"{n}_cbore_d", d["cbore_d"], "counterbore diameter")
                 p(f"{n}_cbore_depth", d["cbore_depth"],
