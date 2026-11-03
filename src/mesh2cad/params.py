@@ -462,7 +462,8 @@ def _classify(name: str, note: str, value) -> tuple[str, str | None]:
         return "depth", "mm"
     if name.endswith("_d"):
         return "diameter", "mm"
-    if name.endswith(("_r", "_r0", "_r1")) or name == "fillet_r":
+    if (re.fullmatch(r"boss_\d+_fillet", name) or name.endswith(("_r", "_r0", "_r1"))
+            or name == "fillet_r"):
         return "radius", "mm"
     if (name.endswith("_len") or name in ("base_x", "base_y", "base_t") or name.endswith("_h")
             or "chamfer" in name or name.endswith(("_w", "_l"))):
@@ -585,6 +586,15 @@ def _check_scalar(name: str, value: float, kind: str, scalars: dict[str, float])
 
 
 def _check_boss(name: str, value: float, scalars: dict[str, float]) -> None:
+    fillet = re.fullmatch(r"boss_(\d+)_fillet", name)
+    if fillet:
+        height = scalars.get(f"boss_{fillet.group(1)}_h")
+        if height is not None and value >= height - 1e-9:
+            raise GeometryError(
+                f"{name}={format_number(value)} is at least the boss height "
+                f"({format_number(height)} mm)"
+            )
+        return
     matched = re.fullmatch(r"boss_(\d+)_(chamfer|chamfer_h|chamfer_w|draft_deg)", name)
     if not matched:
         return
@@ -623,6 +633,31 @@ def _check_features(scalars: dict[str, float]) -> None:
                     f"{name}={format_number(value)} is not smaller than its {label} "
                     f"{other}={format_number(scalars[other])}"
                 )
+    for name, value in scalars.items():
+        matched = re.fullmatch(r"hole_(\d+)_(floor_r|rim_r|bot_rim_r)", name)
+        if not matched:
+            continue
+        idx, kind = matched.group(1), matched.group(2)
+        if kind == "floor_r":
+            depth = scalars.get(f"hole_{idx}_depth")
+            diam = scalars.get(f"hole_{idx}_d")
+            if depth is not None and value >= depth - 1e-9:
+                raise GeometryError(
+                    f"{name}={format_number(value)} is at least the blind depth "
+                    f"({format_number(depth)} mm)"
+                )
+            if diam is not None and value >= diam / 2.0 - 1e-9:
+                raise GeometryError(
+                    f"{name}={format_number(value)} is at least the hole radius "
+                    f"({format_number(diam / 2.0)} mm)"
+                )
+        else:
+            thick = scalars.get("base_t")
+            if thick is not None and value >= thick - 1e-9:
+                raise GeometryError(
+                    f"{name}={format_number(value)} is at least the base thickness "
+                    f"({format_number(thick)} mm)"
+                )
 
 
 def _check_holes(scalars, notes, solids, mode: str) -> None:
@@ -644,6 +679,11 @@ def _check_holes(scalars, notes, solids, mode: str) -> None:
         if chamfer is not None and chamfer > 0:
             _require_fit(f"hole_{idx}_d", diameter / 2.0 + chamfer, axis, uv, solids, mode,
                          label=f"hole_{idx}_d with its chamfer")
+        for key in (f"hole_{idx}_rim_r", f"hole_{idx}_bot_rim_r"):
+            extra = scalars.get(key)
+            if extra is not None and extra > 0:
+                _require_fit(key, diameter / 2.0 + extra, axis, uv, solids, mode,
+                             label=f"{key} past the hole wall")
 
 
 def _require_fit(name: str, radius: float, axis: str, uv, solids, mode: str, label: str | None = None) -> None:

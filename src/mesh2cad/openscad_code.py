@@ -4,7 +4,11 @@ Uses the same feature dict and parameter names as the CadQuery export
 (:mod:`mesh2cad.parametric`). The script is plain CSG: ``cube`` / ``cylinder``
 (with ``r1``/``r2`` for a draft or a chamfer; ``rotate`` when the axis is X or
 Y), ``difference`` / ``union``, and ``offset`` for the one vertical corner
-radius. A straight extrusion is ``linear_extrude`` of ``polygon(outline)``.
+radius. A quarter-torus fillet on a vertical boss or hole is a revolved
+square-minus-quarter-circle: ``boss_N_fillet`` added at the base of a boss,
+``hole_N_rim_r`` and ``hole_N_bot_rim_r`` cut from a hole rim, and
+``hole_N_floor_r`` added back where a blind floor meets the wall. A straight
+extrusion is ``linear_extrude`` of ``polygon(outline)``.
 Several of those, cut, intersected, or stacked as partial-depth extrusions,
 are the same polygons under ``intersection`` / ``union`` / ``difference``,
 and a counterbored hole is a second cylinder. A face tilted to X, Y, and Z
@@ -118,6 +122,17 @@ def _customizer_range(name: str, value: float, by_name: dict[str, float]) -> str
     if cbore_d:
         return _slider(by_name.get(f"hole_{cbore_d}_d", 0.2),
                        _face_limit(by_name, _feature_axis(by_name, "hole", cbore_d)), 0.1, value)
+    rim = _indexed(name, "hole_", "_rim_r")
+    if rim:
+        return _slider(0.0, by_name.get("base_t", value) - 0.05, 0.1, value, floor_hi=True)
+    bot_rim = _indexed(name, "hole_", "_bot_rim_r")
+    if bot_rim:
+        return _slider(0.0, by_name.get("base_t", value) - 0.05, 0.1, value, floor_hi=True)
+    floor = _indexed(name, "hole_", "_floor_r")
+    if floor:
+        depth = by_name.get(f"hole_{floor}_depth", value)
+        rad = by_name.get(f"hole_{floor}_d", value * 2.0) / 2.0
+        return _slider(0.0, min(depth, rad) - 0.05, 0.1, value, floor_hi=True)
     cbore_depth = _indexed(name, "hole_", "_cbore_depth")
     if cbore_depth:
         span = {"X": by_name["base_x"], "Y": by_name["base_y"], "Z": thick}
@@ -131,6 +146,10 @@ def _customizer_range(name: str, value: float, by_name: dict[str, float]) -> str
         height = by_name[f"boss_{draft}_h"]
         cap = math.degrees(math.atan2(radius, height)) if height > 1e-9 else value
         return _slider(0.0, cap, 0.5, value, floor_hi=True)
+    boss_fillet = _indexed(name, "boss_", "_fillet")
+    if boss_fillet:
+        height = by_name.get(f"boss_{boss_fillet}_h", value)
+        return _slider(0.0, height - 0.05, 0.1, value, floor_hi=True)
     chamfer = _indexed(name, "boss_", "_chamfer")
     if chamfer:
         cap = min(by_name[f"boss_{chamfer}_h"], by_name[f"boss_{chamfer}_d"] / 2.0)
@@ -196,7 +215,8 @@ def _needs_top(feats: dict) -> bool:
     if feats["pads"] or any(b.get("axis", "Z") == "Z" for b in feats["bosses"]):
         return True
     return any(h.get("axis", "Z") == "Z" and (
-        "depth" in h or "csk_d" in h or ("cbore_d" in h and h.get("from", 1) > 0)
+        "depth" in h or "csk_d" in h or "rim_r" in h or "floor_r" in h
+        or ("cbore_d" in h and h.get("from", 1) > 0)
     ) for h in feats["holes"])
 
 
@@ -255,6 +275,17 @@ def _solids(feats: dict, tol: float) -> list[str]:
                 f"translate([{n}_x, {n}_y, top])\n"
                 f"  cylinder(h={n}_h, d={n}_d);"
             )
+            if "fillet" in d:
+                solids.append(
+                    f"translate([{n}_x, {n}_y, top])\n"
+                    f"  rotate_extrude() // fillet where the boss meets the top face\n"
+                    f"    translate([{n}_d / 2 - 0.02, -0.02])\n"
+                    f"      difference() {{\n"
+                    f"        square([{n}_fillet + 0.02, {n}_fillet + 0.02]);\n"
+                    f"        translate([{n}_fillet + 0.02, {n}_fillet + 0.02])\n"
+                    f"          circle(r={n}_fillet);\n"
+                    f"      }}"
+                )
     return solids
 
 
@@ -296,7 +327,53 @@ def _cuts(feats: dict) -> list[str]:
                 f"  cylinder(h={n}_csk_h + 1, r1={n}_d / 2,\n"
                 f"           r2={n}_csk_d / 2 + tan({n}_csk_angle / 2));"
             )
+        if "rim_r" in d:
+            cuts.append(
+                f"translate([{n}_x, {n}_y, top - {n}_rim_r])\n"
+                f"  rotate_extrude() // round on the top rim\n"
+                f"    translate([{n}_d / 2, 0])\n"
+                f"      difference() {{\n"
+                f"        translate([-0.02, 0])\n"
+                f"          square([{n}_rim_r + 0.02, {n}_rim_r + 0.02]);\n"
+                f"        translate([{n}_rim_r, 0])\n"
+                f"          circle(r={n}_rim_r);\n"
+                f"      }}"
+            )
+        if "rim_lo" in d:
+            cuts.append(
+                f"translate([{n}_x, {n}_y, base_z0])\n"
+                f"  rotate_extrude() // round on the bottom rim\n"
+                f"    translate([{n}_d / 2, 0])\n"
+                f"      difference() {{\n"
+                f"        translate([-0.02, -0.02])\n"
+                f"          square([{n}_bot_rim_r + 0.02, {n}_bot_rim_r + 0.02]);\n"
+                f"        translate([{n}_bot_rim_r, {n}_bot_rim_r])\n"
+                f"          circle(r={n}_bot_rim_r);\n"
+                f"      }}"
+            )
     return cuts
+
+
+def _floors(feats: dict) -> list[str]:
+    """Material a blind-hole floor fillet puts back, unioned after the hole cut."""
+    floors = []
+    for i, d in enumerate(feats["holes"], 1):
+        if "floor_r" not in d or d.get("axis", "Z") != "Z":
+            continue
+        n = f"hole_{i}"
+        z0 = f"top - {n}_depth" if d.get("floor_end", "low") == "low" else f"base_z0 + {n}_depth"
+        floors.append(
+            f"translate([{n}_x, {n}_y, {z0}])\n"
+            f"  rotate_extrude() // fillet where the floor meets the wall\n"
+            f"    translate([{n}_d / 2 - {n}_floor_r, 0])\n"
+            f"      difference() {{\n"
+            f"        translate([0, -0.02])\n"
+            f"          square([{n}_floor_r + 0.02, {n}_floor_r + 0.02]);\n"
+            f"        translate([0, {n}_floor_r])\n"
+            f"          circle(r={n}_floor_r);\n"
+            f"      }}"
+        )
+    return floors
 
 
 def _indent(text: str, levels: int) -> str:
@@ -307,6 +384,7 @@ def _indent(text: str, levels: int) -> str:
 def _model(feats: dict, tol: float) -> list[str]:
     solids = _solids(feats, tol)
     cuts = _cuts(feats)
+    floors = _floors(feats)
     lines = ["// --- model ---", "module mesh2cad_part() {"]
     if _needs_top(feats):
         lines.append("  top = base_z0 + base_t;")
@@ -316,9 +394,14 @@ def _model(feats: dict, tol: float) -> list[str]:
             lines.append(
                 f"  {n}_csk_h = ({n}_csk_d - {n}_d) / 2 / tan({n}_csk_angle / 2);"
             )
-    body_at = 2 if cuts else 1
+    # A floor fillet is unioned after the hole cut, or the cutter removes it.
+    # With no floor the indentation matches the scripts that have none.
+    outer = 2 if floors else 1
+    if floors:
+        lines.append("  union() {")
+    body_at = outer + (1 if cuts else 0)
     if cuts:
-        lines.append("  difference() {")
+        lines.append(f"{'  ' * outer}difference() {{")
     if len(solids) == 1:
         lines.append(_indent(solids[0], body_at))
     else:
@@ -328,7 +411,11 @@ def _model(feats: dict, tol: float) -> list[str]:
         lines.append(f"{'  ' * body_at}}}")
     if cuts:
         for c in cuts:
-            lines.append(_indent(c, 2))
+            lines.append(_indent(c, outer + 1))
+        lines.append(f"{'  ' * outer}}}")
+    if floors:
+        for solid in floors:
+            lines.append(_indent(solid, 2))
         lines.append("  }")
     lines += ["}", "", "mesh2cad_part();", ""]
     return lines
