@@ -76,6 +76,14 @@ def filleted_box():
     return cq.Workplane().box(30, 24, 16).edges("|Z").fillet(2)
 
 
+def rounded_box():
+    """40×30×20 box with all 12 edges filleted at r=3.
+
+    Each corner is a sphere octant where three quarter-cylinders meet.
+    """
+    return cq.Workplane().box(40, 30, 20).edges().fillet(3)
+
+
 def side_hole_boss():
     """60×40×36 block with three side features.
 
@@ -243,6 +251,8 @@ PLANAR = {"cube": cube, "l_bracket": l_bracket, "stepped_block": stepped_block}
 FILLETS = {"filleted_plate": filleted_plate, "filleted_box": filleted_box,
            "filleted_bracket": filleted_bracket}
 FILLET_RADIUS = {"filleted_plate": 5.0, "filleted_box": 2.0, "filleted_bracket": 3.0}
+ROUNDED = {"rounded_box": rounded_box}
+ROUNDED_RADIUS = {"rounded_box": 3.0}
 TORI = {"filleted_boss": filleted_boss, "rounded_hole": rounded_hole}
 TORUS_MINOR = {"filleted_boss": 2.0, "rounded_hole": 1.5}
 TORUS_MAJOR = {"filleted_boss": 10.0, "rounded_hole": 7.5}

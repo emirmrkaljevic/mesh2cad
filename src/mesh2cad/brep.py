@@ -8,9 +8,10 @@ Unfitted regions stay faceted (hybrid fallback).
 
 Exact path (build_planar): plane polygons from triple-plane intersections,
 circles from plane ∩ cylinder and plane ∩ sphere, full cylindrical faces,
-partial fillet cylinders tangent to two planes, spherical caps/zones, a
-cylinder or cone band trimmed by the planes and coaxial circles it meets, and
-a quarter torus tangent to a plane and a coaxial cylinder.
+partial fillet cylinders tangent to two planes, spherical caps/zones, sphere
+octants where three fillets meet, a cylinder or cone band trimmed by the
+planes and coaxial circles it meets, and a quarter torus tangent to a plane
+and a coaxial cylinder.
 """
 from __future__ import annotations
 
@@ -1199,9 +1200,245 @@ def _split_cap_wire(m, label, regions, loop, seq, cap, cyl, tol):
     return wire.Wire() if wire.IsDone() else None
 
 
+def _outward_nd(plane, origin):
+    n = np.asarray(plane.normal, float)
+    ln = float(np.linalg.norm(n))
+    if ln < 1e-12:
+        return None
+    n, d = n / ln, float(plane.d) / ln
+    if float(n @ np.asarray(origin, float)) > d:
+        n, d = -n, -d
+    return n, d
+
+
+def _face_outward(face, expect):
+    """Flip ``face`` so its normal agrees with ``expect``."""
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.BRepLProp import BRepLProp_SLProps
+    surf = BRepAdaptor_Surface(face, True)
+    u0, u1 = surf.FirstUParameter(), surf.LastUParameter()
+    v0, v1 = surf.FirstVParameter(), surf.LastVParameter()
+    u = 0.5 * (u0 + u1)
+    v = 0.5 * (v0 + v1)
+    # the pole of a spherical octant is a single point; step back onto the patch
+    if abs(v1 - v0) > 1e-8 and abs(v - v1) < 1e-6:
+        v = v0 + 0.75 * (v1 - v0)
+    props = BRepLProp_SLProps(surf, u, v, 1, 1e-7)
+    if not props.IsNormalDefined():
+        return face
+    n = props.Normal()
+    if float(np.dot(np.array([n.X(), n.Y(), n.Z()]), expect)) < 0.0:
+        return face.Reversed()
+    return face
+
+
+def _orthonormal_pairs(pairs):
+    """Snap three almost-orthogonal plane pairs onto an exact frame.
+
+    A quarter-cylinder in parameter space meets the second wall only when the
+    two normals are perpendicular. Noise leaves them a fraction of a degree
+    off, and the edges then miss by more than the sewing tolerance.
+    """
+    rows = np.stack([pair[0][0] for pair in pairs])
+    # nearest orthogonal matrix, reflection included. Forcing a positive
+    # determinant spins a left-handed corner frame away from the planes.
+    u, _s, vt = np.linalg.svd(rows)
+    snapped = u @ vt
+    out = []
+    for i, ((n1, d1), (n2, d2)) in enumerate(pairs):
+        axis = snapped[i]
+        if float(axis @ n1) < 0.0:
+            axis = -axis
+        opposite = -axis
+        out.append((
+            (axis, float(d1) * float(axis @ n1)),
+            (opposite, float(d2) * float(opposite @ n2)),
+        ))
+    return out
+
+
+def _solid_from_box(pairs, radius):
+    """Rounded box: 6 planes, 12 quarter cylinders, 8 sphere octants.
+
+    ``pairs`` is three opposite pairs of outward unit planes ``(normal, d)``.
+    Every cylinder is tangent to two planes and every sphere to three, all at
+    ``radius``, so shared edges are the same lines and the same quarter circles.
+    """
+    pairs = _orthonormal_pairs(pairs)
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon
+    from OCP.Geom import Geom_CylindricalSurface, Geom_SphericalSurface
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.gp import gp_Ax3, gp_Dir, gp_Pln, gp_Pnt
+    flat = [p for pair in pairs for p in pair]
+    corners = []
+    for a in (0, 1):
+        for b in (0, 1):
+            for c in (0, 1):
+                sel = (a, 2 + b, 4 + c)
+                try:
+                    center = np.linalg.solve(
+                        np.stack([flat[k][0] for k in sel]),
+                        np.array([flat[k][1] - radius for k in sel]))
+                except np.linalg.LinAlgError:
+                    return None
+                corners.append((center, sel))
+    faces = []
+    for center, sel in corners:
+        ns = [flat[k][0] for k in sel]
+        if float(np.dot(ns[0], np.cross(ns[1], ns[2]))) < 0.0:
+            ns[1], ns[2] = ns[2], ns[1]
+        n1, n2, n3 = ns
+        ax = gp_Ax3(gp_Pnt(*map(float, center)), gp_Dir(*map(float, n3)), gp_Dir(*map(float, n1)))
+        made = BRepBuilderAPI_MakeFace(Geom_SphericalSurface(ax, float(radius)),
+                                       0.0, np.pi / 2, 0.0, np.pi / 2, 1e-7)
+        if not made.IsDone():
+            return None
+        faces.append(_face_outward(made.Face(), (n1 + n2 + n3) / np.sqrt(3.0)))
+    for ia, ib in ((0, 1), (0, 2), (1, 2)):
+        for sa in (0, 1):
+            for sb in (0, 1):
+                ia_i = 2 * ia + sa
+                ib_i = 2 * ib + sb
+                na = flat[ia_i][0]
+                nb = flat[ib_i][0]
+                ends = [center for center, sel in corners if ia_i in sel and ib_i in sel]
+                if len(ends) != 2:
+                    return None
+                c1, c2 = ends
+                axis = c2 - c1
+                length = float(np.linalg.norm(axis))
+                if length < radius:
+                    return None
+                axis = axis / length
+                if float(np.cross(axis, na) @ nb) < 0.0:
+                    axis = -axis
+                    c1, c2 = c2, c1
+                ax = gp_Ax3(gp_Pnt(*map(float, c1)), gp_Dir(*map(float, axis)), gp_Dir(*map(float, na)))
+                made = BRepBuilderAPI_MakeFace(Geom_CylindricalSurface(ax, float(radius)),
+                                               0.0, np.pi / 2, 0.0, length, 1e-7)
+                if not made.IsDone():
+                    return None
+                faces.append(_face_outward(made.Face(), (na + nb) / np.sqrt(2.0)))
+    for idx, (n, d) in enumerate(flat):
+        pts = [center + radius * n for center, sel in corners if idx in sel]
+        if len(pts) != 4:
+            return None
+        mid = np.mean(pts, axis=0)
+        tmp = np.array([1.0, 0.0, 0.0]) if abs(float(n[0])) < 0.9 else np.array([0.0, 1.0, 0.0])
+        u = np.cross(n, tmp)
+        u = u / np.linalg.norm(u)
+        v = np.cross(n, u)
+        ang = [np.arctan2(float(np.dot(p - mid, v)), float(np.dot(p - mid, u))) for p in pts]
+        pts = [pts[i] for i in np.argsort(ang)]
+        poly = BRepBuilderAPI_MakePolygon()
+        for p in pts:
+            poly.Add(gp_Pnt(*map(float, p)))
+        poly.Close()
+        if not poly.IsDone():
+            return None
+        made = BRepBuilderAPI_MakeFace(gp_Pln(gp_Pnt(*map(float, n * d)), gp_Dir(*map(float, n))),
+                                       poly.Wire(), True)
+        if not made.IsDone():
+            return None
+        faces.append(_face_outward(made.Face(), n))
+    if len(faces) != 26:
+        return None
+    sew = BRepBuilderAPI_Sewing(1e-5)
+    for face in faces:
+        sew.Add(face)
+    sew.Perform()
+    exp = TopExp_Explorer(sew.SewedShape(), TopAbs_SHELL)
+    if not exp.More():
+        return None
+    ms = BRepBuilderAPI_MakeSolid()
+    shells = 0
+    while exp.More():
+        ms.Add(TopoDS.Shell_s(exp.Current()))
+        shells += 1
+        exp.Next()
+    if shells != 1 or not ms.IsDone():
+        return None
+    fix = ShapeFix_Solid(ms.Solid())
+    fix.Perform()
+    solid = fix.Solid()
+    if not BRepCheck_Analyzer(solid).IsValid():
+        return None
+    nface = 0
+    exp = TopExp_Explorer(solid, TopAbs_FACE)
+    while exp.More():
+        nface += 1
+        exp.Next()
+    if nface != 26:
+        return None
+    return solid
+
+
+def _try_rounded_box(regions, tol):
+    """Build the solid when the regions are one filleted box, else None."""
+    planes, cyls, sphs = [], [], []
+    for r in regions:
+        if isinstance(r.surface, Plane):
+            planes.append(r.surface)
+        elif isinstance(r.surface, Cylinder):
+            cyls.append(r.surface)
+        elif isinstance(r.surface, Sphere):
+            sphs.append(r.surface)
+        else:
+            return None
+    if len(planes) != 6 or len(cyls) != 12 or len(sphs) != 8:
+        return None
+    radii = [float(c.radius) for c in cyls] + [float(s.radius) for s in sphs]
+    radius = float(np.median(radii))
+    if radius <= 0 or max(abs(x - radius) for x in radii) > max(1e-6, 0.02 * radius):
+        return None
+    origin = np.mean([np.asarray(s.center, float) for s in sphs], axis=0)
+    outward = []
+    for plane in planes:
+        got = _outward_nd(plane, origin)
+        if got is None:
+            return None
+        outward.append(got)
+    used = set()
+    pairs = []
+    for i in range(6):
+        if i in used:
+            continue
+        for j in range(i + 1, 6):
+            if j in used:
+                continue
+            if float(outward[i][0] @ outward[j][0]) < -0.98:
+                pairs.append((outward[i], outward[j]))
+                used.add(i)
+                used.add(j)
+                break
+    if len(pairs) != 3:
+        return None
+    # the same corners the segmenter stored, so a different arrangement is refused
+    flat = [p for pair in pairs for p in pair]
+    for a in (0, 1):
+        for b in (0, 1):
+            for c in (0, 1):
+                sel = (a, 2 + b, 4 + c)
+                try:
+                    center = np.linalg.solve(
+                        np.stack([flat[k][0] for k in sel]),
+                        np.array([flat[k][1] - radius for k in sel]))
+                except np.linalg.LinAlgError:
+                    return None
+                if min(float(np.linalg.norm(center - np.asarray(s.center, float))) for s in sphs) > max(4.0 * tol, 1e-3):
+                    return None
+    try:
+        return _solid_from_box(pairs, radius)
+    except Exception:
+        return None
+
+
 def build_planar(m: trimesh.Trimesh, regions: list[Region], tol: float):
     """Exact B-rep: plane polygons, cylindrical walls, spherical caps/zones.
     Returns None when the topology can't be resolved (caller falls back)."""
+    solid = _try_rounded_box(regions, tol)
+    if solid is not None:
+        return solid
     from OCP.Geom import Geom_Plane
     from OCP.gp import gp_Dir, gp_Pln
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire
