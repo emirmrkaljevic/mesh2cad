@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.20.0 - 2026-11-04
 
 - A rectangular box with every edge filleted at one radius is rebuilt as one exact solid: 6 planes, 12 partial cylinders and 8 sphere octants. Each cylinder is tangent to the two walls it joins, each sphere is tangent to the three faces at that corner, and the fillet axis passes through the two corner centres. On a 40×30×20 mm box with r=3 mm this is exact on 3 of 3 seeds at 0, 0.05 and 0.2 mm noise. With no noise the radius error is 0.006 mm, the Hausdorff distance is 0.023 mm, and the volume error is 0.01%. At 0.05 mm the worst radius error is 0.007 mm and the Hausdorff is 0.035 mm (volume error 0.07%). At 0.2 mm the worst radius error is 0.112 mm and the Hausdorff is 0.116 mm (volume error 0.18%). A fillet that meets a sphere in any other layout is unchanged and still falls back to a valid solid. There is no new script parameter. `fillet_r` is still only the four vertical corners of a rectangular base.
 
