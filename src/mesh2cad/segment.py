@@ -179,6 +179,13 @@ def segment(m: trimesh.Trimesh, tol: float, angle_deg: float = 20.0,
         # a fillet between a plane and a coaxial cylinder is a torus. Claim it
         # last so a miss leaves the planes, cylinders and cones alone.
         out = _claim_tori(m, nb, out, tol)
+    if cylinders and spheres:
+        # a box with every edge filleted meets in sphere octants. Claim that
+        # only when one radius fits all twelve edges; a miss leaves the
+        # earlier planes and cylinders alone.
+        claimed = _claim_rounded_box(m, sm, out, tol)
+        if claimed is not None:
+            out = claimed
     return [r for r in out if len(r.faces)]
 
 
@@ -3230,6 +3237,314 @@ def _snap_tori_to_caps(m, nb, regs):
                 snapped = _snap_torus_plane(snapped, regs[j].surface)
         out.append(Region(reg.faces, snapped, reg.area))
     return out
+
+
+def _unit_plane_nd(plane):
+    n = np.asarray(plane.normal, float)
+    ln = float(np.linalg.norm(n))
+    if ln < 1e-12:
+        return None
+    return n / ln, float(plane.d) / ln
+
+
+def _outward_plane(plane, origin):
+    """Unit plane with the normal pointing away from ``origin``."""
+    got = _unit_plane_nd(plane)
+    if got is None:
+        return None
+    n, d = got
+    if float(n @ np.asarray(origin, float)) > d:
+        n, d = -n, -d
+    return n, d
+
+
+def _box_frame(regs, origin):
+    """Six dominant planes as three opposite pairs, or None.
+
+    Each pair is two outward normals facing away from each other. The three
+    pair directions are orthogonal, which is the rectangular box.
+    """
+    cands = [r for r in regs if isinstance(r.surface, Plane) and len(r.faces)]
+    if len(cands) < 6:
+        return None
+    cands.sort(key=lambda r: -r.area)
+    top = []
+    for r in cands[:6]:
+        got = _outward_plane(r.surface, origin)
+        if got is None:
+            return None
+        top.append(got)
+    used = set()
+    pairs = []
+    for i in range(6):
+        if i in used:
+            continue
+        for j in range(i + 1, 6):
+            if j in used:
+                continue
+            if float(top[i][0] @ top[j][0]) < -0.98:
+                pairs.append((top[i], top[j]))
+                used.add(i)
+                used.add(j)
+                break
+    if len(pairs) != 3 or len(used) != 6:
+        return None
+    dirs = [p[0][0] for p in pairs]
+    for a in range(3):
+        for b in range(a + 1, 3):
+            if abs(float(dirs[a] @ dirs[b])) > 0.08:
+                return None
+    separations = []
+    for a, b in pairs:
+        sep = float(a[1] + b[1])
+        if sep < 1e-3:
+            return None
+        separations.append(sep)
+    return pairs, separations
+
+
+def _claim_rounded_box(m, sm, regs, tol):
+    """Replace regions when the mesh is a box with every edge filleted.
+
+    The flat faces are the six planes. Each of the twelve edges is a quarter
+    cylinder tangent to two of them, and each of the eight corners is a sphere
+    octant tangent to three. One shared radius makes the cylinders meet the
+    spheres on great-circle arcs. The claim is kept only when that solid is
+    valid and within 5% of the mesh volume, which is the same check the exact
+    builder uses. Anything else, including a box with only some edges rounded,
+    is left unchanged.
+    """
+    origin = np.asarray(m.centroid, float)
+    framed = _box_frame(regs, origin)
+    if framed is None:
+        return None
+    pairs, separations = framed
+    flat = [p for pair in pairs for p in pair]
+    radius = _rounded_edge_radius(m, flat, separations, tol)
+    if radius is None:
+        return None
+    built = _rounded_primitives(flat, radius)
+    if built is None:
+        return None
+    spheres, cyls = built
+    assigned = _assign_rounded(m, sm, flat, cyls, spheres, tol, radius)
+    if assigned is None:
+        return None
+    out = []
+    for surf, faces in assigned:
+        if len(faces) == 0:
+            return None
+        out.append(Region(faces, surf, float(m.area_faces[faces].sum())))
+    # importing brep here is safe: brep already finished importing this module
+    from . import brep
+    from .report import volume as shape_volume
+    shape = brep._try_rounded_box(out, tol)
+    if shape is None or not brep.is_valid(shape):
+        return None
+    if m.is_volume:
+        vm = abs(float(m.volume))
+        if vm > 0 and abs(shape_volume(shape) - vm) > 0.05 * vm:
+            return None
+    return out
+
+
+def _rounded_edge_radius(m, flat, separations, tol):
+    """One radius shared by all twelve edges, or None."""
+    cents = m.triangles_center
+    norms = m.face_normals
+    inward = np.stack([d - cents @ n for n, d in flat])
+    band_hi = 0.45 * float(min(separations))
+    found = []
+    for ia, ib in ((0, 1), (0, 2), (1, 2)):
+        ic = 3 - ia - ib
+        end_ids = (2 * ic, 2 * ic + 1)
+        for sa in (0, 1):
+            for sb in (0, 1):
+                i = 2 * ia + sa
+                j = 2 * ib + sb
+                n1, n2 = flat[i][0], flat[j][0]
+                axis = np.cross(n1, n2)
+                ln = float(np.linalg.norm(axis))
+                if ln < 0.5:
+                    return None
+                axis = axis / ln
+                radius = _fillet_radius_on_edge(
+                    cents, norms, inward, flat[i], flat[j], axis, i, j, end_ids, tol, band_hi)
+                if radius is None:
+                    return None
+                found.append(radius)
+    if len(found) != 12:
+        return None
+    radius = float(np.median(found))
+    spread = max(abs(r - radius) for r in found)
+    if radius < max(0.5, 4.0 * tol) or radius > 0.45 * float(min(separations)):
+        return None
+    if spread > max(4.0 * tol, 0.12 * radius):
+        return None
+    return radius
+
+
+def _fillet_radius_on_edge(cents, norms, inward, plane_a, plane_b, axis, i, j, end_ids, tol, band_hi):
+    n1, d1 = plane_a
+    u = inward[i]
+    v = inward[j]
+    nd = np.abs(norms @ axis)
+    others = [k for k in range(6) if k != i and k != j]
+    inside = np.min(inward[others], axis=0)
+    slack = max(4.0 * tol, 0.05)
+    mask = ((u > 0.15) & (v > 0.15) & (u < band_hi) & (v < band_hi)
+            & (nd < 0.30) & (inside > -slack))
+    if int(mask.sum()) < 40:
+        return None
+    uu, vv = u[mask], v[mask]
+    guess = float(np.median(uu + vv + np.sqrt(np.maximum(2.0 * uu * vv, 0.0))))
+    if not np.isfinite(guess) or guess <= 0:
+        return None
+    end = np.minimum(inward[end_ids[0]], inward[end_ids[1]])
+    mask = mask & (end > 0.85 * guess)
+    if int(mask.sum()) < 25:
+        return None
+    uu, vv = u[mask], v[mask]
+    radius = float(np.median(uu + vv + np.sqrt(np.maximum(2.0 * uu * vv, 0.0))))
+    if not np.isfinite(radius) or radius <= 0:
+        return None
+    try:
+        origin = np.linalg.solve(
+            np.stack([n1, plane_b[0], axis]),
+            np.array([d1 - radius, plane_b[1] - radius, 0.0]))
+    except np.linalg.LinAlgError:
+        return None
+    rel = cents[mask] - origin
+    radial = rel - np.outer(rel @ axis, axis)
+    dist = np.abs(np.linalg.norm(radial, axis=1) - radius)
+    if float(np.percentile(dist, 90)) > max(6.0 * tol, 0.15 * radius):
+        return None
+    return radius
+
+
+def _rounded_primitives(flat, radius):
+    """Eight spheres and twelve cylinders tangent to ``flat`` at ``radius``."""
+    corners = []
+    for a in (0, 1):
+        for b in (0, 1):
+            for c in (0, 1):
+                sel = (a, 2 + b, 4 + c)
+                try:
+                    center = np.linalg.solve(
+                        np.stack([flat[k][0] for k in sel]),
+                        np.array([flat[k][1] - radius for k in sel]))
+                except np.linalg.LinAlgError:
+                    return None
+                if not np.isfinite(center).all():
+                    return None
+                corners.append((center, sel))
+    spheres = [Sphere(center, float(radius)) for center, _sel in corners]
+    cyls = []
+    for ia, ib in ((0, 1), (0, 2), (1, 2)):
+        for sa in (0, 1):
+            for sb in (0, 1):
+                ia_i = 2 * ia + sa
+                ib_i = 2 * ib + sb
+                ends = [center for center, sel in corners if ia_i in sel and ib_i in sel]
+                if len(ends) != 2:
+                    return None
+                axis = ends[1] - ends[0]
+                length = float(np.linalg.norm(axis))
+                if length < radius:
+                    return None
+                axis = axis / length
+                cyls.append(Cylinder(axis, 0.5 * (ends[0] + ends[1]), float(radius)))
+    return spheres, cyls
+
+
+def _assign_rounded(m, sm, flat, cyls, spheres, tol, radius):
+    """Give every triangle to a plane, cylinder, or sphere. None if the fit is poor."""
+    cents = m.triangles_center
+    # smoothed normals on a noisy mesh; identical to the raw ones when the
+    # tessellation was not smoothed
+    norms = sm.face_normals
+    nfaces = len(m.faces)
+    best = np.full(nfaces, np.inf)
+    owner = np.full(nfaces, -1, int)
+    surfaces = []
+    thresh = max(8.0 * tol, 0.15 * radius)
+
+    def consider(idx, dist, agree):
+        score = np.where(agree, dist, np.inf)
+        take = score < best
+        best[take] = score[take]
+        owner[take] = idx
+
+    for i, (n, d) in enumerate(flat):
+        dist = np.abs(cents @ n - d)
+        agree = np.abs(norms @ n) > 0.35
+        consider(len(surfaces), dist, agree)
+        surfaces.append(Plane(n, d))
+    for cyl in cyls:
+        dist = cyl.distance(cents)
+        radial = cyl._radial(cents)
+        ln = np.linalg.norm(radial, axis=1, keepdims=True)
+        radial = radial / np.maximum(ln, 1e-12)
+        agree = np.sum(norms * radial, axis=1) > 0.35
+        consider(len(surfaces), dist, agree)
+        surfaces.append(cyl)
+    for sph in spheres:
+        dist = sph.distance(cents)
+        radial = cents - sph.center
+        ln = np.linalg.norm(radial, axis=1, keepdims=True)
+        radial = radial / np.maximum(ln, 1e-12)
+        agree = np.sum(norms * radial, axis=1) > 0.35
+        consider(len(surfaces), dist, agree)
+        surfaces.append(sph)
+    area = m.area_faces
+    total = float(area.sum()) or 1.0
+    poor = (best > thresh) | (owner < 0)
+    if float(area[poor].sum()) > 0.08 * total:
+        return None
+    # a triangle that matches no surface still has to sit in the partition
+    missing = owner < 0
+    if missing.any():
+        owner[missing] = 0
+    out = []
+    fit = best <= thresh
+    for idx, surf in enumerate(surfaces):
+        faces = np.where(owner == idx)[0]
+        fitted = faces[fit[faces]] if len(faces) else faces
+        if isinstance(surf, Cylinder):
+            length = _cylinder_length(surf, spheres)
+            if length < radius:
+                return None
+            expect = 0.5 * np.pi * radius * length
+            if float(area[fitted].sum()) < 0.25 * expect:
+                return None
+            if len(fitted) >= 8:
+                err = float(np.percentile(surf.distance(cents[fitted]), 90))
+                if err > max(6.0 * tol, 0.2 * radius):
+                    return None
+        elif isinstance(surf, Sphere):
+            expect = 0.5 * np.pi * radius * radius
+            if float(area[fitted].sum()) < 0.25 * expect:
+                return None
+        elif len(fitted) < 3:
+            return None
+        out.append((surf, faces))
+    return out
+
+
+def _cylinder_length(cyl, spheres):
+    """Distance between the two sphere centres this fillet runs between."""
+    axis = np.asarray(cyl.axis, float)
+    axis = axis / max(float(np.linalg.norm(axis)), 1e-12)
+    point = np.asarray(cyl.point, float)
+    proj = []
+    for sph in spheres:
+        rel = np.asarray(sph.center, float) - point
+        off = float(np.linalg.norm(rel - axis * float(rel @ axis)))
+        if off < 0.05 * max(cyl.radius, 1e-6):
+            proj.append(float(rel @ axis))
+    if len(proj) < 2:
+        return 0.0
+    return float(max(proj) - min(proj))
 
 
 def _snap_torus_plane(torus, plane):
