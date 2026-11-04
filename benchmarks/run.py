@@ -8,7 +8,8 @@ import sys
 import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "tests"))
-from parts import CONES, CURVED, FILLET_RADIUS, FILLETS, PLANAR, SPHERES, TORI, TORUS_MINOR, to_mesh  # noqa: E402
+from parts import (CONES, CURVED, FILLET_RADIUS, FILLETS, PLANAR, ROUNDED, ROUNDED_RADIUS,  # noqa: E402
+                   SPHERES, TORI, TORUS_MINOR, to_mesh)
 
 from mesh2cad.convert import convert_mesh  # noqa: E402
 from mesh2cad.io import add_noise  # noqa: E402
@@ -46,6 +47,7 @@ def _radius_err(res, truth, torus=False):
 
 parts = [(name, fn, None, False) for name, fn in {**PLANAR, **CURVED, **SPHERES, **CONES}.items()]
 parts += [(name, fn, FILLET_RADIUS[name], False) for name, fn in FILLETS.items()]
+parts += [(name, fn, ROUNDED_RADIUS[name], False) for name, fn in ROUNDED.items()]
 parts += [(name, fn, TORUS_MINOR[name], True) for name, fn in TORI.items()]
 for name, fn, truth, torus in parts:
     ref = to_mesh(fn())
