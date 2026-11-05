@@ -5,9 +5,10 @@ Supported parts:
 * a Z-up box or plate, rectangular pads on its top face, holes along X, Y, or
   Z (through, blind; countersunk when the axis is +Z), bosses along X, Y, or Z
   (straight; drafted or chamfered when the axis is +Z), one constant radius on
-  all four vertical corners of the base, and a quarter-torus fillet on a
-  vertical boss or hole: ``boss_N_fillet`` at the base of a straight boss,
-  ``hole_N_rim_r`` / ``hole_N_bot_rim_r`` on a through-hole rim, and
+  all four vertical corners of the base (``fillet_r``), one constant radius on
+  all twelve edges of a rectangular box (``edge_fillet_r``), and a quarter-torus
+  fillet on a vertical boss or hole: ``boss_N_fillet`` at the base of a straight
+  boss, ``hole_N_rim_r`` / ``hole_N_bot_rim_r`` on a through-hole rim, and
   ``hole_N_floor_r`` where a blind-hole floor meets the wall;
 * a straight extrusion of a 2D outline along X, Y, or Z, including a polygonal
   through-opening in that outline and round through-holes;
@@ -146,6 +147,134 @@ def _base_fillet_radius(m, fillet_regs, lo, hi, zmin, ztop, tol):
         if abs(float(vz.min()) - zmin) > zeps or abs(float(vz.max()) - ztop) > zeps:
             raise Unsupported("vertical fillet does not span the base")
     return med
+
+
+def _edge_fillet_removed(x: float, y: float, z: float, radius: float) -> float:
+    """Volume a sharp box loses when every edge is filleted at ``radius``.
+
+    Each edge, away from the corners, loses a square minus a quarter circle.
+    Each corner loses a cube minus a sphere octant.
+    """
+    r = float(radius)
+    edges = 4.0 * r * r * (1.0 - math.pi / 4.0) * (x + y + z - 6.0 * r)
+    corners = 8.0 * r * r * r * (1.0 - math.pi / 6.0)
+    return edges + corners
+
+
+def _axis_aligned_box(planes, tol: float):
+    """``(lo, hi)`` of six axis-aligned planes, two opposite faces on each axis."""
+    groups: dict[int, list[tuple[float, float]]] = {0: [], 1: [], 2: []}
+    for plane in planes:
+        n = np.abs(np.asarray(plane.normal, float))
+        ln = float(np.linalg.norm(n))
+        if ln < 1e-12 or float(n.max()) / ln < math.cos(math.radians(8.0)):
+            return None
+        i, sg, coord = _plane_pos(plane)
+        groups[i].append((sg, coord))
+    lo = np.zeros(3)
+    hi = np.zeros(3)
+    for i in range(3):
+        items = groups[i]
+        if len(items) != 2:
+            return None
+        signs = {sg for sg, _c in items}
+        if signs != {-1.0, 1.0}:
+            return None
+        coords = [c for _sg, c in items]
+        lo[i], hi[i] = min(coords), max(coords)
+        if hi[i] - lo[i] <= max(8.0 * tol, 1.0):
+            return None
+    return lo, hi
+
+
+def _inset_side(coord: float, lo: float, hi: float, radius: float, eps: float) -> int | None:
+    """-1 on the low face, +1 on the high face, when ``coord`` is inset by ``radius``."""
+    if abs(coord - (lo + radius)) <= eps:
+        return -1
+    if abs(coord - (hi - radius)) <= eps:
+        return 1
+    return None
+
+
+def _edge_fillet_box(m, regions, tol: float) -> dict | None:
+    """A rectangular box with all twelve edges filleted at one radius.
+
+    The fitted solid is 6 planes, 12 quarter cylinders and 8 sphere octants.
+    Anything else, including a hole or a boss on that box, is left alone.
+    ``m`` is unused: the faces already carry the fitted surfaces.
+    """
+    del m
+    planes, cyls, sphs = [], [], []
+    for r in regions:
+        if r.surface is None or len(r.faces) == 0:
+            return None
+        s = r.surface
+        if isinstance(s, Plane):
+            planes.append(s)
+        elif isinstance(s, Cylinder):
+            cyls.append(s)
+        elif isinstance(s, Sphere):
+            sphs.append(s)
+        else:
+            return None
+    if len(planes) != 6 or len(cyls) != 12 or len(sphs) != 8:
+        return None
+    radii = [float(c.radius) for c in cyls] + [float(s.radius) for s in sphs]
+    radius = float(np.median(radii))
+    if radius <= 0 or max(abs(v - radius) for v in radii) > max(4.0 * tol, 0.25):
+        return None
+    framed = _axis_aligned_box(planes, tol)
+    if framed is None:
+        return None
+    lo, hi = framed
+    short = float(min(hi - lo))
+    if radius >= 0.5 * short - 1e-6:
+        return None
+    eps = max(8.0 * tol, 0.5)
+    corners = set()
+    for sph in sphs:
+        center = np.asarray(sph.center, float)
+        signs = []
+        for i in range(3):
+            side = _inset_side(float(center[i]), float(lo[i]), float(hi[i]), radius, eps)
+            if side is None:
+                return None
+            signs.append(side)
+        key = tuple(signs)
+        if key in corners:
+            return None
+        corners.add(key)
+    if len(corners) != 8:
+        return None
+    edges = set()
+    for cyl in cyls:
+        axis = _principal_axis(cyl.axis)
+        if axis is None:
+            return None
+        # a few degrees off the box axis is still that edge; a diagonal is not
+        direction = np.asarray(cyl.axis, float)
+        direction = direction / max(float(np.linalg.norm(direction)), 1e-12)
+        if abs(float(direction[axis])) < math.cos(math.radians(8.0)):
+            return None
+        point = np.asarray(cyl.point, float)
+        signs = []
+        for i in range(3):
+            if i == axis:
+                continue
+            side = _inset_side(float(point[i]), float(lo[i]), float(hi[i]), radius, eps)
+            if side is None:
+                return None
+            signs.append((i, side))
+        key = (axis, tuple(signs))
+        if key in edges:
+            return None
+        edges.add(key)
+    if len(edges) != 12:
+        return None
+    return {"base": dict(cx=(lo[0] + hi[0]) / 2, cy=(lo[1] + hi[1]) / 2, z0=float(lo[2]),
+                         x=float(hi[0] - lo[0]), y=float(hi[1] - lo[1]), t=float(hi[2] - lo[2])),
+            "pads": [], "holes": [], "bosses": [],
+            "edge_fillet_r": radius}
 
 
 def _principal_axis(axis) -> int | None:
@@ -694,7 +823,9 @@ def _feature_volume(feats: dict) -> float:
     """Analytic volume of a box-vocabulary feature dict."""
     b = feats["base"]
     v = float(b["x"]) * float(b["y"]) * float(b["t"])
-    if "fillet_r" in feats:
+    if "edge_fillet_r" in feats:
+        v -= _edge_fillet_removed(float(b["x"]), float(b["y"]), float(b["t"]), float(feats["edge_fillet_r"]))
+    elif "fillet_r" in feats:
         r = float(feats["fillet_r"])
         v -= 4.0 * float(b["t"]) * r * r * (1.0 - math.pi / 4.0)
 
@@ -817,6 +948,11 @@ def recognize(m: trimesh.Trimesh, regions, tol: float) -> dict:
     from .csg import extract_csg
     from .extrude import extract_extrusion
 
+    # A fully filleted box is six planes, twelve cylinders and eight spheres.
+    # Claim it before the box extractor, which refuses every sphere.
+    rounded = _edge_fillet_box(m, regions, tol)
+    if rounded is not None:
+        return rounded
     _flatten_planar_spheres(m, regions, tol)
 
     box_err = None
@@ -867,6 +1003,8 @@ def named_parameters(feats: dict, tol: float = 0.01) -> list[tuple[str, float, s
     p("base_cx", b["cx"])
     p("base_cy", b["cy"])
     p("base_z0", b["z0"], "bottom face height")
+    if "edge_fillet_r" in feats:
+        p("edge_fillet_r", feats["edge_fillet_r"], "radius of every edge")
     if "fillet_r" in feats:
         p("fillet_r", feats["fillet_r"], "vertical corner radius")
     for i, d in enumerate(feats["pads"], 1):

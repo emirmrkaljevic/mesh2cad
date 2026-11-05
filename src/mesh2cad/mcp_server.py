@@ -63,7 +63,9 @@ def to_cadquery(input_path: str, output_path: str | None = None, tol: float | No
     Works for a box/plate base with rectangular pads, holes along X, Y, or Z
     (through, blind, counterbored, and countersunk when the axis is vertical),
     bosses along X, Y, or Z (straight, and drafted or chamfered when the axis
-    is vertical), a fillet at the base of a vertical boss (boss_N_fillet), a
+    is vertical), fillet_r on the four vertical corners, edge_fillet_r when
+    every edge of the box shares one radius, a fillet at the base of a vertical
+    boss (boss_N_fillet), a
     round on a vertical hole rim (hole_N_rim_r, hole_N_bot_rim_r) and a
     blind-hole floor fillet (hole_N_floor_r), a straight extrusion of a 2D
     outline along X, Y, or Z, and a small boolean of those extrusions
@@ -89,11 +91,12 @@ def to_openscad(input_path: str, output_path: str | None = None, tol: float | No
 
     Same parts as to_cadquery: a box/plate base with rectangular pads, holes and
     bosses along X, Y, or Z (countersink, draft, and chamfer only when the axis
-    is vertical), one radius on the four vertical corners, a quarter-torus
+    is vertical), one radius on the four vertical corners, edge_fillet_r when
+    every edge of the box shares one radius, a quarter-torus
     fillet on a vertical boss or hole (boss_N_fillet, hole_N_rim_r,
     hole_N_floor_r), a straight extrusion of a 2D outline, and a small boolean
     of those extrusions. Parameter names match the CadQuery script
-    (hole_1_d, boss_1_h, fillet_r, boss_1_fillet, extrude_len, ...). Edit one and
+    (hole_1_d, boss_1_h, fillet_r, edge_fillet_r, boss_1_fillet, extrude_len, ...). Edit one and
     render in OpenSCAD. Returns the parameters, whether the openscad CLI
     verified the script against the mesh, and the measured deviation when it
     did. Without the openscad program the script is still written and verified
@@ -114,11 +117,12 @@ def to_freecad(input_path: str, output_path: str | None = None, tol: float | Non
 
     Same parts as to_cadquery: a box/plate base with rectangular pads, holes and
     bosses along X, Y, or Z (countersink, draft, and chamfer only when the axis
-    is vertical), one radius on the four vertical corners, a quarter-torus
+    is vertical), one radius on the four vertical corners, edge_fillet_r when
+    every edge of the box shares one radius, a quarter-torus
     fillet on a vertical boss or hole (boss_N_fillet, hole_N_rim_r,
     hole_N_floor_r), a straight extrusion of a 2D outline, and a small boolean
     of those extrusions. Parameter names match the CadQuery script
-    (hole_1_d, boss_1_h, fillet_r, boss_1_fillet, extrude_len, ...). Edit one and run the
+    (hole_1_d, boss_1_h, fillet_r, edge_fillet_r, boss_1_fillet, extrude_len, ...). Edit one and run the
     macro in FreeCAD, or with freecadcmd. Returns the parameters, whether
     freecadcmd verified the macro against the mesh, and the measured deviation
     when it did. Without freecadcmd the macro is still written and verified

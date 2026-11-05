@@ -4,7 +4,9 @@ Uses the same feature dict and parameter names as the CadQuery export
 (:mod:`mesh2cad.parametric`). The script is plain CSG: ``cube`` / ``cylinder``
 (with ``r1``/``r2`` for a draft or a chamfer; ``rotate`` when the axis is X or
 Y), ``difference`` / ``union``, and ``offset`` for the one vertical corner
-radius. A quarter-torus fillet on a vertical boss or hole is a revolved
+radius. A box with all twelve edges filleted at one radius is the sharp
+box with cylinders along the edges and spheres at the corners, sized by
+``edge_fillet_r``. A quarter-torus fillet on a vertical boss or hole is a revolved
 square-minus-quarter-circle: ``boss_N_fillet`` added at the base of a boss,
 ``hole_N_rim_r`` and ``hole_N_bot_rim_r`` cut from a hole rim, and
 ``hole_N_floor_r`` added back where a blind floor meets the wall. A straight
@@ -104,6 +106,10 @@ def _customizer_range(name: str, value: float, by_name: dict[str, float]) -> str
     if name == "fillet_r":
         # offset() of a zero-size square is an empty solid, so stop short of half the short side
         return _slider(0.0, plate / 2.0 - 0.1, 0.1, value, floor_hi=True)
+    if name == "edge_fillet_r":
+        # the inner box disappears when the radius reaches half the shortest side
+        short = min(plate, by_name["base_t"])
+        return _slider(0.0, short / 2.0 - 0.1, 0.1, value, floor_hi=True)
     hole_d = _indexed(name, "hole_", "_d")
     if hole_d:
         return _slider(0.2, _face_limit(by_name, _feature_axis(by_name, "hole", hole_d)), 0.1, value)
@@ -227,8 +233,42 @@ def _side_cylinder(prefix: str, feat: dict, diam: str, start: str, length: str) 
             f"    cylinder(h={length}, d={diam});")
 
 
+def _rounded_box() -> str:
+    """Axis-aligned box with every edge rounded by ``edge_fillet_r``.
+
+    Three boxes cover the flat faces. Twelve cylinders cover the edges and
+    eight spheres cover the corners. They overlap, so the union stays closed.
+    """
+    return (
+        "translate([base_cx, base_cy, base_z0 + base_t / 2])\n"
+        "  union() { // every edge rounded by edge_fillet_r\n"
+        "    cube([base_x - 2 * edge_fillet_r, base_y - 2 * edge_fillet_r, base_t], center=true);\n"
+        "    cube([base_x - 2 * edge_fillet_r, base_y, base_t - 2 * edge_fillet_r], center=true);\n"
+        "    cube([base_x, base_y - 2 * edge_fillet_r, base_t - 2 * edge_fillet_r], center=true);\n"
+        "    for (sx = [-1, 1], sy = [-1, 1])\n"
+        "      translate([sx * (base_x / 2 - edge_fillet_r), sy * (base_y / 2 - edge_fillet_r), 0])\n"
+        "        cylinder(h=base_t - 2 * edge_fillet_r, r=edge_fillet_r, center=true);\n"
+        "    for (sy = [-1, 1], sz = [-1, 1])\n"
+        "      translate([0, sy * (base_y / 2 - edge_fillet_r), sz * (base_t / 2 - edge_fillet_r)])\n"
+        "        rotate([0, 90, 0])\n"
+        "          cylinder(h=base_x - 2 * edge_fillet_r, r=edge_fillet_r, center=true);\n"
+        "    for (sx = [-1, 1], sz = [-1, 1])\n"
+        "      translate([sx * (base_x / 2 - edge_fillet_r), 0, sz * (base_t / 2 - edge_fillet_r)])\n"
+        "        rotate([-90, 0, 0])\n"
+        "          cylinder(h=base_y - 2 * edge_fillet_r, r=edge_fillet_r, center=true);\n"
+        "    for (sx = [-1, 1], sy = [-1, 1], sz = [-1, 1])\n"
+        "      translate([sx * (base_x / 2 - edge_fillet_r),\n"
+        "                 sy * (base_y / 2 - edge_fillet_r),\n"
+        "                 sz * (base_t / 2 - edge_fillet_r)])\n"
+        "        sphere(r=edge_fillet_r);\n"
+        "  }"
+    )
+
+
 def _solids(feats: dict, tol: float) -> list[str]:
-    if "fillet_r" in feats:
+    if "edge_fillet_r" in feats:
+        base = _rounded_box()
+    elif "fillet_r" in feats:
         base = (
             "translate([base_cx, base_cy, base_z0])\n"
             "  linear_extrude(base_t)\n"
