@@ -20,6 +20,7 @@ from mesh2cad.params import (GeometryError, ParamError, check_edit,  # noqa: E40
 from mesh2cad.segment import segment  # noqa: E402
 from parts import (boss, chamfered_boss, counterbored_plate, countersunk_plate,  # noqa: E402
                    cube, cut_block, filleted_plate, l_profile_y, orthogonal_intersection,
+                   rounded_box,
                    plate_with_hole, ribbed_plate, side_hole_boss, slanted_outline,
                    slotted_plate, stepped_block, tapered_boss, to_mesh)
 
@@ -314,6 +315,49 @@ def test_unknown_parameter_and_oversized_hole_write_nothing(tmp_path, capsys):
     err = capsys.readouterr().err
     assert "larger than the wall" in err
     assert script.read_bytes() == raw and not out.exists()
+
+
+def test_edge_fillet_is_listed_and_edited(tmp_path, capsys):
+    mesh = _mesh(tmp_path, rounded_box, "round")
+    script = _script(tmp_path, mesh, "cadquery")
+    assert main(["params", str(script)]) == 0
+    listed = capsys.readouterr().out
+    assert "edge_fillet_r" in listed and "radius" in listed
+    info = list_parameters(str(script))
+    param = next(p for p in info["parameters"] if p["name"] == "edge_fillet_r")
+    assert param["value"] == pytest.approx(3.0)
+    assert param["kind"] == "radius" and param["unit"] == "mm"
+    assert "base_x" in {p["name"] for p in info["parameters"]}
+    raw = script.read_bytes()
+    with pytest.raises(GeometryError, match="edge_fillet_r"):
+        edit_script(str(script), {"edge_fillet_r": 10}, in_place=True)
+    assert script.read_bytes() == raw
+    out = tmp_path / "out.step"
+    result = edit_script(str(script), {"edge_fillet_r": 4}, output_path=str(out), in_place=True)
+    assert result["valid_solid"] is True
+    assert result["changes"][0]["old"] == pytest.approx(3.0)
+    assert result["changes"][0]["new"] == pytest.approx(4.0)
+    assert out.is_file()
+    assert "edge_fillet_r = 4.0" in script.read_text(encoding="utf-8")
+
+
+def test_mcp_edits_edge_fillet(tmp_path):
+    pytest.importorskip("mcp")
+    from mesh2cad.mcp_server import edit_params, list_params
+    mesh = _mesh(tmp_path, rounded_box, "round")
+    script = _script(tmp_path, mesh, "cadquery")
+    listed = list_params(str(script))
+    param = next(p for p in listed["parameters"] if p["name"] == "edge_fillet_r")
+    assert param["kind"] == "radius" and param["value"] == pytest.approx(3.0)
+    out = tmp_path / "edited.step"
+    result = edit_params(str(script), {"edge_fillet_r": 4}, str(out))
+    assert "error" not in result
+    assert result["valid_solid"] is True
+    assert result["changes"][0]["new"] == pytest.approx(4.0)
+    assert out.is_file()
+    refused = edit_params(str(script), {"edge_fillet_r": 12})
+    assert "edge_fillet_r" in refused["error"]
+    assert "4.0" in script.read_text(encoding="utf-8")
 
 
 def test_fillet_that_collapses_the_base_is_refused(tmp_path):

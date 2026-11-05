@@ -4,7 +4,8 @@ Uses the same feature dict and parameter names as the CadQuery and OpenSCAD
 exports (:mod:`mesh2cad.parametric`). The macro is plain Python for FreeCAD's
 Part API: ``makeBox`` / ``makeCylinder`` / ``makeCone``, a polygon extruded
 along X, Y, or Z, ``fuse`` / ``cut`` / ``common``, and ``makeFillet`` for the
-one vertical corner radius and for a quarter-torus fillet on a vertical boss
+one vertical corner radius, for every edge of a rectangular box
+(``edge_fillet_r``), and for a quarter-torus fillet on a vertical boss
 or hole (``boss_N_fillet``, ``hole_N_rim_r``, ``hole_N_bot_rim_r``,
 ``hole_N_floor_r``). A part that is a few extrusions (their
 intersection, a union of partial-depth extrusions, or one minus cuts along
@@ -315,13 +316,23 @@ def _fillet_lines() -> list[str]:
     ]
 
 
+def _all_edge_fillet_lines() -> list[str]:
+    """Fillet every edge of the box that was just created."""
+    return [
+        "_fillet_edges = list(result.Edges)",
+        "result = result.makeFillet(edge_fillet_r, _fillet_edges)",
+    ]
+
+
 def _render_box(feats: dict, tol: float, source: str | None) -> str:
     body = [
         "result = Part.makeBox(base_x, base_y, base_t, "
         "App.Vector(base_cx - base_x / 2, base_cy - base_y / 2, base_z0))",
         "top = base_z0 + base_t",
     ]
-    if "fillet_r" in feats:
+    if "edge_fillet_r" in feats:
+        body.extend(_all_edge_fillet_lines())
+    elif "fillet_r" in feats:
         body.extend(_fillet_lines())
     for i, _pad in enumerate(feats["pads"], 1):
         n = f"pad_{i}"

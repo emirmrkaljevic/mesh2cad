@@ -5,7 +5,8 @@ Every dimension is a named parameter at the top of the script
 (``hole_1_d = 6.0``). Holes and bosses whose axis is X or Y are cylinders
 along that axis; +Z features stay on the XY workplane. The four vertical
 corners of a rectangular base, when they share one radius, become
-``edges("|Z").fillet(fillet_r)``. A quarter-torus fillet on a vertical boss
+``edges("|Z").fillet(fillet_r)``. A box with all twelve edges filleted at one
+radius becomes ``edges().fillet(edge_fillet_r)``. A quarter-torus fillet on a vertical boss
 or hole becomes ``boss_N_fillet``, ``hole_N_rim_r``, ``hole_N_bot_rim_r``, or
 ``hole_N_floor_r``, applied with ``Solid.fillet`` on that circular edge. A
 straight extrusion of a 2D outline is a
@@ -127,11 +128,17 @@ def render(feats: dict, tol: float = 0.01, source: str | None = None) -> str:
     if "profile" in feats:
         return _render_profile(feats, tol, source)
     P = named_parameters(feats, tol)
-    body = ["result = (cq.Workplane(\"XY\", origin=(base_cx, base_cy, base_z0))",
-            "          .rect(base_x, base_y).extrude(base_t))",
-            "top = base_z0 + base_t"]
-    if "fillet_r" in feats:
-        body.append("result = result.edges(\"|Z\").fillet(fillet_r)")
+    if "edge_fillet_r" in feats:
+        # every edge of the box, including the horizontal ones, at one radius
+        body = ["result = (cq.Workplane(\"XY\", origin=(base_cx, base_cy, base_z0))",
+                "          .rect(base_x, base_y).extrude(base_t)",
+                "          .edges().fillet(edge_fillet_r))"]
+    else:
+        body = ["result = (cq.Workplane(\"XY\", origin=(base_cx, base_cy, base_z0))",
+                "          .rect(base_x, base_y).extrude(base_t))"]
+        if "fillet_r" in feats:
+            body.append("result = result.edges(\"|Z\").fillet(fillet_r)")
+    body.append("top = base_z0 + base_t")
     for i, d in enumerate(feats["pads"], 1):
         n = f"pad_{i}"
         body.append(f"result = result.union(cq.Workplane(\"XY\", origin=({n}_x, {n}_y, top))"

@@ -10,7 +10,7 @@ from mesh2cad.convert import convert_mesh  # noqa: E402
 from mesh2cad.io import add_noise  # noqa: E402
 from parts import (boss, chamfered_boss, countersunk_plate, cube, filleted_box,  # noqa: E402
                    filleted_bracket, filleted_plate, plate_with_hole, ribbed_plate,
-                   spherical_dome, stepped_block, tapered_boss, to_mesh)
+                   rounded_box, spherical_dome, stepped_block, tapered_boss, to_mesh)
 
 PARTS = {"cube": cube, "stepped_block": stepped_block, "plate_with_hole": plate_with_hole,
          "boss": boss, "ribbed_plate": ribbed_plate, "countersunk_plate": countersunk_plate,
@@ -92,6 +92,7 @@ def test_vertical_fillet_is_a_parameter(name, fn, radius, sigma):
     params = _params(code)
     assert params["fillet_r"] == pytest.approx(radius, abs=0.15)
     assert '.edges("|Z").fillet(fillet_r)' in code
+    assert "edge_fillet_r" not in code
     against = check(code, ref)
     assert against["max_deviation"] < (0.08 if sigma == 0.0 else 0.25)
     assert against["volume_error_pct"] < 0.5
@@ -109,6 +110,70 @@ def test_editing_fillet_radius_changes_volume():
     import math
     expect = 4 * 6.0 * (6.0 ** 2 - r0 ** 2) * (1.0 - math.pi / 4.0)
     assert v0 - v1 == pytest.approx(expect, rel=0.02)
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2])
+@pytest.mark.parametrize("sigma", [0.0, 0.05, 0.2])
+def test_edge_fillet_is_a_parameter(sigma, seed):
+    """All twelve edges, one radius. The usual gate decides whether it is written."""
+    ref = to_mesh(rounded_box())
+    tol = max(sigma, 0.01)
+    mesh = add_noise(ref, sigma, seed=seed) if sigma else ref
+    res = convert_mesh(mesh, tol=tol, with_report=False)
+    code, q = to_cadquery(res.mesh, res.regions, res.tol)
+    assert q["max_deviation"] <= max(4 * tol, 0.1)
+    assert q["volume_error_pct"] <= 1.0
+    params = _params(code)
+    assert params["edge_fillet_r"] == pytest.approx(3.0, abs=0.05)
+    assert params["base_x"] == pytest.approx(40.0, abs=0.15)
+    assert params["base_y"] == pytest.approx(30.0, abs=0.15)
+    assert params["base_t"] == pytest.approx(20.0, abs=0.15)
+    assert "fillet_r" not in params
+    assert ".edges().fillet(edge_fillet_r)" in code
+
+
+def test_editing_edge_fillet_changes_volume():
+    ref = to_mesh(rounded_box())
+    res = convert_mesh(ref, tol=0.01, with_report=False)
+    code, _ = to_cadquery(res.mesh, res.regions, res.tol)
+    v0 = run_script(code).volume
+    bigger = re.sub(r"^edge_fillet_r\s*=\s*[\d.]+", "edge_fillet_r = 4.0", code, flags=re.M)
+    v1 = run_script(bigger).volume
+    import math
+
+    def removed(r):
+        # twelve edges, away from the corners, plus eight corner cubes minus octants
+        return (4 * r * r * (1 - math.pi / 4) * (40 + 30 + 20 - 6 * r)
+                + 8 * r ** 3 * (1 - math.pi / 6))
+
+    assert v0 - v1 == pytest.approx(removed(4.0) - removed(3.0), rel=0.02)
+
+
+def test_hole_on_a_filleted_box_is_refused():
+    import cadquery as cq
+    part = cq.Workplane().box(40, 30, 20).edges().fillet(3).faces(">Z").workplane().hole(8)
+    res = convert_mesh(to_mesh(part, tol=0.1, ang=0.4, max_edge=2.5), tol=0.05, with_report=False)
+    with pytest.raises(Unsupported, match="sphere faces are not supported yet"):
+        to_cadquery(res.mesh, res.regions, res.tol)
+
+
+def test_boss_on_a_filleted_box_is_refused():
+    import cadquery as cq
+    part = (cq.Workplane().box(40, 30, 20).edges().fillet(2.5)
+            .faces(">Z").workplane().circle(5).extrude(6))
+    res = convert_mesh(to_mesh(part, tol=0.1, ang=0.4, max_edge=2.5), tol=0.05, with_report=False)
+    with pytest.raises(Unsupported, match="deviates by"):
+        to_cadquery(res.mesh, res.regions, res.tol)
+
+
+def test_cli_rounded_box(tmp_path):
+    stl = tmp_path / "box.stl"
+    to_mesh(rounded_box()).export(stl)
+    out = tmp_path / "box.py"
+    assert main(["convert", str(stl), "--cadquery", str(out)]) == 0
+    text = out.read_text()
+    assert "edge_fillet_r" in text and "base_x" in text
+    assert ".edges().fillet(edge_fillet_r)" in text
 
 
 def test_bracket_fillet_is_not_a_box_script():

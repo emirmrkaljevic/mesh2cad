@@ -622,6 +622,13 @@ def _check_features(scalars: dict[str, float]) -> None:
                 f"fillet_r={format_number(scalars['fillet_r'])} is at least half the short side "
                 f"of the base ({format_number(limit)} mm), so the rounded rectangle collapses"
             )
+    if "edge_fillet_r" in scalars and all(k in scalars for k in ("base_x", "base_y", "base_t")):
+        limit = min(scalars["base_x"], scalars["base_y"], scalars["base_t"]) / 2.0
+        if scalars["edge_fillet_r"] >= limit - 1e-9:
+            raise GeometryError(
+                f"edge_fillet_r={format_number(scalars['edge_fillet_r'])} is at least half the "
+                f"smallest side of the base ({format_number(limit)} mm), so the filleted box collapses"
+            )
     for name, value in scalars.items():
         matched = _HOLE_D.fullmatch(name)
         if not matched:
