@@ -18,7 +18,7 @@ from mesh2cad.io import add_noise  # noqa: E402
 from mesh2cad.parametric import Unsupported  # noqa: E402
 from parts import (  # noqa: E402
     angled_hole, boss, chamfered_boss, counterbored_plate, countersunk_plate,
-    cube, cut_block, filleted_box, filleted_bracket, filleted_plate,
+    cube, cut_block, filleted_box, filleted_bracket, filleted_plate, rounded_box,
     l_profile_y, orthogonal_intersection, partial_edge_chamfer, plate_with_hole,
     ribbed_plate, side_hole_boss, slanted_outline, slotted_plate, spherical_dome,
     stepped_block, tapered_boss, to_mesh,
@@ -167,6 +167,7 @@ def test_profile_and_boolean_text():
     res = convert_mesh(ref, tol=0.01, with_report=False)
     code, _ = to_freecad(res.mesh, res.regions, res.tol, verify=False)
     assert "result.makeFillet(fillet_r, _fillet_edges)" in code
+    assert "edge_fillet_r" not in code
 
     ref = to_mesh(side_hole_boss())
     res = convert_mesh(ref, tol=0.01, with_report=False)
@@ -187,10 +188,41 @@ def test_vertical_fillet_is_a_parameter(name, fn, radius, sigma, tmp_path):
     assert q["max_deviation"] <= max(4 * res.tol, 0.1)
     assert _params(code)["fillet_r"] == pytest.approx(radius, abs=0.15)
     assert "makeFillet(fillet_r, _fillet_edges)" in code
+    assert "edge_fillet_r" not in code
     dev, vol = _against("fillet", sigma)
     against = check(code, ref, tmp_path)
     assert against["max_deviation"] < dev
     assert against["volume_error_pct"] < vol
+
+
+def test_edge_fillet_macro_names_the_radius():
+    """The macro text is checked even when freecadcmd is absent."""
+    ref = to_mesh(rounded_box())
+    res = convert_mesh(ref, tol=0.01, with_report=False)
+    code, _q = to_freecad(res.mesh, res.regions, res.tol, verify=False)
+    params = _params(code)
+    assert params["edge_fillet_r"] == pytest.approx(3.0, abs=0.05)
+    assert params["base_x"] == pytest.approx(40.0, abs=0.05)
+    assert "fillet_r" not in params
+    assert "result.makeFillet(edge_fillet_r, _fillet_edges)" in code
+
+
+@needs_freecad
+@pytest.mark.parametrize("seed", [0, 1, 2])
+@pytest.mark.parametrize("sigma", [0.0, 0.05, 0.2])
+def test_edge_fillet_is_a_parameter(sigma, seed):
+    ref = to_mesh(rounded_box())
+    tol = max(sigma, 0.01)
+    mesh = add_noise(ref, sigma, seed=seed) if sigma else ref
+    res = convert_mesh(mesh, tol=tol, with_report=False)
+    code, q = to_freecad(res.mesh, res.regions, res.tol)
+    assert q["max_deviation"] <= max(4 * tol, 0.1)
+    assert q["volume_error_pct"] <= 1.0
+    params = _params(code)
+    assert params["edge_fillet_r"] == pytest.approx(3.0, abs=0.05)
+    assert params["base_x"] == pytest.approx(40.0, abs=0.15)
+    assert params["base_t"] == pytest.approx(20.0, abs=0.15)
+    assert "result.makeFillet(edge_fillet_r, _fillet_edges)" in code
 
 
 @needs_freecad

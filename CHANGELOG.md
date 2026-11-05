@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Parametric CadQuery, OpenSCAD, and FreeCAD export write a rectangular box with every edge filleted at one radius as `edge_fillet_r`, together with `base_x`, `base_y`, and `base_t`. `fillet_r` is still only the four vertical corners. `mesh2cad edit part.py --set edge_fillet_r=4` changes that number, and so do `mesh2cad params` and the MCP tools `list_params` and `edit_params`. CadQuery uses `.edges().fillet(edge_fillet_r)`. FreeCAD uses `makeFillet` on every edge of the box. OpenSCAD unions three boxes, twelve cylinders, and eight spheres. A hole or a boss on that box is not written.
+- On the synthetic 40×30×20 mm box with r=3 mm the script is written on 3 of 3 seeds at 0, 0.05, and 0.2 mm noise, on CadQuery, OpenSCAD, and FreeCAD. None were refused. The gate is unchanged: max deviation at most max(4·tol, 0.1), volume error at most 1%.
+- With no noise `edge_fillet_r` is 3.0. CadQuery deviates by 0.0088 mm (volume error 0.013%), OpenSCAD by 0.0087 mm (0.010%), FreeCAD by 0.0100 mm (0.016%). The limit is 0.100 mm.
+- At 0.05 mm the limit is 0.200 mm and `edge_fillet_r` is 3.0 on every seed. The worst is CadQuery 0.163 mm (volume error 0.009%), OpenSCAD 0.163 mm (0.007%), FreeCAD 0.164 mm (0.012%).
+- At 0.2 mm the limit is 0.800 mm and `edge_fillet_r` is 3.0 on every seed. The fitted radius is 3.09 to 3.11 mm and rounds to 3.0 within the tolerance, so the script is farther from the noisy mesh than the STEP solid (Hausdorff 0.116 mm). The worst is CadQuery 0.664 mm (volume error 0.025%), OpenSCAD 0.664 mm (0.028%), FreeCAD 0.664 mm (0.022%).
+- An Ø8 hole through the top of the filleted box is refused with "sphere faces are not supported yet". A boss on the top face is fitted as the plain rounded box and then refused by the same gate: deviation 6.000 mm (limit 0.200), volume error 1.93%. Nothing is written.
+
 ## 0.20.0 - 2026-11-04
 
 - A rectangular box with every edge filleted at one radius is rebuilt as one exact solid: 6 planes, 12 partial cylinders and 8 sphere octants. Each cylinder is tangent to the two walls it joins, each sphere is tangent to the three faces at that corner, and the fillet axis passes through the two corner centres. On a 40×30×20 mm box with r=3 mm this is exact on 3 of 3 seeds at 0, 0.05 and 0.2 mm noise. With no noise the radius error is 0.006 mm, the Hausdorff distance is 0.023 mm, and the volume error is 0.01%. At 0.05 mm the worst radius error is 0.007 mm and the Hausdorff is 0.035 mm (volume error 0.07%). At 0.2 mm the worst radius error is 0.112 mm and the Hausdorff is 0.116 mm (volume error 0.18%). A fillet that meets a sphere in any other layout is unchanged and still falls back to a valid solid. There is no new script parameter. `fillet_r` is still only the four vertical corners of a rectangular base.
