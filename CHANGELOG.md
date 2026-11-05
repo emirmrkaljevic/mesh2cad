@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.21.0 - 2026-11-05
 
 - Parametric CadQuery, OpenSCAD, and FreeCAD export write a rectangular box with every edge filleted at one radius as `edge_fillet_r`, together with `base_x`, `base_y`, and `base_t`. `fillet_r` is still only the four vertical corners. `mesh2cad edit part.py --set edge_fillet_r=4` changes that number, and so do `mesh2cad params` and the MCP tools `list_params` and `edit_params`. CadQuery uses `.edges().fillet(edge_fillet_r)`. FreeCAD uses `makeFillet` on every edge of the box. OpenSCAD unions three boxes, twelve cylinders, and eight spheres. A hole or a boss on that box is not written.
 - On the synthetic 40×30×20 mm box with r=3 mm the script is written on 3 of 3 seeds at 0, 0.05, and 0.2 mm noise, on CadQuery, OpenSCAD, and FreeCAD. None were refused. The gate is unchanged: max deviation at most max(4·tol, 0.1), volume error at most 1%.
