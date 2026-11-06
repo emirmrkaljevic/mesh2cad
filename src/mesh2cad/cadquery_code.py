@@ -6,7 +6,8 @@ Every dimension is a named parameter at the top of the script
 along that axis; +Z features stay on the XY workplane. The four vertical
 corners of a rectangular base, when they share one radius, become
 ``edges("|Z").fillet(fillet_r)``. A box with all twelve edges filleted at one
-radius becomes ``edges().fillet(edge_fillet_r)``. A quarter-torus fillet on a vertical boss
+radius becomes ``edges().fillet(edge_fillet_r)``. A through-hole that clears
+those rounds is cut after the fillet. A quarter-torus fillet on a vertical boss
 or hole becomes ``boss_N_fillet``, ``hole_N_rim_r``, ``hole_N_bot_rim_r``, or
 ``hole_N_floor_r``, applied with ``Solid.fillet`` on that circular edge. A
 straight extrusion of a 2D outline is a
