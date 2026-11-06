@@ -84,6 +84,15 @@ def rounded_box():
     return cq.Workplane().box(40, 30, 20).edges().fillet(3)
 
 
+def rounded_box_with_hole():
+    """40×30×20 box, every edge filleted at r=3, with an Ø8 hole through the top.
+
+    The hole is centered and clears the rounds. The corner spheres stay the
+    fillet; the hole is cut after the box is filleted.
+    """
+    return cq.Workplane().box(40, 30, 20).edges().fillet(3).faces(">Z").workplane().hole(8)
+
+
 def side_hole_boss():
     """60×40×36 block with three side features.
 

@@ -10,7 +10,8 @@ from mesh2cad.convert import convert_mesh  # noqa: E402
 from mesh2cad.io import add_noise  # noqa: E402
 from parts import (boss, chamfered_boss, countersunk_plate, cube, filleted_box,  # noqa: E402
                    filleted_bracket, filleted_plate, plate_with_hole, ribbed_plate,
-                   rounded_box, spherical_dome, stepped_block, tapered_boss, to_mesh)
+                   rounded_box, rounded_box_with_hole, spherical_dome, stepped_block,
+                   tapered_boss, to_mesh)
 
 PARTS = {"cube": cube, "stepped_block": stepped_block, "plate_with_hole": plate_with_hole,
          "boss": boss, "ribbed_plate": ribbed_plate, "countersunk_plate": countersunk_plate,
@@ -149,12 +150,35 @@ def test_editing_edge_fillet_changes_volume():
     assert v0 - v1 == pytest.approx(removed(4.0) - removed(3.0), rel=0.02)
 
 
-def test_hole_on_a_filleted_box_is_refused():
-    import cadquery as cq
-    part = cq.Workplane().box(40, 30, 20).edges().fillet(3).faces(">Z").workplane().hole(8)
-    res = convert_mesh(to_mesh(part, tol=0.1, ang=0.4, max_edge=2.5), tol=0.05, with_report=False)
-    with pytest.raises(Unsupported, match="sphere faces are not supported yet"):
-        to_cadquery(res.mesh, res.regions, res.tol)
+def _holed_fillet(sigma, seed):
+    """The refusal case: 40×30×20, r=3, Ø8 through the top, same tessellation."""
+    ref = to_mesh(rounded_box_with_hole(), tol=0.1, ang=0.4, max_edge=2.5)
+    tol = max(sigma, 0.01)
+    mesh = add_noise(ref, sigma, seed=seed) if sigma else ref
+    return mesh, tol
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2])
+@pytest.mark.parametrize("sigma", [0.0, 0.05, 0.2])
+def test_hole_on_a_filleted_box(sigma, seed):
+    """Through-hole after the fillet. The corner spheres are edge_fillet_r."""
+    mesh, tol = _holed_fillet(sigma, seed)
+    res = convert_mesh(mesh, tol=tol, with_report=False)
+    code, q = to_cadquery(res.mesh, res.regions, res.tol)
+    assert q["max_deviation"] <= max(4 * tol, 0.1)
+    assert q["volume_error_pct"] <= 1.0
+    params = _params(code)
+    assert params["edge_fillet_r"] == pytest.approx(3.0, abs=0.05)
+    assert params["hole_1_d"] == pytest.approx(8.0, abs=0.05)
+    assert params["hole_1_x"] == pytest.approx(0.0, abs=0.15)
+    assert params["hole_1_y"] == pytest.approx(0.0, abs=0.15)
+    assert params["base_x"] == pytest.approx(40.0, abs=0.15)
+    assert params["base_y"] == pytest.approx(30.0, abs=0.15)
+    assert params["base_t"] == pytest.approx(20.0, abs=0.15)
+    assert "fillet_r" not in params
+    fillet_at = code.index(".edges().fillet(edge_fillet_r)")
+    cut_at = code.index(".circle(hole_1_d / 2).extrude(base_t + 2)")
+    assert fillet_at < cut_at
 
 
 def test_boss_on_a_filleted_box_is_refused():

@@ -20,7 +20,7 @@ from mesh2cad.params import (GeometryError, ParamError, check_edit,  # noqa: E40
 from mesh2cad.segment import segment  # noqa: E402
 from parts import (boss, chamfered_boss, counterbored_plate, countersunk_plate,  # noqa: E402
                    cube, cut_block, filleted_plate, l_profile_y, orthogonal_intersection,
-                   rounded_box,
+                   rounded_box, rounded_box_with_hole,
                    plate_with_hole, ribbed_plate, side_hole_boss, slanted_outline,
                    slotted_plate, stepped_block, tapered_boss, to_mesh)
 
@@ -358,6 +358,64 @@ def test_mcp_edits_edge_fillet(tmp_path):
     refused = edit_params(str(script), {"edge_fillet_r": 12})
     assert "edge_fillet_r" in refused["error"]
     assert "4.0" in script.read_text(encoding="utf-8")
+
+
+def _holed_fillet_script(tmp_path):
+    mesh = tmp_path / "holed.stl"
+    to_mesh(rounded_box_with_hole(), tol=0.1, ang=0.4, max_edge=2.5).export(mesh)
+    return _script(tmp_path, mesh, "cadquery")
+
+
+def test_hole_on_filleted_box_is_listed_and_edited(tmp_path, capsys):
+    script = _holed_fillet_script(tmp_path)
+    assert main(["params", str(script)]) == 0
+    listed = capsys.readouterr().out
+    assert "edge_fillet_r" in listed and "hole_1_d" in listed
+    info = list_parameters(str(script))
+    names = {p["name"]: p for p in info["parameters"]}
+    assert names["edge_fillet_r"]["kind"] == "radius"
+    assert names["hole_1_d"]["kind"] == "diameter"
+    assert names["edge_fillet_r"]["value"] == pytest.approx(3.0, abs=0.05)
+    assert names["hole_1_d"]["value"] == pytest.approx(8.0, abs=0.05)
+    raw = script.read_bytes()
+    with pytest.raises(GeometryError, match="edge_fillet_r"):
+        edit_script(str(script), {"edge_fillet_r": 12}, in_place=True)
+    assert script.read_bytes() == raw
+    with pytest.raises(GeometryError, match="hole_1_d"):
+        edit_script(str(script), {"hole_1_d": 80}, in_place=True)
+    assert script.read_bytes() == raw
+    out = tmp_path / "out.step"
+    wider = edit_script(str(script), {"hole_1_d": 10}, output_path=str(out), in_place=True)
+    assert wider["valid_solid"] is True
+    assert re.search(r"^hole_1_d\s*=\s*10\.0", script.read_text(encoding="utf-8"), re.M)
+    rounder = edit_script(str(script), {"edge_fillet_r": 4}, output_path=str(tmp_path / "out2.step"),
+                          in_place=True)
+    assert rounder["valid_solid"] is True
+    text = script.read_text(encoding="utf-8")
+    assert re.search(r"^edge_fillet_r\s*=\s*4\.0", text, re.M)
+    assert re.search(r"^hole_1_d\s*=\s*10\.0", text, re.M)
+
+
+def test_mcp_edits_hole_on_filleted_box(tmp_path):
+    pytest.importorskip("mcp")
+    from mesh2cad.mcp_server import edit_params, list_params
+    script = _holed_fillet_script(tmp_path)
+    listed = list_params(str(script))
+    names = {p["name"]: p for p in listed["parameters"]}
+    assert names["edge_fillet_r"]["kind"] == "radius"
+    assert names["hole_1_d"]["kind"] == "diameter"
+    out = tmp_path / "edited.step"
+    result = edit_params(str(script), {"hole_1_d": 10, "edge_fillet_r": 4}, str(out))
+    assert "error" not in result
+    assert result["valid_solid"] is True
+    assert out.is_file()
+    text = script.read_text(encoding="utf-8")
+    assert re.search(r"^hole_1_d\s*=\s*10\.0", text, re.M)
+    assert re.search(r"^edge_fillet_r\s*=\s*4\.0", text, re.M)
+    refused = edit_params(str(script), {"edge_fillet_r": 12})
+    assert "edge_fillet_r" in refused["error"]
+    refused = edit_params(str(script), {"hole_1_d": 80})
+    assert "hole_1_d" in refused["error"]
 
 
 def test_fillet_that_collapses_the_base_is_refused(tmp_path):
