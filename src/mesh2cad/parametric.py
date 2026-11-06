@@ -6,7 +6,9 @@ Supported parts:
   Z (through, blind; countersunk when the axis is +Z), bosses along X, Y, or Z
   (straight; drafted or chamfered when the axis is +Z), one constant radius on
   all four vertical corners of the base (``fillet_r``), one constant radius on
-  all twelve edges of a rectangular box (``edge_fillet_r``), and a quarter-torus
+  all twelve edges of a rectangular box (``edge_fillet_r``), a through-hole cut
+  after that fillet when its wall clears the rounds (the eight corner spheres
+  stay part of ``edge_fillet_r``), and a quarter-torus
   fillet on a vertical boss or hole: ``boss_N_fillet`` at the base of a straight
   boss, ``hole_N_rim_r`` / ``hole_N_bot_rim_r`` on a through-hole rim, and
   ``hole_N_floor_r`` where a blind-hole floor meets the wall;
@@ -33,7 +35,9 @@ import numpy as np
 import trimesh
 
 from .fit import Cone, Cylinder, Plane, Sphere, Torus
-from .segment import _partial_span
+from .segment import (
+    _angular_gap, _outward_plane, _partial_span, _rounded_edge_radius, _rounded_primitives,
+)
 
 Z = np.array([0.0, 0.0, 1.0])
 
@@ -200,7 +204,8 @@ def _edge_fillet_box(m, regions, tol: float) -> dict | None:
     """A rectangular box with all twelve edges filleted at one radius.
 
     The fitted solid is 6 planes, 12 quarter cylinders and 8 sphere octants.
-    Anything else, including a hole or a boss on that box, is left alone.
+    A through-hole on that box is :func:`_edge_fillet_with_holes`. A boss, or
+    any other extra solid, is left alone.
     ``m`` is unused: the faces already carry the fitted surfaces.
     """
     del m
@@ -275,6 +280,250 @@ def _edge_fillet_box(m, regions, tol: float) -> dict | None:
                          x=float(hi[0] - lo[0]), y=float(hi[1] - lo[1]), t=float(hi[2] - lo[2])),
             "pads": [], "holes": [], "bosses": [],
             "edge_fillet_r": radius}
+
+
+def _end_cluster(coords, sign: int, tol: float) -> float | None:
+    """Median coordinate of the vertices piled on one flat face.
+
+    The band stays narrower than a fillet, so the round beside the face does
+    not pull the measurement inward.
+    """
+    coords = np.asarray(coords, float)
+    reach = max(0.45, 3.0 * tol)
+    if sign > 0:
+        tip = float(np.percentile(coords, 99.5))
+        band = coords[coords >= tip - reach]
+    else:
+        tip = float(np.percentile(coords, 0.5))
+        band = coords[coords <= tip + reach]
+    if band.size < 12:
+        return None
+    return float(np.median(band))
+
+
+def _filleted_box_frame(m, regions, tol: float):
+    """``(lo, hi, flat)`` of a rectangular box, or None.
+
+    Each side is the largest plane within 4° of that axis. A side the fitter
+    folded into a fillet is the median of the vertices piled at that end.
+    ``flat`` is six outward axis-aligned planes, in the pairs the fillet-radius
+    fit expects.
+    """
+    origin = np.asarray(m.centroid, float)
+    best: dict[tuple[int, int], tuple[float, float]] = {}
+    min_area = max(0.02 * float(m.area), 40.0)
+    align = math.cos(math.radians(4.0))
+    for r in regions:
+        if not isinstance(r.surface, Plane) or r.area < min_area or len(r.faces) == 0:
+            continue
+        got = _outward_plane(r.surface, origin)
+        if got is None:
+            continue
+        n, d = got
+        i = int(np.argmax(np.abs(n)))
+        if abs(float(n[i])) < align:
+            continue
+        sign = 1 if float(n[i]) > 0.0 else -1
+        coord = float(d / n[i])
+        key = (i, sign)
+        if key not in best or r.area > best[key][0]:
+            best[key] = (float(r.area), coord)
+    lo = np.zeros(3)
+    hi = np.zeros(3)
+    for i in range(3):
+        pos = best.get((i, 1))
+        neg = best.get((i, -1))
+        high = pos[1] if pos is not None else _end_cluster(m.vertices[:, i], 1, tol)
+        low = neg[1] if neg is not None else _end_cluster(m.vertices[:, i], -1, tol)
+        if high is None or low is None:
+            return None
+        if high < low:
+            low, high = high, low
+        if float(high - low) <= max(8.0 * tol, 1.0):
+            return None
+        lo[i], hi[i] = low, high
+    flat = []
+    for i in range(3):
+        positive = np.zeros(3)
+        positive[i] = 1.0
+        negative = np.zeros(3)
+        negative[i] = -1.0
+        flat.append((positive, float(hi[i])))
+        flat.append((negative, float(-lo[i])))
+    return lo, hi, flat
+
+
+def _loose_axis(axis, degrees: float = 8.0) -> int | None:
+    """0, 1, or 2 when ``axis`` is within ``degrees`` of X, Y, or Z."""
+    a = np.asarray(axis, float)
+    nrm = float(np.linalg.norm(a))
+    if nrm < 1e-12:
+        return None
+    a = a / nrm
+    i = int(np.argmax(np.abs(a)))
+    if abs(float(a[i])) < math.cos(math.radians(degrees)):
+        return None
+    return i
+
+
+def _fillet_distance(cents, flat, cyls, spheres) -> np.ndarray:
+    """Distance from each face centre to the nearest filleted-box surface."""
+    best = np.full(len(cents), np.inf)
+    for n, d in flat:
+        best = np.minimum(best, np.abs(cents @ n - d))
+    for cyl in cyls:
+        best = np.minimum(best, cyl.distance(cents))
+    for sph in spheres:
+        best = np.minimum(best, sph.distance(cents))
+    return best
+
+
+def _on_cylinder(pts, point, radius: float, axis: int, tol: float) -> np.ndarray:
+    """Mask of points that sit on the cylinder wall, not on a neighbouring fillet."""
+    rel = np.asarray(pts, float) - np.asarray(point, float)
+    rel[:, axis] = 0.0
+    rho = np.linalg.norm(rel, axis=1)
+    return np.abs(rho - float(radius)) <= max(6.0 * tol, 0.45)
+
+
+def _as_through_hole(m, group, lo, hi, fillet_r: float, tol: float) -> dict | None:
+    """One coaxial group as a through-hole that clears the fillets, or None."""
+    ax = int(group["axis"])
+    point = np.asarray(group["point"], float)
+    radius = float(group["radius"])
+    if radius <= max(2.0 * tol, 0.2):
+        return None
+    faces = np.concatenate([r.faces for r in group["regions"]])
+    pts = m.vertices[np.unique(m.faces[faces])]
+    on = _on_cylinder(pts, point, radius, ax, tol)
+    if int(on.sum()) < 12:
+        return None
+    wall = pts[on]
+    along = wall[:, ax]
+    eps = max(6.0 * tol, 0.75)
+    if float(along.min()) > float(lo[ax]) + eps or float(along.max()) < float(hi[ax]) - eps:
+        return None
+    axis_vec = np.zeros(3)
+    axis_vec[ax] = 1.0
+    gap = _angular_gap(axis_vec, point, wall)
+    if 2.0 * math.pi - gap < math.radians(270.0):
+        return None
+    centres = m.triangles_center[faces]
+    near = _on_cylinder(centres, point, radius, ax, tol)
+    if int(near.sum()) < 8:
+        return None
+    radial = centres[near] - point
+    radial[:, ax] = 0.0
+    ln = np.linalg.norm(radial, axis=1, keepdims=True)
+    radial = radial / np.maximum(ln, 1e-12)
+    # A hole wall points at its axis. A boss points away.
+    if float(np.mean(np.sum(m.face_normals[faces][near] * radial, axis=1))) > -0.25:
+        return None
+    slack = max(4.0 * tol, 0.35)
+    for i in range(3):
+        if i == ax:
+            continue
+        inset = min(float(point[i] - lo[i]), float(hi[i] - point[i]))
+        if inset < radius + float(fillet_r) - slack:
+            return None
+    feat = {"d": 2.0 * radius, "axis": "XYZ"[ax]}
+    for i, name in enumerate("xyz"):
+        if i != ax:
+            feat[name] = float(point[i])
+    return feat
+
+
+def _through_holes_clear_of_fillet(m, regions, lo, hi, fillet_r: float, dist, tol: float):
+    """Through-holes left over once the filleted box accounts for its faces.
+
+    None when a leftover surface is not such a hole: a boss, a blind hole, a
+    free sphere, or a round the fillet model does not cover. Regions smaller
+    than half a percent of the mesh are segmentation crumbs and are ignored.
+    """
+    area = m.area_faces
+    total = float(area.sum()) or 1.0
+    crumb = 0.005 * total
+    thresh = max(8.0 * tol, 0.15 * float(fillet_r))
+    pieces = []
+    for r in regions:
+        if r.area <= 0 or len(r.faces) == 0:
+            continue
+        outside = dist[r.faces] > thresh
+        frac = float(area[r.faces][outside].sum()) / float(r.area)
+        if frac <= 0.5 or r.area < crumb:
+            continue
+        if not isinstance(r.surface, Cylinder):
+            return None
+        ax = _loose_axis(r.surface.axis)
+        if ax is None:
+            return None
+        pieces.append((r, ax, np.asarray(r.surface.point, float), float(r.surface.radius)))
+    if not pieces:
+        return None
+    groups = []
+    gtol = max(5.0 * tol, 0.2)
+    rtol = max(4.0 * tol, 0.25)
+    for region, ax, point, radius in pieces:
+        for g in groups:
+            if g["axis"] != ax or abs(radius - g["radius"]) > rtol:
+                continue
+            if _perp_dist(ax, g["point"], point) > gtol:
+                continue
+            w = g["area"] + float(region.area)
+            g["point"] = (g["point"] * g["area"] + point * float(region.area)) / w
+            g["radius"] = (g["radius"] * g["area"] + radius * float(region.area)) / w
+            g["area"] = w
+            g["regions"].append(region)
+            break
+        else:
+            groups.append({"axis": ax, "point": point.copy(), "radius": radius,
+                           "area": float(region.area), "regions": [region]})
+    holes = []
+    for g in groups:
+        hole = _as_through_hole(m, g, lo, hi, fillet_r, tol)
+        if hole is None:
+            return None
+        holes.append(hole)
+    holes.sort(key=lambda h: ("XYZ".index(h["axis"]), tuple(h.get(c, 0.0) for c in "xyz")))
+    return holes
+
+
+def _edge_fillet_with_holes(m, regions, tol: float) -> dict | None:
+    """A fully filleted box with axis-aligned through-holes that clear the rounds.
+
+    The twelve edges and eight corner spheres are ``edge_fillet_r``. A fitted
+    sphere or cone that lies on those surfaces is that fillet, not a free-form
+    sphere. Each leftover cylinder has to run from one face to the opposite
+    face, point inward, and stay clear of the rounds. The script fillets the
+    box first and cuts the hole after, which is the same solid.
+    """
+    if not any(isinstance(r.surface, Cylinder) and r.area > 0 for r in regions):
+        return None
+    framed = _filleted_box_frame(m, regions, tol)
+    if framed is None:
+        return None
+    lo, hi, flat = framed
+    separations = [float(hi[i] - lo[i]) for i in range(3)]
+    radius = _rounded_edge_radius(m, flat, separations, tol)
+    if radius is None or radius >= 0.5 * float(min(separations)) - 1e-6:
+        return None
+    built = _rounded_primitives(flat, radius)
+    if built is None:
+        return None
+    spheres, cyls = built
+    dist = _fillet_distance(m.triangles_center, flat, cyls, spheres)
+    holes = _through_holes_clear_of_fillet(m, regions, lo, hi, radius, dist, tol)
+    if not holes:
+        return None
+    feats = {
+        "base": dict(cx=float(lo[0] + hi[0]) / 2, cy=float(lo[1] + hi[1]) / 2, z0=float(lo[2]),
+                     x=float(hi[0] - lo[0]), y=float(hi[1] - lo[1]), t=float(hi[2] - lo[2])),
+        "pads": [], "holes": holes, "bosses": [],
+        "edge_fillet_r": float(radius),
+    }
+    if not _box_explains_mesh(m, feats):
+        return None
+    return feats
 
 
 def _principal_axis(axis) -> int | None:
@@ -949,10 +1198,15 @@ def recognize(m: trimesh.Trimesh, regions, tol: float) -> dict:
     from .extrude import extract_extrusion
 
     # A fully filleted box is six planes, twelve cylinders and eight spheres.
-    # Claim it before the box extractor, which refuses every sphere.
+    # Claim it before the box extractor, which refuses every sphere. A
+    # through-hole on that box is the same solid plus the hole cylinders;
+    # the corner spheres stay part of the fillet.
     rounded = _edge_fillet_box(m, regions, tol)
     if rounded is not None:
         return rounded
+    holed = _edge_fillet_with_holes(m, regions, tol)
+    if holed is not None:
+        return holed
     _flatten_planar_spheres(m, regions, tol)
 
     box_err = None

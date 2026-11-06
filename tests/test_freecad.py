@@ -19,6 +19,7 @@ from mesh2cad.parametric import Unsupported  # noqa: E402
 from parts import (  # noqa: E402
     angled_hole, boss, chamfered_boss, counterbored_plate, countersunk_plate,
     cube, cut_block, filleted_box, filleted_bracket, filleted_plate, rounded_box,
+    rounded_box_with_hole,
     l_profile_y, orthogonal_intersection, partial_edge_chamfer, plate_with_hole,
     ribbed_plate, side_hole_boss, slanted_outline, slotted_plate, spherical_dome,
     stepped_block, tapered_boss, to_mesh,
@@ -193,6 +194,43 @@ def test_vertical_fillet_is_a_parameter(name, fn, radius, sigma, tmp_path):
     against = check(code, ref, tmp_path)
     assert against["max_deviation"] < dev
     assert against["volume_error_pct"] < vol
+
+
+def _holed_fillet(sigma, seed):
+    ref = to_mesh(rounded_box_with_hole(), tol=0.1, ang=0.4, max_edge=2.5)
+    tol = max(sigma, 0.01)
+    mesh = add_noise(ref, sigma, seed=seed) if sigma else ref
+    return mesh, tol
+
+
+def test_hole_on_a_filleted_box_macro_cuts_after_the_fillet():
+    """The macro text is checked even when freecadcmd is absent."""
+    mesh, tol = _holed_fillet(0.0, 0)
+    res = convert_mesh(mesh, tol=tol, with_report=False)
+    code, _q = to_freecad(res.mesh, res.regions, res.tol, verify=False)
+    params = _params(code)
+    assert params["edge_fillet_r"] == pytest.approx(3.0, abs=0.05)
+    assert params["hole_1_d"] == pytest.approx(8.0, abs=0.05)
+    assert params["base_x"] == pytest.approx(40.0, abs=0.15)
+    fillet_at = code.index("result.makeFillet(edge_fillet_r, _fillet_edges)")
+    cut_at = code.index("result.cut(Part.makeCylinder(hole_1_d / 2, base_t + 2,")
+    assert fillet_at < cut_at
+
+
+@needs_freecad
+@pytest.mark.parametrize("seed", [0, 1, 2])
+@pytest.mark.parametrize("sigma", [0.0, 0.05, 0.2])
+def test_hole_on_a_filleted_box(sigma, seed):
+    mesh, tol = _holed_fillet(sigma, seed)
+    res = convert_mesh(mesh, tol=tol, with_report=False)
+    code, q = to_freecad(res.mesh, res.regions, res.tol)
+    assert q["max_deviation"] <= max(4 * tol, 0.1)
+    assert q["volume_error_pct"] <= 1.0
+    params = _params(code)
+    assert params["edge_fillet_r"] == pytest.approx(3.0, abs=0.05)
+    assert params["hole_1_d"] == pytest.approx(8.0, abs=0.05)
+    assert "result.makeFillet(edge_fillet_r, _fillet_edges)" in code
+    assert "result.cut(Part.makeCylinder(hole_1_d / 2, base_t + 2," in code
 
 
 def test_edge_fillet_macro_names_the_radius():
