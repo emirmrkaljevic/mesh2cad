@@ -13,7 +13,8 @@ from mesh2cad.openscad_code import check, render_mesh, to_openscad  # noqa: E402
 from mesh2cad.parametric import Unsupported  # noqa: E402
 from parts import (boss, chamfered_boss, countersunk_plate, cube, filleted_box,  # noqa: E402
                    filleted_bracket, filleted_plate, plate_with_hole, ribbed_plate,
-                   rounded_box, rounded_box_with_hole, spherical_dome, stepped_block,
+                   rounded_box, rounded_box_with_boss, rounded_box_with_hole,
+                   spherical_dome, stepped_block,
                    tapered_boss, to_mesh)
 
 needs_openscad = pytest.mark.skipif(shutil.which("openscad") is None, reason="openscad is not installed")
@@ -234,6 +235,35 @@ def test_hole_on_a_filleted_box(sigma, seed):
     assert "cylinder(h=base_t + 2, d=hole_1_d);" in code
     assert code.index("sphere(r=edge_fillet_r);") < code.index("cylinder(h=base_t + 2, d=hole_1_d);")
     assert "difference()" in code
+
+
+def _bossed_fillet(sigma, seed):
+    ref = to_mesh(rounded_box_with_boss(), tol=0.1, ang=0.4, max_edge=2.5)
+    tol = max(sigma, 0.01)
+    mesh = add_noise(ref, sigma, seed=seed) if sigma else ref
+    return mesh, tol
+
+
+@needs_openscad
+@pytest.mark.parametrize("seed", [0, 1, 2])
+@pytest.mark.parametrize("sigma", [0.0, 0.05, 0.2])
+def test_boss_on_a_filleted_box(sigma, seed):
+    mesh, tol = _bossed_fillet(sigma, seed)
+    res = convert_mesh(mesh, tol=tol, with_report=False)
+    code, q = to_openscad(res.mesh, res.regions, res.tol)
+    assert q["max_deviation"] <= max(4 * tol, 0.1)
+    assert q["volume_error_pct"] <= 1.0
+    params = _params(code)
+    assert params["edge_fillet_r"] == pytest.approx(2.5, abs=0.25)
+    assert params["boss_1_d"] == pytest.approx(10.0, abs=0.05)
+    assert params["boss_1_h"] == pytest.approx(6.0, abs=0.05)
+    assert params["base_x"] == pytest.approx(40.0, abs=0.5)
+    assert params["base_y"] == pytest.approx(30.0, abs=0.5)
+    assert params["base_t"] == pytest.approx(20.0, abs=0.5)
+    assert "sphere(r=edge_fillet_r);" in code
+    assert "cylinder(h=boss_1_h, d=boss_1_d);" in code
+    assert code.index("sphere(r=edge_fillet_r);") < code.index("cylinder(h=boss_1_h, d=boss_1_d);")
+    assert "union()" in code
 
 
 def test_bracket_fillet_is_not_a_box_script():
