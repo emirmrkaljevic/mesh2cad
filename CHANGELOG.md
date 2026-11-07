@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.23.0 - 2026-11-07
+
+- A rectangular box with every edge filleted (`edge_fillet_r`) can also carry a straight boss on its top face whose wall clears the rounds. The eight corner spheres stay part of that radius. CadQuery fillets the box and then fuses the cylinder. OpenSCAD adds the cylinder after the filleted-box union. FreeCAD calls `makeFillet` and then fuses the cylinder. The boss is `boss_1_d`, `boss_1_h`, `boss_1_x`, and `boss_1_y`, and `mesh2cad edit`, `mesh2cad params`, and the MCP tools `list_params` / `edit_params` list and edit them. An edit that collapses the box is refused and nothing is written.
+- On the synthetic 40×30×20 mm box with r=2.5 mm and a centered Ø10 boss 6 mm tall (refused in 0.22.0), CadQuery and OpenSCAD write the script on 3 of 3 seeds at 0, 0.05, and 0.2 mm noise. The gate is unchanged: max deviation at most max(4·tol, 0.1), volume error at most 1%.
+- With no noise the limit is 0.100 mm. `edge_fillet_r` fits as 2.52 and `boss_1_d` as 9.98. CadQuery deviates by 0.0253 mm (volume error 0.016%) and OpenSCAD by 0.0243 mm (0.014%).
+- At 0.05 mm the limit is 0.200 mm, with `edge_fillet_r` 2.5 and `boss_1_d` 10.0. The worst is seed 2: CadQuery 0.1704 mm (volume error 0.202%), OpenSCAD 0.1574 mm (0.204%).
+- At 0.2 mm the limit is 0.800 mm. `boss_1_d` is 10.0 and `boss_1_h` 6.0, but the fitted radius drifts to 2.57 to 2.65 mm, so `edge_fillet_r` is written as 2.6 or 2.7 instead of 2.5. The worst is seed 2: CadQuery 0.6589 mm (volume error 0.121%), OpenSCAD 0.6589 mm (0.123%).
+- FreeCAD writes the macro (fillet, then fuse). `freecadcmd` was not on PATH for this measurement, so the FreeCAD deviation is not reported; the macro text is checked.
+- A boss that does not clear the edge rounds is not written as this feature. A free sphere and the filleted L-bracket are still refused, and a torus fillet whose axis is not Z is still refused.
+
 ## 0.22.0 - 2026-11-06
 
 - A rectangular box with every edge filleted (`edge_fillet_r`) can also carry an axis-aligned through-hole whose wall clears the rounds. The eight corner spheres stay part of that radius. CadQuery fillets the box and then cuts the hole. OpenSCAD subtracts the cylinder from the filleted-box union. FreeCAD calls `makeFillet` and then cuts the cylinder. `mesh2cad edit`, `mesh2cad params`, and the MCP tools `list_params` / `edit_params` still list and edit `edge_fillet_r` and `hole_1_d`. An edit that collapses the box, or a hole larger than the wall, is refused and nothing is written.
