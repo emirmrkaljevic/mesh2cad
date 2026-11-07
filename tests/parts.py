@@ -93,6 +93,16 @@ def rounded_box_with_hole():
     return cq.Workplane().box(40, 30, 20).edges().fillet(3).faces(">Z").workplane().hole(8)
 
 
+def rounded_box_with_boss():
+    """40×30×20 box, every edge filleted at r=2.5, with an Ø10 boss, 6 tall, on top.
+
+    The boss is centered and its wall clears the rounds. The corner spheres stay
+    the fillet; the boss is fused after the box is filleted.
+    """
+    return (cq.Workplane().box(40, 30, 20).edges().fillet(2.5)
+            .faces(">Z").workplane().circle(5).extrude(6))
+
+
 def side_hole_boss():
     """60×40×36 block with three side features.
 

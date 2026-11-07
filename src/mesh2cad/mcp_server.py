@@ -65,7 +65,8 @@ def to_cadquery(input_path: str, output_path: str | None = None, tol: float | No
     bosses along X, Y, or Z (straight, and drafted or chamfered when the axis
     is vertical), fillet_r on the four vertical corners, edge_fillet_r when
     every edge of the box shares one radius (a through-hole that clears those
-    rounds is cut after the fillet), a fillet at the base of a vertical
+    rounds is cut after the fillet, and a straight boss that clears them is
+    fused after it), a fillet at the base of a vertical
     boss (boss_N_fillet), a
     round on a vertical hole rim (hole_N_rim_r, hole_N_bot_rim_r) and a
     blind-hole floor fillet (hole_N_floor_r), a straight extrusion of a 2D
@@ -94,7 +95,8 @@ def to_openscad(input_path: str, output_path: str | None = None, tol: float | No
     bosses along X, Y, or Z (countersink, draft, and chamfer only when the axis
     is vertical), one radius on the four vertical corners, edge_fillet_r when
     every edge of the box shares one radius (a through-hole that clears those
-    rounds is cut after the fillet), a quarter-torus
+    rounds is cut after the fillet, and a straight boss that clears them is
+    fused after it), a quarter-torus
     fillet on a vertical boss or hole (boss_N_fillet, hole_N_rim_r,
     hole_N_floor_r), a straight extrusion of a 2D outline, and a small boolean
     of those extrusions. Parameter names match the CadQuery script
@@ -121,7 +123,8 @@ def to_freecad(input_path: str, output_path: str | None = None, tol: float | Non
     bosses along X, Y, or Z (countersink, draft, and chamfer only when the axis
     is vertical), one radius on the four vertical corners, edge_fillet_r when
     every edge of the box shares one radius (a through-hole that clears those
-    rounds is cut after the fillet), a quarter-torus
+    rounds is cut after the fillet, and a straight boss that clears them is
+    fused after it), a quarter-torus
     fillet on a vertical boss or hole (boss_N_fillet, hole_N_rim_r,
     hole_N_floor_r), a straight extrusion of a 2D outline, and a small boolean
     of those extrusions. Parameter names match the CadQuery script
