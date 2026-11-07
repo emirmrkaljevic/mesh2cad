@@ -6,7 +6,8 @@ Part API: ``makeBox`` / ``makeCylinder`` / ``makeCone``, a polygon extruded
 along X, Y, or Z, ``fuse`` / ``cut`` / ``common``, and ``makeFillet`` for the
 one vertical corner radius, for every edge of a rectangular box
 (``edge_fillet_r``; a through-hole that clears those rounds is cut after
-``makeFillet``), and for a quarter-torus fillet on a vertical boss
+``makeFillet``, and a straight boss that clears them is fused after it),
+and for a quarter-torus fillet on a vertical boss
 or hole (``boss_N_fillet``, ``hole_N_rim_r``, ``hole_N_bot_rim_r``,
 ``hole_N_floor_r``). A part that is a few extrusions (their
 intersection, a union of partial-depth extrusions, or one minus cuts along

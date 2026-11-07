@@ -7,7 +7,8 @@ Y), ``difference`` / ``union``, and ``offset`` for the one vertical corner
 radius. A box with all twelve edges filleted at one radius is the sharp
 box with cylinders along the edges and spheres at the corners, sized by
 ``edge_fillet_r``. A through-hole that clears those rounds is subtracted
-after that union. A quarter-torus fillet on a vertical boss or hole is a revolved
+after that union. A straight boss that clears them is added after that union.
+A quarter-torus fillet on a vertical boss or hole is a revolved
 square-minus-quarter-circle: ``boss_N_fillet`` added at the base of a boss,
 ``hole_N_rim_r`` and ``hole_N_bot_rim_r`` cut from a hole rim, and
 ``hole_N_floor_r`` added back where a blind floor meets the wall. A straight
