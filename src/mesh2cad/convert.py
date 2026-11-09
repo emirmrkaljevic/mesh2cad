@@ -184,9 +184,12 @@ def freecad_file(src: str, dst: str, tol: float | None = None, **kw) -> dict:
     """Write an editable parametric FreeCAD macro for a simple part.
 
     Raises ``mesh2cad.parametric.Unsupported`` when the part is outside the
-    box/plate and straight-extrusion vocabulary, or when ``freecadcmd`` is
-    installed and the solid does not match the mesh. If ``freecadcmd`` is not
-    on ``PATH`` the file is still written and ``verified`` is false.
+    box/plate and straight-extrusion vocabulary, or when the solid does not
+    match the mesh. ``freecadcmd`` does that comparison when it is on
+    ``PATH``. Otherwise CadQuery, or OpenSCAD when CadQuery is not installed,
+    applies the same deviation and volume limits. The file is written only
+    when that check passes, and ``verified`` stays false because FreeCAD
+    itself did not run.
     """
     from pathlib import Path
 

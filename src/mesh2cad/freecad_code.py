@@ -18,8 +18,11 @@ boolean. Every dimension is a named parameter at the top of the file
 (``hole_1_d = 6.0``).
 
 When ``freecadcmd`` is on ``PATH``, the macro is executed and the solid is
-compared with the input mesh. Without that program the macro is still
-returned, with no check. FreeCAD is not a package dependency.
+compared with the input mesh. Without that program the same deviation and
+volume gate is applied to the CadQuery script, or to the OpenSCAD script
+when CadQuery is not installed. The macro is returned only when that check
+passes, and it is not a FreeCAD measurement. FreeCAD is not a package
+dependency.
 """
 from __future__ import annotations
 
@@ -650,16 +653,46 @@ def check(code: str, m: trimesh.Trimesh, work: Path, n: int = 4000) -> dict:
             "volume_error_pct": float(100.0 * abs(vo - vm) / vm) if vm else float("inf")}
 
 
+def _proxy_gate(m: trimesh.Trimesh, regions, tol: float) -> None:
+    """Same deviation and volume gate, measured by another backend.
+
+    CadQuery is used when it is installed. Otherwise OpenSCAD is used when
+    ``openscad`` is on ``PATH``. Neither measurement is a FreeCAD result.
+    When neither can run, there is nothing to compare and the caller keeps
+    the unverified macro.
+    """
+    try:
+        import cadquery  # noqa: F401
+    except ImportError:
+        cadquery_ok = False
+    else:
+        cadquery_ok = True
+    if cadquery_ok:
+        from .cadquery_code import to_cadquery
+        to_cadquery(m, regions, tol)
+        return
+    from .openscad_code import openscad_bin, to_openscad
+    if openscad_bin() is None:
+        return
+    to_openscad(m, regions, tol)
+
+
 def to_freecad(m: trimesh.Trimesh, regions, tol: float, source: str | None = None,
                verify: bool = True) -> tuple[str, dict | None]:
     """Generate the macro. When ``verify`` and ``freecadcmd`` is installed, run
     it and raise :class:`Unsupported` if it does not reproduce the mesh.
 
-    Returns ``(code, None)`` when FreeCAD is not available: the macro is still
-    produced, and the caller reports it as unverified.
+    When FreeCAD is not available and ``verify`` is set, CadQuery or OpenSCAD
+    runs that same check. A miss on deviation or volume raises
+    :class:`Unsupported` and the macro is not returned. A pass still returns
+    ``(code, None)``: ``freecadcmd`` did not measure the macro, so the caller
+    reports it unverified.
     """
     code = render(recognize(m, regions, tol), tol=tol, source=source)
-    if not verify or freecad_bin() is None:
+    if not verify:
+        return code, None
+    if freecad_bin() is None:
+        _proxy_gate(m, regions, tol)
         return code, None
     try:
         with tempfile.TemporaryDirectory(prefix="mesh2cad-fc-") as d:

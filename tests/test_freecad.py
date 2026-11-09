@@ -463,6 +463,20 @@ def test_bracket_fillet_matches_the_mesh(sigma, seed):
     assert "result.makeFillet(fillet_r, _fillet_edges)" in code
 
 
+def test_bracket_seed_refused_without_freecad(tmp_path, monkeypatch):
+    """0.05 mm seed 1 misses the deviation gate. No macro when freecadcmd is absent."""
+    monkeypatch.setattr("mesh2cad.freecad_code.freecad_bin", lambda: None)
+    mesh, tol = _bracket_mesh(0.05, 1)
+    res = convert_mesh(mesh, tol=tol, with_report=False)
+    with pytest.raises(Unsupported, match="deviates by"):
+        to_freecad(res.mesh, res.regions, res.tol)
+    stl = tmp_path / "b.stl"
+    mesh.export(stl)
+    out = tmp_path / "b.FCMacro"
+    assert main(["convert", str(stl), "--freecad", str(out), "--tol", str(tol)]) == 2
+    assert not out.exists()
+
+
 def test_unsupported_part():
     res = convert_mesh(to_mesh(spherical_dome()), tol=0.01, with_report=False)
     with pytest.raises(Unsupported):

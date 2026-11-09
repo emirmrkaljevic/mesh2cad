@@ -134,8 +134,11 @@ def to_freecad(input_path: str, output_path: str | None = None, tol: float | Non
     (hole_1_d, boss_1_h, fillet_r, edge_fillet_r, leg_x, boss_1_fillet, extrude_len, ...). Edit one and run the
     macro in FreeCAD, or with freecadcmd. Returns the parameters, whether
     freecadcmd verified the macro against the mesh, and the measured deviation
-    when it did. Without freecadcmd the macro is still written and verified
-    is false. Returns an "error" key when the part is outside that vocabulary.
+    when it did. Without freecadcmd the same deviation and volume check is
+    run with CadQuery, or with OpenSCAD when CadQuery is not installed. The
+    macro is written only when that check passes, and verified is false
+    because FreeCAD did not measure it. Returns an "error" key when the part
+    is outside that vocabulary or the check refuses.
     """
     from .convert import freecad_file
     from .parametric import Unsupported
