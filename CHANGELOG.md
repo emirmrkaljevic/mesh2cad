@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Parametric CadQuery, OpenSCAD, and FreeCAD export write an L-bracket extruded along Z when every vertical edge, including the inner corner, shares one radius. The parameters are `fillet_r`, the outer sizes `base_x`, `base_y`, and `base_t`, and the leg thicknesses `leg_x` and `leg_y`. CadQuery extrudes the L and calls `.edges("|Z").fillet(fillet_r)`. OpenSCAD rounds the same profile with `offset`, outer corners and the inner corner. FreeCAD extrudes the polygon and calls `makeFillet` on the edges parallel to Z. `mesh2cad edit`, `mesh2cad params`, and the MCP tools `list_params` / `edit_params` list and edit those numbers. An edit that makes the vertical rounds meet, or a leg that is no longer thinner than the outer size, is refused and nothing is written.
+- On the synthetic bracket (outer 40×30 mm, legs 8 mm, height 12 mm, r=3 mm) CadQuery and OpenSCAD write the script on 3 of 3 seeds with no noise and on 2 of 3 at 0.05 mm. The gate is unchanged: max deviation at most max(4·tol, 0.1), volume error at most 1%.
+- With no noise the limit is 0.100 mm. `fillet_r` is 3.0, `base_x` 40, `base_y` 30, `base_t` 12, `leg_x` 8, and `leg_y` 8. CadQuery deviates by 0.0036 mm (volume error 0.007%) and OpenSCAD by 0.0032 mm (0.005%).
+- At 0.05 mm the limit is 0.200 mm. Seeds 0 and 2 are written, with `fillet_r` 3.0. Seed 0 fits `base_x` as 39.9. The worst of those is seed 0: CadQuery 0.1788 mm (volume error 0.141%), OpenSCAD 0.1787 mm (0.143%). Seed 2 is CadQuery 0.1696 mm (0.013%) and OpenSCAD 0.1701 mm (0.015%). Seed 1 is refused at 0.209 mm on CadQuery and 0.213 mm on OpenSCAD (volume error 0.07% on both).
+- At 0.2 mm the limit is 0.800 mm and the fit is not six vertical fillets, so nothing is written. Seed 0 is refused with "curved surface whose axis is not aligned with X, Y or Z", seed 1 with "boss does not start on the top face", and seed 2 with "fillet is not the four vertical corners of a rectangular base".
+- FreeCAD writes the macro. `freecadcmd` was not on PATH for this measurement, so the FreeCAD deviation is not reported; the macro text is checked. Without `freecadcmd` the gate is not applied, so a fit the other backends refuse on deviation is still emitted unverified.
+- A sharp L with no fillets stays an outline. A rectangular plate keeps `fillet_r` on its four vertical corners, and a fully filleted box keeps `edge_fillet_r`. Prusa script deviations are unchanged. A free sphere is still refused.
+
 ## 0.23.0 - 2026-11-07
 
 - A rectangular box with every edge filleted (`edge_fillet_r`) can also carry a straight boss on its top face whose wall clears the rounds. The eight corner spheres stay part of that radius. CadQuery fillets the box and then fuses the cylinder. OpenSCAD adds the cylinder after the filleted-box union. FreeCAD calls `makeFillet` and then fuses the cylinder. The boss is `boss_1_d`, `boss_1_h`, `boss_1_x`, and `boss_1_y`, and `mesh2cad edit`, `mesh2cad params`, and the MCP tools `list_params` / `edit_params` list and edit them. An edit that collapses the box is refused and nothing is written.

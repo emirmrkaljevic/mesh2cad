@@ -7,6 +7,8 @@ along X, Y, or Z, ``fuse`` / ``cut`` / ``common``, and ``makeFillet`` for the
 one vertical corner radius, for every edge of a rectangular box
 (``edge_fillet_r``; a through-hole that clears those rounds is cut after
 ``makeFillet``, and a straight boss that clears them is fused after it),
+for an L-bracket whose vertical edges, including the inner corner, share
+one radius (``fillet_r``, with ``leg_x`` and ``leg_y``),
 and for a quarter-torus fillet on a vertical boss
 or hole (``boss_N_fillet``, ``hole_N_rim_r``, ``hole_N_bot_rim_r``,
 ``hole_N_floor_r``). A part that is a few extrusions (their
@@ -33,9 +35,9 @@ import trimesh
 from .csg import _OVERLAP, _fmt_py, _grown_expr, _hole_limits, _names, _param_rows
 from .extrude import (profile_cbore_cutter, profile_cutter, profile_parameters,
                       profile_point_lists)
-from .parametric import (Unsupported, axis_point_expr, boss_span, cbore_cut_span,
-                         chamfer_is_square, deviation_problem, hole_cut_span,
-                         named_parameters, recognize)
+from .parametric import (Unsupported, axis_point_expr, boss_span, bracket_parameters,
+                         bracket_profile_exprs, cbore_cut_span, chamfer_is_square,
+                         deviation_problem, hole_cut_span, named_parameters, recognize)
 from .report import deviation
 
 __all__ = ["Unsupported", "check", "freecad_bin", "render", "render_mesh", "to_freecad"]
@@ -556,8 +558,36 @@ def _render_csg(feats: dict, tol: float, source: str | None) -> str:
     return _finish(_head(source), _number_lines(numbers, lists), helpers, body)
 
 
+def _offset_expr(origin: str, term: str) -> str:
+    if term == "0":
+        return origin
+    if term.startswith("-"):
+        return f"{origin} - {term[1:]}"
+    return f"{origin} + {term}"
+
+
+def _render_bracket(feats: dict, tol: float, source: str | None) -> str:
+    b = feats["bracket"]
+    pts = bracket_profile_exprs(int(b["sx"]), int(b["sy"]))
+    vecs = [
+        f"App.Vector({_offset_expr('base_x0', x)}, {_offset_expr('base_y0', y)}, base_z0)"
+        for x, y in pts
+    ]
+    vecs.append(vecs[0])
+    body = ["_pts = ["]
+    body.extend(f"    {v}," for v in vecs)
+    body.extend([
+        "]",
+        "result = Part.Face(Part.makePolygon(_pts)).extrude(App.Vector(0, 0, base_t))",
+    ])
+    body.extend(_fillet_lines())
+    return _finish(_head(source), _number_lines(bracket_parameters(feats, tol), []), [], body)
+
+
 def render(feats: dict, tol: float = 0.01, source: str | None = None) -> str:
     """Turn a feature dict into a FreeCAD macro with named parameters."""
+    if "bracket" in feats:
+        return _render_bracket(feats, tol, source)
     if "csg" in feats:
         return _render_csg(feats, tol, source)
     if "profile" in feats:
