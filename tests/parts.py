@@ -233,10 +233,42 @@ def angled_hole():
     return cq.Workplane(obj=block.cut(cut))
 
 
-def filleted_bracket():
+def _filleted_bracket_solid():
     """L-bracket extruded 12 mm; every vertical edge, including the inner corner, at r=3."""
     return (cq.Workplane("XY").polyline([(0, 0), (40, 0), (40, 8), (8, 8), (8, 30), (0, 30)])
             .close().extrude(12).edges("|Z").fillet(3))
+
+
+def filleted_bracket():
+    """L-bracket extruded 12 mm; every vertical edge, including the inner corner, at r=3."""
+    return _filleted_bracket_solid()
+
+
+def _cut_z_hole(part, x, y, radius=2.0):
+    """Ø``2*radius`` hole through the extrusion, centred at ``(x, y)``."""
+    cutter = cq.Solid.makeCylinder(radius, 24.0, cq.Vector(x, y, -6.0), cq.Vector(0, 0, 1))
+    return part.cut(cq.Workplane().add(cutter))
+
+
+def filleted_bracket_holes(base=True, leg=True):
+    """Filleted L with Ø4 through-holes in the foot and/or the upright.
+
+    The foot hole is at (24, 4). The upright hole is at (4, 19). Both run
+    through the 12 mm height and stay clear of the r=3 vertical rounds.
+    """
+    part = _filleted_bracket_solid()
+    if base:
+        part = _cut_z_hole(part, 24.0, 4.0)
+    if leg:
+        part = _cut_z_hole(part, 4.0, 19.0)
+    return part
+
+
+def filleted_bracket_two_base_holes():
+    """Filleted L with two Ø4 holes in the foot, at x=18 and x=30, y=4."""
+    part = _filleted_bracket_solid()
+    part = _cut_z_hole(part, 18.0, 4.0)
+    return _cut_z_hole(part, 30.0, 4.0)
 
 
 def filleted_boss():

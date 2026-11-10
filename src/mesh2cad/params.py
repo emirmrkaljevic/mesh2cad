@@ -28,6 +28,7 @@ _MARKERS = (
 _ASSIGN = re.compile(r"^[ \t]*(?P<name>[A-Za-z_][A-Za-z0-9_]*)[ \t]*=[ \t]*")
 _NUMBER = re.compile(r"[+-]?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][+-]?\d+)?")
 _HOLE_D = re.compile(r"hole_(\d+)_d\Z")
+_MEMBER_HOLE_D = re.compile(r"(base_hole|leg_hole)_(\d+)_d\Z")
 _EXTRUDE_LEN = re.compile(r"extrude_([xyz])(\d*)_len\Z")
 _FACE = {"X": "yz", "Y": "xz", "Z": "xy"}
 _PLANE_AXIS = {"XY": "Z", "XZ": "Y", "YZ": "X"}
@@ -455,7 +456,7 @@ def _classify(name: str, note: str, value) -> tuple[str, str | None]:
     if "angle" in name or name.endswith("_deg"):
         return "angle", "deg"
     if (name in ("base_cx", "base_cy", "base_z0") or name.endswith("_0")
-            or re.fullmatch(r"(?:hole|boss|pad|cone)_\d+_[xyz]", name)
+            or re.fullmatch(r"(?:base_hole|leg_hole|hole|boss|pad|cone)_\d+_[xyz]", name)
             or re.fullmatch(r"hole_\d+_[xyz][01]", name)):
         return "position", "mm"
     if name.endswith("_depth"):
@@ -712,6 +713,15 @@ def _check_holes(scalars, notes, solids, mode: str) -> None:
             if extra is not None and extra > 0:
                 _require_fit(key, diameter / 2.0 + extra, axis, uv, solids, mode,
                              label=f"{key} past the hole wall")
+    for name, value in scalars.items():
+        matched = _MEMBER_HOLE_D.fullmatch(name)
+        if not matched:
+            continue
+        prefix = f"{matched.group(1)}_{matched.group(2)}"
+        if f"{prefix}_x" not in scalars or f"{prefix}_y" not in scalars:
+            continue
+        _require_fit(name, value / 2.0, "Z", (scalars[f"{prefix}_x"], scalars[f"{prefix}_y"]),
+                     solids, mode)
 
 
 def _require_fit(name: str, radius: float, axis: str, uv, solids, mode: str, label: str | None = None) -> None:
@@ -757,6 +767,9 @@ def _solids(script: Script, scalars: dict[str, float]) -> tuple[list[_Extrusion]
     by = {p.name: p for p in script.parameters}
     if all(key in scalars for key in ("base_x", "base_y", "base_t", "base_cx", "base_cy", "base_z0")):
         return [_box(scalars)], "single"
+    if all(key in scalars for key in (
+            "base_x", "base_y", "base_t", "base_x0", "base_y0", "base_z0", "leg_x", "leg_y")):
+        return [_bracket_solid(scalars, script.model)], "single"
     if ("extrude_len" in scalars and "outline" in by and _is_points(by["outline"].value)):
         axis = _axis_from_note(by["outline"].note) or "Z"
         return [_from_outline(axis, scalars.get("extrude_0", 0.0), scalars["extrude_len"], by["outline"].value)], "single"
@@ -777,6 +790,37 @@ def _solids(script: Script, scalars: dict[str, float]) -> tuple[list[_Extrusion]
 
 def _is_points(value) -> bool:
     return isinstance(value, list) and bool(value) and isinstance(value[0], list)
+
+
+def _bracket_signs(model: str) -> tuple[int, int]:
+    """+1 or -1 for each leg, from the profile the script actually writes.
+
+    A negative foot is ``-base_x`` in CadQuery and OpenSCAD, and
+    ``base_x0 - base_x`` in FreeCAD. The same for ``base_y``.
+    """
+    sx = -1 if re.search(r"-\s*base_x\b", model) else 1
+    sy = -1 if re.search(r"-\s*base_y\b", model) else 1
+    return sx, sy
+
+
+def _bracket_solid(scalars: dict[str, float], model: str) -> _Extrusion:
+    """The sharp L, in world coordinates, so a mounting hole can be checked."""
+    sx, sy = _bracket_signs(model)
+    x0, y0 = scalars["base_x0"], scalars["base_y0"]
+    base_x, base_y = scalars["base_x"], scalars["base_y"]
+    leg_x, leg_y = scalars["leg_x"], scalars["leg_y"]
+    local = (
+        (0.0, 0.0),
+        (base_x, 0.0),
+        (base_x, leg_y),
+        (leg_x, leg_y),
+        (leg_x, base_y),
+        (0.0, base_y),
+    )
+    if sx * sy < 0:
+        local = tuple(reversed(local))
+    outline = [[x0 + sx * u, y0 + sy * v] for u, v in local]
+    return _Extrusion("Z", scalars["base_z0"], scalars["base_t"], outline, "xy")
 
 
 def _box(scalars: dict[str, float]) -> _Extrusion:
