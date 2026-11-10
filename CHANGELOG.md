@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.24.0 - 2026-11-10
 
 - Parametric CadQuery, OpenSCAD, and FreeCAD export write an L-bracket extruded along Z when every vertical edge, including the inner corner, shares one radius. The parameters are `fillet_r`, the outer sizes `base_x`, `base_y`, and `base_t`, and the leg thicknesses `leg_x` and `leg_y`. CadQuery extrudes the L and calls `.edges("|Z").fillet(fillet_r)`. OpenSCAD rounds the same profile with `offset`, outer corners and the inner corner. FreeCAD extrudes the polygon and calls `makeFillet` on the edges parallel to Z. `mesh2cad edit`, `mesh2cad params`, and the MCP tools `list_params` / `edit_params` list and edit those numbers. An edit that makes the vertical rounds meet, or a leg that is no longer thinner than the outer size, is refused and nothing is written.
 - On the synthetic bracket (outer 40×30 mm, legs 8 mm, height 12 mm, r=3 mm) CadQuery and OpenSCAD write the script on 3 of 3 seeds with no noise and on 2 of 3 at 0.05 mm. The gate is unchanged: max deviation at most max(4·tol, 0.1), volume error at most 1%.
