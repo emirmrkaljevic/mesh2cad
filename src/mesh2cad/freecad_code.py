@@ -8,7 +8,9 @@ one vertical corner radius, for every edge of a rectangular box
 (``edge_fillet_r``; a through-hole that clears those rounds is cut after
 ``makeFillet``, and a straight boss that clears them is fused after it),
 for an L-bracket whose vertical edges, including the inner corner, share
-one radius (``fillet_r``, with ``leg_x`` and ``leg_y``),
+one radius (``fillet_r``, with ``leg_x`` and ``leg_y``; a through-hole in
+the foot or the upright is cut after that fillet, ``base_hole_N_d`` /
+``leg_hole_N_d``),
 and for a quarter-torus fillet on a vertical boss
 or hole (``boss_N_fillet``, ``hole_N_rim_r``, ``hole_N_bot_rim_r``,
 ``hole_N_floor_r``). A part that is a few extrusions (their
@@ -40,7 +42,8 @@ from .extrude import (profile_cbore_cutter, profile_cutter, profile_parameters,
                       profile_point_lists)
 from .parametric import (Unsupported, axis_point_expr, boss_span, bracket_parameters,
                          bracket_profile_exprs, cbore_cut_span, chamfer_is_square,
-                         deviation_problem, hole_cut_span, named_parameters, recognize)
+                         deviation_problem, hole_cut_span, iter_bracket_holes,
+                         named_parameters, recognize)
 from .report import deviation
 
 __all__ = ["Unsupported", "check", "freecad_bin", "render", "render_mesh", "to_freecad"]
@@ -584,6 +587,11 @@ def _render_bracket(feats: dict, tol: float, source: str | None) -> str:
         "result = Part.Face(Part.makePolygon(_pts)).extrude(App.Vector(0, 0, base_t))",
     ])
     body.extend(_fillet_lines())
+    for name, _hole in iter_bracket_holes(feats):
+        body.append(
+            f"result = result.cut(Part.makeCylinder({name}_d / 2, base_t + 2, "
+            f"App.Vector({name}_x, {name}_y, base_z0 - 1), App.Vector(0, 0, 1)))"
+        )
     return _finish(_head(source), _number_lines(bracket_parameters(feats, tol), []), [], body)
 
 
