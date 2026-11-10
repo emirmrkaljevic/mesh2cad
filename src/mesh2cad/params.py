@@ -615,6 +615,27 @@ def _check_boss(name: str, value: float, scalars: dict[str, float]) -> None:
 
 
 def _check_features(scalars: dict[str, float]) -> None:
+    if all(k in scalars for k in ("fillet_r", "leg_x", "leg_y", "base_x", "base_y")):
+        leg_x, leg_y = scalars["leg_x"], scalars["leg_y"]
+        base_x, base_y = scalars["base_x"], scalars["base_y"]
+        if leg_x >= base_x - 1e-9:
+            raise GeometryError(
+                f"leg_x={format_number(leg_x)} is at least base_x "
+                f"({format_number(base_x)} mm), so the upright is not an L"
+            )
+        if leg_y >= base_y - 1e-9:
+            raise GeometryError(
+                f"leg_y={format_number(leg_y)} is at least base_y "
+                f"({format_number(base_y)} mm), so the foot is not an L"
+            )
+        # A fillet on both ends of an edge needs the edge longer than 2r.
+        # The short edges are the two thicknesses and the two inner walls.
+        limit = min(leg_x, leg_y, base_x - leg_x, base_y - leg_y) / 2.0
+        if scalars["fillet_r"] >= limit - 1e-9:
+            raise GeometryError(
+                f"fillet_r={format_number(scalars['fillet_r'])} is at least half the shortest "
+                f"edge of the bracket ({format_number(limit)} mm), so the vertical rounds meet"
+            )
     if "fillet_r" in scalars and "base_x" in scalars and "base_y" in scalars:
         limit = min(scalars["base_x"], scalars["base_y"]) / 2.0
         if scalars["fillet_r"] >= limit - 1e-9:
