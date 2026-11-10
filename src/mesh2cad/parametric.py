@@ -15,7 +15,10 @@ Supported parts:
   ``hole_N_floor_r`` where a blind-hole floor meets the wall, and an L-bracket
   extruded along Z whose vertical edges, including the inner corner, share one
   radius (``fillet_r``, with outer sizes ``base_x`` / ``base_y`` / ``base_t``
-  and leg thicknesses ``leg_x`` / ``leg_y``);
+  and leg thicknesses ``leg_x`` / ``leg_y``), plus round through-holes in the
+  foot (``base_hole_N_d``, ``base_hole_N_x``, ``base_hole_N_y``) and the
+  upright (``leg_hole_N_d``, ``leg_hole_N_x``, ``leg_hole_N_y``) when the
+  circle stays in that member and clears the vertical rounds;
 * a straight extrusion of a 2D outline along X, Y, or Z, including a polygonal
   through-opening in that outline and round through-holes;
 * a counterbored through-hole (a larger cylinder opening on one face, the
@@ -1359,10 +1362,19 @@ def bracket_profile_exprs(sx: int, sy: int) -> list[tuple[str, str]]:
     return pts
 
 
+def iter_bracket_holes(feats: dict):
+    """``(name, hole)`` for mounting holes, foot first, then the upright."""
+    b = feats["bracket"]
+    for i, hole in enumerate(b.get("base_holes") or (), 1):
+        yield f"base_hole_{i}", hole
+    for i, hole in enumerate(b.get("leg_holes") or (), 1):
+        yield f"leg_hole_{i}", hole
+
+
 def bracket_parameters(feats: dict, tol: float = 0.01) -> list[tuple[str, float, str]]:
     """``(name, value, note)`` for a filleted L-bracket."""
     b = feats["bracket"]
-    rows = (
+    rows = [
         ("base_x", b["x"], "outer length along X"),
         ("base_y", b["y"], "outer length along Y"),
         ("base_t", b["t"], "height along Z"),
@@ -1372,7 +1384,12 @@ def bracket_parameters(feats: dict, tol: float = 0.01) -> list[tuple[str, float,
         ("base_x0", b["x0"], "heel position along X"),
         ("base_y0", b["y0"], "heel position along Y"),
         ("base_z0", b["z0"], "bottom face height"),
-    )
+    ]
+    for name, hole in iter_bracket_holes(feats):
+        where = "foot" if name.startswith("base_") else "upright"
+        rows.append((f"{name}_d", hole["d"], f"diameter, through the {where}"))
+        rows.append((f"{name}_x", hole["x"], ""))
+        rows.append((f"{name}_y", hole["y"], ""))
     return [(name, _nice(val, tol), note) for name, val, note in rows]
 
 
@@ -1400,11 +1417,221 @@ def _axis_ok(normal) -> int | None:
     return int(np.argmax(n))
 
 
+def _split_bracket_cylinders(m, cyls):
+    """Six vertical fillets, plus Z cylinders that could be through-holes.
+
+    Returns ``(None, None)`` when a cylinder is neither a fillet arc nor a
+    hole wall. The caller still requires exactly six fillets.
+    """
+    fillets = []
+    holes = []
+    for r in cyls:
+        s = r.surface
+        axis = np.asarray(s.axis, float)
+        axis = axis / max(float(np.linalg.norm(axis)), 1e-12)
+        span = _partial_span(m, s, r.faces)
+        if span is None:
+            return None, None
+        vertical = abs(abs(float(axis @ Z)) - 1.0) <= 0.02
+        if vertical and np.radians(50.0) <= span <= np.radians(140.0):
+            fillets.append(r)
+            continue
+        if _loose_axis(s.axis) == 2 and span > np.radians(140.0):
+            holes.append(r)
+            continue
+        return None, None
+    if len(fillets) != 6:
+        return None, None
+    return fillets, holes
+
+
+def _ray_inside_poly(poly, x: float, y: float) -> bool:
+    inside = False
+    j = len(poly) - 1
+    for i, (xi, yi) in enumerate(poly):
+        xj, yj = poly[j]
+        if (yi > y) != (yj > y):
+            cross = (xj - xi) * (y - yi) / ((yj - yi) or 1e-30) + xi
+            if x < cross:
+                inside = not inside
+        j = i
+    return inside
+
+
+def _bracket_member(lx, ly, radius, base_x, base_y, leg_x, leg_y, med, tol) -> str | None:
+    """``base`` or ``leg`` when the circle sits in that member and clears the rounds.
+
+    A circle in the corner square is inside both members. That hole is named
+    with the foot. A circle that crosses from the exclusive foot into the
+    exclusive upright is neither.
+    """
+    poly = (
+        (0.0, 0.0),
+        (float(base_x), 0.0),
+        (float(base_x), float(leg_y)),
+        (float(leg_x), float(leg_y)),
+        (float(leg_x), float(base_y)),
+        (0.0, float(base_y)),
+    )
+    pad = max(2.0 * tol, 0.15)
+    test_r = max(0.0, float(radius) - pad)
+    if not _ray_inside_poly(poly, lx, ly):
+        return None
+    for k in range(24):
+        ang = 2.0 * math.pi * k / 24.0
+        if not _ray_inside_poly(poly, lx + test_r * math.cos(ang), ly + test_r * math.sin(ang)):
+            return None
+    # Outer fillets sit inside the sharp L. The inner fillet's centre is in
+    # the notch, so a circle inside the sharp outline does not meet it.
+    need = float(med) + float(radius) - max(4.0 * tol, 0.35)
+    outers = (
+        (med, med),
+        (base_x - med, med),
+        (base_x - med, leg_y - med),
+        (med, base_y - med),
+        (leg_x - med, base_y - med),
+    )
+    for fx, fy in outers:
+        if math.hypot(lx - fx, ly - fy) < need:
+            return None
+
+    def in_rect(x0, x1, y0, y1) -> bool:
+        return (x0 - pad + radius <= lx <= x1 + pad - radius
+                and y0 - pad + radius <= ly <= y1 + pad - radius)
+
+    in_foot = in_rect(0.0, base_x, 0.0, leg_y)
+    in_upright = in_rect(0.0, leg_x, 0.0, base_y)
+    if in_foot and not in_upright:
+        return "base"
+    if in_upright and not in_foot:
+        return "leg"
+    if in_foot and in_upright:
+        return "base"
+    return None
+
+
+def _refit_hole_circle(wall, point, radius, tol):
+    """Centre and radius from wall vertices, kept only when close to the fit."""
+    if len(wall) < 40:
+        return np.asarray(point, float), float(radius)
+    x, y = wall[:, 0], wall[:, 1]
+    fit = np.c_[2.0 * x, 2.0 * y, np.ones(len(x))]
+    sol, *_ = np.linalg.lstsq(fit, x * x + y * y, rcond=None)
+    cx, cy, k = float(sol[0]), float(sol[1]), float(sol[2])
+    r2 = k + cx * cx + cy * cy
+    if r2 <= 0.0:
+        return np.asarray(point, float), float(radius)
+    rad = math.sqrt(r2)
+    if abs(rad - float(radius)) > max(4.0 * tol, 0.25):
+        return np.asarray(point, float), float(radius)
+    if math.hypot(cx - float(point[0]), cy - float(point[1])) > max(4.0 * tol, 0.4):
+        return np.asarray(point, float), float(radius)
+    return np.array([cx, cy, 0.0]), rad
+
+
+def _group_hole_regs(regs, tol):
+    """Coaxial hole fragments. A noisy wall often arrives as more than one region."""
+    groups = []
+    gtol = max(5.0 * tol, 0.2)
+    rtol = max(4.0 * tol, 0.25)
+    for region in regs:
+        s = region.surface
+        point = np.asarray(s.point, float)
+        radius = float(s.radius)
+        for g in groups:
+            if abs(radius - g["radius"]) > rtol:
+                continue
+            if _perp_dist(2, g["point"], point) > gtol:
+                continue
+            w = g["area"] + float(region.area)
+            g["point"] = (g["point"] * g["area"] + point * float(region.area)) / w
+            g["radius"] = (g["radius"] * g["area"] + radius * float(region.area)) / w
+            g["area"] = w
+            g["regions"].append(region)
+            break
+        else:
+            groups.append({
+                "point": point.copy(), "radius": radius,
+                "area": float(region.area), "regions": [region],
+            })
+    return groups
+
+
+def _as_bracket_hole(m, group, z0, z1, tol):
+    """One coaxial group as a Z through-hole, or None."""
+    point = np.asarray(group["point"], float)
+    radius = float(group["radius"])
+    if radius <= max(2.0 * tol, 0.2):
+        return None
+    faces = np.concatenate([r.faces for r in group["regions"]])
+    pts = m.vertices[np.unique(m.faces[faces])]
+    on = _on_cylinder(pts, point, radius, 2, tol)
+    if int(on.sum()) < 12:
+        return None
+    wall = pts[on]
+    along = wall[:, 2]
+    eps = max(6.0 * tol, 0.75)
+    if float(along.min()) > float(z0) + eps or float(along.max()) < float(z1) - eps:
+        return None
+    gap = _angular_gap(np.array([0.0, 0.0, 1.0]), point, wall)
+    if 2.0 * math.pi - gap < math.radians(270.0):
+        return None
+    centres = m.triangles_center[faces]
+    near = _on_cylinder(centres, point, radius, 2, tol)
+    if int(near.sum()) < 8:
+        return None
+    radial = centres[near] - point
+    radial[:, 2] = 0.0
+    ln = np.linalg.norm(radial, axis=1, keepdims=True)
+    radial = radial / np.maximum(ln, 1e-12)
+    if float(np.mean(np.sum(m.face_normals[faces][near] * radial, axis=1))) > -0.25:
+        return None
+    point, radius = _refit_hole_circle(wall, point, radius, tol)
+    return {"d": 2.0 * float(radius), "x": float(point[0]), "y": float(point[1])}
+
+
+def _bracket_mounting_holes(m, regs, x0, y0, z0, z1, base_x, base_y, leg_x, leg_y,
+                            med, sx, sy, tol):
+    """Through-holes in the foot and the upright, or None if one does not fit.
+
+    Overlapping holes are refused: the volume check would subtract the shared
+    cylinder twice and the script would not match the mesh.
+    """
+    found = []
+    for g in _group_hole_regs(regs, tol):
+        hole = _as_bracket_hole(m, g, z0, z1, tol)
+        if hole is None:
+            return None
+        lx = sx * (hole["x"] - x0)
+        ly = sy * (hole["y"] - y0)
+        member = _bracket_member(
+            lx, ly, hole["d"] / 2.0, base_x, base_y, leg_x, leg_y, med, tol)
+        if member is None:
+            return None
+        found.append((member, hole))
+    slack = max(4.0 * tol, 0.35)
+    for i, (_ma, a) in enumerate(found):
+        for _mb, b in found[i + 1:]:
+            if math.hypot(a["x"] - b["x"], a["y"] - b["y"]) < (a["d"] + b["d"]) / 2.0 - slack:
+                return None
+    base, leg = [], []
+    for member, hole in found:
+        row = {"d": hole["d"], "x": hole["x"], "y": hole["y"]}
+        (base if member == "base" else leg).append(row)
+    base.sort(key=lambda h: (h["x"], h["y"]))
+    leg.sort(key=lambda h: (h["x"], h["y"]))
+    if not base and not leg:
+        return None
+    return base, leg
+
+
 def _filleted_bracket(m: trimesh.Trimesh, regions, tol: float) -> dict | None:
     """An L extruded along Z, every vertical edge filleted at one radius.
 
-    The inner corner is included. Anything else returns None so the other
-    vocabularies keep the part they already explain.
+    The inner corner is included. A round through-hole along Z is kept when
+    its circle lies in the foot or the upright and clears those rounds.
+    Anything else returns None so the other vocabularies keep the part they
+    already explain.
     """
     planes = []
     cyls = []
@@ -1418,12 +1645,13 @@ def _filleted_bracket(m: trimesh.Trimesh, regions, tol: float) -> dict | None:
             cyls.append(r)
         else:
             return None
-    if len(cyls) != 6:
+    fillets, hole_regs = _split_bracket_cylinders(m, cyls)
+    if fillets is None:
         return None
     radii = []
     centers = []
     z_ends = []
-    for r in cyls:
+    for r in fillets:
         s = r.surface
         axis = np.asarray(s.axis, float)
         axis = axis / max(float(np.linalg.norm(axis)), 1e-12)
@@ -1517,16 +1745,32 @@ def _filleted_bracket(m: trimesh.Trimesh, regions, tol: float) -> dict | None:
         if math.hypot(unused[best][0] - ex, unused[best][1] - ey) > ceps:
             return None
         unused.pop(best)
+    base_holes: list[dict] = []
+    leg_holes: list[dict] = []
+    if hole_regs:
+        mounted = _bracket_mounting_holes(
+            m, hole_regs, x_heel["coord"], y_heel["coord"], z0, z1,
+            base_x, base_y, leg_x, leg_y, med, sx, sy, tol)
+        if mounted is None:
+            return None
+        base_holes, leg_holes = mounted
     vol = bracket_volume(base_x, base_y, leg_x, leg_y, height, med)
+    for hole in base_holes + leg_holes:
+        vol -= math.pi * (float(hole["d"]) / 2.0) ** 2 * height
     mv = abs(float(m.volume))
     if mv < 1e-6 or abs(vol - mv) / mv > 0.02:
         return None
-    return {"bracket": {
+    bracket = {
         "x0": float(x_heel["coord"]), "y0": float(y_heel["coord"]), "z0": float(z0),
         "x": float(base_x), "y": float(base_y), "t": float(height),
         "leg_x": float(leg_x), "leg_y": float(leg_y),
         "fillet_r": float(med), "sx": int(sx), "sy": int(sy),
-    }}
+    }
+    if base_holes:
+        bracket["base_holes"] = base_holes
+    if leg_holes:
+        bracket["leg_holes"] = leg_holes
+    return {"bracket": bracket}
 
 
 def recognize(m: trimesh.Trimesh, regions, tol: float) -> dict:
@@ -1550,8 +1794,9 @@ def recognize(m: trimesh.Trimesh, regions, tol: float) -> dict:
         return rounded
     # An L with every vertical edge filleted, including the inner corner, is
     # not a rectangular box. Claim it before the box extractor refuses the
-    # six fillets. A plate, a plain extrusion, and a fully filleted box do
-    # not have this wall pattern, so they stay on the path they already use.
+    # six fillets. Through-holes in the foot or the upright stay on this
+    # claim. A plate, a plain extrusion, and a fully filleted box do not have
+    # this wall pattern, so they stay on the path they already use.
     bracket = _filleted_bracket(m, regions, tol)
     if bracket is not None:
         return bracket

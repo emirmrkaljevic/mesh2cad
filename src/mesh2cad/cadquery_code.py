@@ -11,7 +11,9 @@ those rounds is cut after the fillet. A straight boss that clears them is
 fused after the fillet. An L-bracket whose vertical edges, including the
 inner corner, share one radius is a polyline extruded and then
 ``edges("|Z").fillet(fillet_r)``, with ``leg_x`` and ``leg_y`` for the two
-thicknesses. A quarter-torus fillet on a vertical boss
+thicknesses. A through-hole in the foot or the upright of that L is cut
+after the fillet (``base_hole_N_d`` / ``leg_hole_N_d`` and its position).
+A quarter-torus fillet on a vertical boss
 or hole becomes ``boss_N_fillet``, ``hole_N_rim_r``, ``hole_N_bot_rim_r``, or
 ``hole_N_floor_r``, applied with ``Solid.fillet`` on that circular edge. A
 straight extrusion of a 2D outline is a
@@ -32,7 +34,7 @@ from .extrude import (profile_cbore_cutter, profile_cutter, profile_parameters,
 from .parametric import (Unsupported, axis_point_expr, boss_span, bracket_parameters,
                          bracket_profile_exprs, cadquery_axis_dir, cbore_cut_span,
                          chamfer_is_square, deviation_problem, extract, hole_cut_span,
-                         named_parameters, recognize)
+                         iter_bracket_holes, named_parameters, recognize)
 
 __all__ = ["Unsupported", "check", "extract", "render", "run_script", "to_cadquery"]
 
@@ -148,6 +150,11 @@ def _render_bracket(feats: dict, tol: float, source: str | None) -> str:
         "          .close().extrude(base_t)",
         "          .edges(\"|Z\").fillet(fillet_r))",
     ]
+    for name, _hole in iter_bracket_holes(feats):
+        body.append(
+            f"result = result.cut(cq.Workplane(\"XY\", origin=({name}_x, {name}_y, base_z0 - 1))"
+            f".circle({name}_d / 2).extrude(base_t + 2))"
+        )
     tail = ["", "if __name__ == \"__main__\":",
             "    from pathlib import Path",
             "    cq.exporters.export(result, str(Path(__file__).with_suffix(\".step\")))",
