@@ -9,7 +9,7 @@ from mesh2cad.cli import main  # noqa: E402
 from mesh2cad.convert import convert_mesh  # noqa: E402
 from mesh2cad.io import add_noise  # noqa: E402
 from parts import (boss, chamfered_boss, countersunk_plate, cube, filleted_box,  # noqa: E402
-                   filleted_bracket, filleted_plate, plate_with_hole, ribbed_plate,
+                   filleted_bracket, filleted_plate, l_bracket, plate_with_hole, ribbed_plate,
                    rounded_box, rounded_box_with_boss, rounded_box_with_hole,
                    spherical_dome, stepped_block,
                    tapered_boss, to_mesh)
@@ -224,11 +224,74 @@ def test_cli_rounded_box(tmp_path):
     assert ".edges().fillet(edge_fillet_r)" in text
 
 
-def test_bracket_fillet_is_not_a_box_script():
+def _bracket_mesh(sigma, seed):
+    ref = to_mesh(filleted_bracket())
+    tol = max(sigma, 0.01)
+    mesh = add_noise(ref, sigma, seed=seed) if sigma else ref
+    return mesh, tol
+
+
+# Seeds the self-check accepts. 0.05 mm seed 1 is 0.009 mm over the limit.
+# 0.2 mm does not come back as six vertical fillets, so it stays refused.
+_BRACKET_PASS = {(0.0, 0), (0.0, 1), (0.0, 2), (0.05, 0), (0.05, 2)}
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2])
+@pytest.mark.parametrize("sigma", [0.0, 0.05, 0.2])
+def test_bracket_fillet_is_a_script(sigma, seed):
+    """L-bracket, vertical edges including the inner corner. The usual gate decides."""
+    mesh, tol = _bracket_mesh(sigma, seed)
+    res = convert_mesh(mesh, tol=tol, with_report=False)
+    if (sigma, seed) not in _BRACKET_PASS:
+        with pytest.raises(Unsupported) as exc:
+            to_cadquery(res.mesh, res.regions, res.tol)
+        if sigma == 0.05:
+            assert "deviates by" in str(exc.value)
+        return
+    code, q = to_cadquery(res.mesh, res.regions, res.tol)
+    assert q["max_deviation"] <= max(4 * tol, 0.1)
+    assert q["volume_error_pct"] <= 1.0
+    params = _params(code)
+    assert params["fillet_r"] == pytest.approx(3.0, abs=0.05)
+    assert params["base_x"] == pytest.approx(40.0, abs=0.15)
+    assert params["base_y"] == pytest.approx(30.0, abs=0.15)
+    assert params["base_t"] == pytest.approx(12.0, abs=0.15)
+    assert params["leg_x"] == pytest.approx(8.0, abs=0.15)
+    assert params["leg_y"] == pytest.approx(8.0, abs=0.15)
+    assert "edge_fillet_r" not in params
+    assert ".edges(\"|Z\").fillet(fillet_r)" in code
+    assert "polyline" in code
+
+
+def test_editing_bracket_dimensions_changes_volume():
     ref = to_mesh(filleted_bracket())
     res = convert_mesh(ref, tol=0.01, with_report=False)
-    with pytest.raises(Unsupported):
-        to_cadquery(res.mesh, res.regions, res.tol)
+    code, _ = to_cadquery(res.mesh, res.regions, res.tol)
+    v0 = run_script(code).volume
+    rounder = re.sub(r"^fillet_r\s*=\s*[\d.]+", "fillet_r = 3.5", code, flags=re.M)
+    v1 = run_script(rounder).volume
+    import math
+
+    def volume(radius, base_x=40.0):
+        sharp = base_x * 8.0 + 8.0 * (30.0 - 8.0)
+        corner = radius * radius * (1.0 - math.pi / 4.0)
+        # five convex corners lose a square, the inner corner gains one
+        return (sharp - 4.0 * corner) * 12.0
+
+    assert v0 - v1 == pytest.approx(volume(3.0) - volume(3.5), rel=0.02)
+    longer = re.sub(r"^base_x\s*=\s*[\d.]+", "base_x = 44.0", code, flags=re.M)
+    v2 = run_script(longer).volume
+    assert v2 - v0 == pytest.approx(volume(3.0, 44.0) - volume(3.0, 40.0), rel=0.02)
+
+
+def test_sharp_bracket_stays_an_outline():
+    ref = to_mesh(l_bracket())
+    res = convert_mesh(ref, tol=0.01, with_report=False)
+    code, q = to_cadquery(res.mesh, res.regions, res.tol)
+    assert q["max_deviation"] <= max(4 * res.tol, 0.1)
+    assert "outline" in code
+    assert "leg_x" not in code
+    assert "fillet_r" not in code
 
 
 def test_unsupported_part():

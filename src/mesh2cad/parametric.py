@@ -9,10 +9,13 @@ Supported parts:
   all twelve edges of a rectangular box (``edge_fillet_r``), a through-hole cut
   after that fillet when its wall clears the rounds, a straight boss fused
   after that fillet when its wall clears the rounds (the eight corner spheres
-  stay part of ``edge_fillet_r``), and a quarter-torus
+  stay part of ``edge_fillet_r``), a quarter-torus
   fillet on a vertical boss or hole: ``boss_N_fillet`` at the base of a straight
   boss, ``hole_N_rim_r`` / ``hole_N_bot_rim_r`` on a through-hole rim, and
-  ``hole_N_floor_r`` where a blind-hole floor meets the wall;
+  ``hole_N_floor_r`` where a blind-hole floor meets the wall, and an L-bracket
+  extruded along Z whose vertical edges, including the inner corner, share one
+  radius (``fillet_r``, with outer sizes ``base_x`` / ``base_y`` / ``base_t``
+  and leg thicknesses ``leg_x`` / ``leg_y``);
 * a straight extrusion of a 2D outline along X, Y, or Z, including a polygonal
   through-opening in that outline and round through-holes;
 * a counterbored through-hole (a larger cylinder opening on one face, the
@@ -1321,6 +1324,211 @@ def _flatten_planar_spheres(m, regions, tol):
         r.surface = Plane(normal, sign * level)
 
 
+def bracket_volume(base_x: float, base_y: float, leg_x: float, leg_y: float,
+                   height: float, radius: float) -> float:
+    """Volume of an L extruded along Z with every vertical edge filleted.
+
+    Five convex corners each lose a square minus a quarter circle. The inner
+    corner is concave: its centre sits in the notch and that quarter circle is
+    added, so the net change is four corners removed.
+    """
+    sharp = float(base_x) * float(leg_y) + float(leg_x) * (float(base_y) - float(leg_y))
+    corner = float(radius) ** 2 * (1.0 - math.pi / 4.0)
+    return (sharp - 4.0 * corner) * float(height)
+
+
+def bracket_profile_exprs(sx: int, sy: int) -> list[tuple[str, str]]:
+    """Sharp L profile as ``(x, y)`` expressions, heel at the origin, CCW.
+
+    ``sx`` and ``sy`` are +1 or -1, the direction each leg runs from the heel.
+    The parameters are ``base_x``, ``base_y``, ``leg_x``, and ``leg_y``.
+    """
+    def term(sign: int, name: str) -> str:
+        return name if sign > 0 else f"-{name}"
+
+    pts = [
+        ("0", "0"),
+        (term(sx, "base_x"), "0"),
+        (term(sx, "base_x"), term(sy, "leg_y")),
+        (term(sx, "leg_x"), term(sy, "leg_y")),
+        (term(sx, "leg_x"), term(sy, "base_y")),
+        ("0", term(sy, "base_y")),
+    ]
+    if sx * sy < 0:
+        pts = list(reversed(pts))
+    return pts
+
+
+def bracket_parameters(feats: dict, tol: float = 0.01) -> list[tuple[str, float, str]]:
+    """``(name, value, note)`` for a filleted L-bracket."""
+    b = feats["bracket"]
+    rows = (
+        ("base_x", b["x"], "outer length along X"),
+        ("base_y", b["y"], "outer length along Y"),
+        ("base_t", b["t"], "height along Z"),
+        ("leg_x", b["leg_x"], "upright thickness along X"),
+        ("leg_y", b["leg_y"], "foot thickness along Y"),
+        ("fillet_r", b["fillet_r"], "vertical edge radius, including the inner corner"),
+        ("base_x0", b["x0"], "heel position along X"),
+        ("base_y0", b["y0"], "heel position along Y"),
+        ("base_z0", b["z0"], "bottom face height"),
+    )
+    return [(name, _nice(val, tol), note) for name, val, note in rows]
+
+
+def _cluster_walls(items, eps: float) -> list[dict]:
+    """Group wall fragments that share a coordinate. ``items`` are ``(coord, lo, hi)``."""
+    groups: list[dict] = []
+    for coord, lo, hi in sorted(items, key=lambda t: t[0]):
+        if groups and abs(coord - groups[-1]["coord"]) <= eps:
+            g = groups[-1]
+            n = g["n"] + 1
+            g["coord"] = (g["coord"] * g["n"] + coord) / n
+            g["n"] = n
+            g["lo"] = min(g["lo"], lo)
+            g["hi"] = max(g["hi"], hi)
+        else:
+            groups.append({"coord": float(coord), "lo": float(lo), "hi": float(hi), "n": 1})
+    return groups
+
+
+def _axis_ok(normal) -> int | None:
+    n = np.abs(np.asarray(normal, float))
+    ln = float(np.linalg.norm(n))
+    if ln < 1e-12 or float(n.max()) / ln < math.cos(math.radians(8.0)):
+        return None
+    return int(np.argmax(n))
+
+
+def _filleted_bracket(m: trimesh.Trimesh, regions, tol: float) -> dict | None:
+    """An L extruded along Z, every vertical edge filleted at one radius.
+
+    The inner corner is included. Anything else returns None so the other
+    vocabularies keep the part they already explain.
+    """
+    planes = []
+    cyls = []
+    for r in regions:
+        s = r.surface
+        if s is None or not len(r.faces):
+            return None
+        if isinstance(s, Plane):
+            planes.append(r)
+        elif isinstance(s, Cylinder):
+            cyls.append(r)
+        else:
+            return None
+    if len(cyls) != 6:
+        return None
+    radii = []
+    centers = []
+    z_ends = []
+    for r in cyls:
+        s = r.surface
+        axis = np.asarray(s.axis, float)
+        axis = axis / max(float(np.linalg.norm(axis)), 1e-12)
+        if abs(abs(float(axis @ Z)) - 1.0) > 0.02:
+            return None
+        span = _partial_span(m, s, r.faces)
+        if span is None or not np.radians(50.0) <= span <= np.radians(140.0):
+            return None
+        radii.append(float(s.radius))
+        pt = np.asarray(s.point, float)
+        centers.append((float(pt[0]), float(pt[1])))
+        vz = _verts(m, r)[:, 2]
+        z_ends.append((float(vz.min()), float(vz.max())))
+    med = float(np.median(radii))
+    if med <= max(2.0 * tol, 0.05):
+        return None
+    if max(abs(r - med) for r in radii) > max(4.0 * tol, 0.25):
+        return None
+
+    walls = {0: [], 1: [], 2: []}
+    for r in planes:
+        axis = _axis_ok(r.surface.normal)
+        if axis is None:
+            return None
+        _i, _sg, coord = _plane_pos(r.surface)
+        if axis != _i:
+            return None
+        free = 1 if axis == 0 else 0 if axis == 1 else None
+        if free is None:
+            walls[2].append((coord, coord, coord))
+            continue
+        verts = _verts(m, r)
+        walls[axis].append((coord, float(verts[:, free].min()), float(verts[:, free].max())))
+    eps = max(4.0 * tol, 0.3)
+    xs = _cluster_walls(walls[0], eps)
+    ys = _cluster_walls(walls[1], eps)
+    zs = _cluster_walls(walls[2], eps)
+    if len(xs) != 3 or len(ys) != 3 or len(zs) != 2:
+        return None
+
+    def _orient(groups):
+        a, mid, b = groups
+        la, lb = a["hi"] - a["lo"], b["hi"] - b["lo"]
+        if la >= lb:
+            heel, toe, sign = a, b, 1
+            long, short = la, lb
+        else:
+            heel, toe, sign = b, a, -1
+            long, short = lb, la
+        # The upright's outer face runs the long way. The foot's end is only
+        # the leg thickness. A near-rectangle does not separate that cleanly.
+        if long < 1.8 * short or long - short < max(8.0 * tol, 2.0):
+            return None
+        return heel, mid, toe, sign
+
+    x_orient = _orient(xs)
+    y_orient = _orient(ys)
+    if x_orient is None or y_orient is None:
+        return None
+    x_heel, x_mid, x_toe, sx = x_orient
+    y_heel, y_mid, y_toe, sy = y_orient
+    base_x = abs(x_toe["coord"] - x_heel["coord"])
+    base_y = abs(y_toe["coord"] - y_heel["coord"])
+    leg_x = abs(x_mid["coord"] - x_heel["coord"])
+    leg_y = abs(y_mid["coord"] - y_heel["coord"])
+    if not (med < leg_x < base_x - med and med < leg_y < base_y - med):
+        return None
+    z0 = min(zs[0]["coord"], zs[1]["coord"])
+    z1 = max(zs[0]["coord"], zs[1]["coord"])
+    height = z1 - z0
+    if height <= max(8.0 * tol, 1.0):
+        return None
+    zeps = max(6.0 * tol, 0.5)
+    for lo, hi in z_ends:
+        if abs(lo - z0) > zeps or abs(hi - z1) > zeps:
+            return None
+
+    # Centres: convex corners inset into the material, inner corner in the notch.
+    expected = [
+        (x_heel["coord"] + sx * med, y_heel["coord"] + sy * med),
+        (x_heel["coord"] + sx * (base_x - med), y_heel["coord"] + sy * med),
+        (x_heel["coord"] + sx * (base_x - med), y_heel["coord"] + sy * (leg_y - med)),
+        (x_heel["coord"] + sx * med, y_heel["coord"] + sy * (base_y - med)),
+        (x_heel["coord"] + sx * (leg_x - med), y_heel["coord"] + sy * (base_y - med)),
+        (x_heel["coord"] + sx * (leg_x + med), y_heel["coord"] + sy * (leg_y + med)),
+    ]
+    ceps = max(8.0 * tol, 0.45)
+    unused = list(centers)
+    for ex, ey in expected:
+        best = min(range(len(unused)), key=lambda i: math.hypot(unused[i][0] - ex, unused[i][1] - ey))
+        if math.hypot(unused[best][0] - ex, unused[best][1] - ey) > ceps:
+            return None
+        unused.pop(best)
+    vol = bracket_volume(base_x, base_y, leg_x, leg_y, height, med)
+    mv = abs(float(m.volume))
+    if mv < 1e-6 or abs(vol - mv) / mv > 0.02:
+        return None
+    return {"bracket": {
+        "x0": float(x_heel["coord"]), "y0": float(y_heel["coord"]), "z0": float(z0),
+        "x": float(base_x), "y": float(base_y), "t": float(height),
+        "leg_x": float(leg_x), "leg_y": float(leg_y),
+        "fillet_r": float(med), "sx": int(sx), "sy": int(sy),
+    }}
+
+
 def recognize(m: trimesh.Trimesh, regions, tol: float) -> dict:
     """Box vocabulary when it matches, else one extrusion, else a small CSG."""
     from .csg import extract_csg
@@ -1340,6 +1548,13 @@ def recognize(m: trimesh.Trimesh, regions, tol: float) -> dict:
         return holed
     if rounded is not None:
         return rounded
+    # An L with every vertical edge filleted, including the inner corner, is
+    # not a rectangular box. Claim it before the box extractor refuses the
+    # six fillets. A plate, a plain extrusion, and a fully filleted box do
+    # not have this wall pattern, so they stay on the path they already use.
+    bracket = _filleted_bracket(m, regions, tol)
+    if bracket is not None:
+        return bracket
     _flatten_planar_spheres(m, regions, tol)
 
     box_err = None

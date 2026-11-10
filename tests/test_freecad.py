@@ -415,11 +415,66 @@ def test_edit_hole_diameter(tmp_path):
     assert abs(before.volume) - abs(after.volume) == pytest.approx(expect, rel=0.02)
 
 
-def test_bracket_fillet_is_not_a_box_script():
+def _bracket_mesh(sigma, seed):
     ref = to_mesh(filleted_bracket())
-    res = convert_mesh(ref, tol=0.01, with_report=False)
-    with pytest.raises(Unsupported):
-        to_freecad(res.mesh, res.regions, res.tol, verify=False)
+    tol = max(sigma, 0.01)
+    mesh = add_noise(ref, sigma, seed=seed) if sigma else ref
+    return mesh, tol
+
+
+_BRACKET_PASS = {(0.0, 0), (0.0, 1), (0.0, 2), (0.05, 0), (0.05, 2)}
+
+
+def test_bracket_fillet_is_a_script():
+    """The macro text is checked even when freecadcmd is absent."""
+    mesh, tol = _bracket_mesh(0.0, 0)
+    res = convert_mesh(mesh, tol=tol, with_report=False)
+    code, _q = to_freecad(res.mesh, res.regions, res.tol, verify=False)
+    params = _params(code)
+    assert params["fillet_r"] == pytest.approx(3.0, abs=0.05)
+    assert params["base_x"] == pytest.approx(40.0, abs=0.15)
+    assert params["base_y"] == pytest.approx(30.0, abs=0.15)
+    assert params["base_t"] == pytest.approx(12.0, abs=0.15)
+    assert params["leg_x"] == pytest.approx(8.0, abs=0.15)
+    assert params["leg_y"] == pytest.approx(8.0, abs=0.15)
+    assert "edge_fillet_r" not in params
+    assert "Part.makePolygon" in code
+    assert "result.makeFillet(fillet_r, _fillet_edges)" in code
+
+
+@needs_freecad
+@pytest.mark.parametrize("seed", [0, 1, 2])
+@pytest.mark.parametrize("sigma", [0.0, 0.05, 0.2])
+def test_bracket_fillet_matches_the_mesh(sigma, seed):
+    mesh, tol = _bracket_mesh(sigma, seed)
+    res = convert_mesh(mesh, tol=tol, with_report=False)
+    if (sigma, seed) not in _BRACKET_PASS:
+        with pytest.raises(Unsupported) as exc:
+            to_freecad(res.mesh, res.regions, res.tol)
+        if sigma == 0.05:
+            assert "deviates by" in str(exc.value)
+        return
+    code, q = to_freecad(res.mesh, res.regions, res.tol)
+    assert q["max_deviation"] <= max(4 * tol, 0.1)
+    assert q["volume_error_pct"] <= 1.0
+    params = _params(code)
+    assert params["fillet_r"] == pytest.approx(3.0, abs=0.05)
+    assert params["leg_x"] == pytest.approx(8.0, abs=0.15)
+    assert "result.makeFillet(fillet_r, _fillet_edges)" in code
+
+
+def test_bracket_seed_refused_without_freecad(tmp_path, monkeypatch):
+    """0.05 mm seed 1 misses the deviation gate. No macro when freecadcmd is absent."""
+    monkeypatch.setattr("mesh2cad.freecad_code.freecad_bin", lambda: None)
+    mesh, tol = _bracket_mesh(0.05, 1)
+    res = convert_mesh(mesh, tol=tol, with_report=False)
+    with pytest.raises(Unsupported, match="deviates by"):
+        to_freecad(res.mesh, res.regions, res.tol)
+    stl = tmp_path / "b.stl"
+    mesh.export(stl)
+    out = tmp_path / "b.FCMacro"
+    assert main(["convert", str(stl), "--freecad", str(out), "--tol", str(tol)]) == 2
+    assert not out.exists()
 
 
 def test_unsupported_part():

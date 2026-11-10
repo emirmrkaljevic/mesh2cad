@@ -66,7 +66,8 @@ def to_cadquery(input_path: str, output_path: str | None = None, tol: float | No
     is vertical), fillet_r on the four vertical corners, edge_fillet_r when
     every edge of the box shares one radius (a through-hole that clears those
     rounds is cut after the fillet, and a straight boss that clears them is
-    fused after it), a fillet at the base of a vertical
+    fused after it), fillet_r on every vertical edge of an L-bracket including
+    the inner corner (base_x, base_y, base_t, leg_x, leg_y), a fillet at the base of a vertical
     boss (boss_N_fillet), a
     round on a vertical hole rim (hole_N_rim_r, hole_N_bot_rim_r) and a
     blind-hole floor fillet (hole_N_floor_r), a straight extrusion of a 2D
@@ -96,11 +97,12 @@ def to_openscad(input_path: str, output_path: str | None = None, tol: float | No
     is vertical), one radius on the four vertical corners, edge_fillet_r when
     every edge of the box shares one radius (a through-hole that clears those
     rounds is cut after the fillet, and a straight boss that clears them is
-    fused after it), a quarter-torus
+    fused after it), fillet_r on every vertical edge of an L-bracket including
+    the inner corner (leg_x, leg_y), a quarter-torus
     fillet on a vertical boss or hole (boss_N_fillet, hole_N_rim_r,
     hole_N_floor_r), a straight extrusion of a 2D outline, and a small boolean
     of those extrusions. Parameter names match the CadQuery script
-    (hole_1_d, boss_1_h, fillet_r, edge_fillet_r, boss_1_fillet, extrude_len, ...). Edit one and
+    (hole_1_d, boss_1_h, fillet_r, edge_fillet_r, leg_x, boss_1_fillet, extrude_len, ...). Edit one and
     render in OpenSCAD. Returns the parameters, whether the openscad CLI
     verified the script against the mesh, and the measured deviation when it
     did. Without the openscad program the script is still written and verified
@@ -124,15 +126,19 @@ def to_freecad(input_path: str, output_path: str | None = None, tol: float | Non
     is vertical), one radius on the four vertical corners, edge_fillet_r when
     every edge of the box shares one radius (a through-hole that clears those
     rounds is cut after the fillet, and a straight boss that clears them is
-    fused after it), a quarter-torus
+    fused after it), fillet_r on every vertical edge of an L-bracket including
+    the inner corner (leg_x, leg_y), a quarter-torus
     fillet on a vertical boss or hole (boss_N_fillet, hole_N_rim_r,
     hole_N_floor_r), a straight extrusion of a 2D outline, and a small boolean
     of those extrusions. Parameter names match the CadQuery script
-    (hole_1_d, boss_1_h, fillet_r, edge_fillet_r, boss_1_fillet, extrude_len, ...). Edit one and run the
+    (hole_1_d, boss_1_h, fillet_r, edge_fillet_r, leg_x, boss_1_fillet, extrude_len, ...). Edit one and run the
     macro in FreeCAD, or with freecadcmd. Returns the parameters, whether
     freecadcmd verified the macro against the mesh, and the measured deviation
-    when it did. Without freecadcmd the macro is still written and verified
-    is false. Returns an "error" key when the part is outside that vocabulary.
+    when it did. Without freecadcmd the same deviation and volume check is
+    run with CadQuery, or with OpenSCAD when CadQuery is not installed. The
+    macro is written only when that check passes, and verified is false
+    because FreeCAD did not measure it. Returns an "error" key when the part
+    is outside that vocabulary or the check refuses.
     """
     from .convert import freecad_file
     from .parametric import Unsupported

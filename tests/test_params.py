@@ -19,10 +19,10 @@ from mesh2cad.params import (GeometryError, ParamError, check_edit,  # noqa: E40
                              edit_script, list_parameters)
 from mesh2cad.segment import segment  # noqa: E402
 from parts import (boss, chamfered_boss, counterbored_plate, countersunk_plate,  # noqa: E402
-                   cube, cut_block, filleted_plate, l_profile_y, orthogonal_intersection,
-                   rounded_box, rounded_box_with_boss, rounded_box_with_hole,
-                   plate_with_hole, ribbed_plate, side_hole_boss, slanted_outline,
-                   slotted_plate, stepped_block, tapered_boss, to_mesh)
+                   cube, cut_block, filleted_bracket, filleted_plate, l_profile_y,
+                   orthogonal_intersection, rounded_box, rounded_box_with_boss,
+                   rounded_box_with_hole, plate_with_hole, ribbed_plate, side_hole_boss,
+                   slanted_outline, slotted_plate, stepped_block, tapered_boss, to_mesh)
 
 needs_openscad = pytest.mark.skipif(shutil.which("openscad") is None, reason="openscad is not installed")
 needs_freecad = pytest.mark.skipif(freecad_bin() is None, reason="freecadcmd is not installed")
@@ -477,6 +477,65 @@ def test_mcp_edits_boss_on_filleted_box(tmp_path):
     assert re.search(r"^edge_fillet_r\s*=\s*4\.0", text, re.M)
     refused = edit_params(str(script), {"edge_fillet_r": 12})
     assert "edge_fillet_r" in refused["error"]
+
+
+def test_bracket_fillet_is_listed_and_edited(tmp_path, capsys):
+    mesh = _mesh(tmp_path, filleted_bracket, "bracket")
+    script = _script(tmp_path, mesh, "cadquery")
+    assert main(["params", str(script)]) == 0
+    listed = capsys.readouterr().out
+    assert "fillet_r" in listed and "leg_x" in listed and "radius" in listed
+    info = list_parameters(str(script))
+    names = {p["name"]: p for p in info["parameters"]}
+    assert names["fillet_r"]["kind"] == "radius" and names["fillet_r"]["unit"] == "mm"
+    assert names["leg_x"]["kind"] == "length" and names["leg_y"]["kind"] == "length"
+    assert names["base_x"]["kind"] == "length" and names["base_t"]["kind"] == "length"
+    assert names["fillet_r"]["value"] == pytest.approx(3.0)
+    assert names["leg_x"]["value"] == pytest.approx(8.0)
+    assert names["base_x"]["value"] == pytest.approx(40.0)
+    assert names["base_t"]["value"] == pytest.approx(12.0)
+    raw = script.read_bytes()
+    with pytest.raises(GeometryError, match="fillet_r"):
+        edit_script(str(script), {"fillet_r": 5}, in_place=True)
+    assert script.read_bytes() == raw
+    with pytest.raises(GeometryError, match="leg_x"):
+        edit_script(str(script), {"leg_x": 40}, in_place=True)
+    assert script.read_bytes() == raw
+    out = tmp_path / "out.step"
+    result = edit_script(str(script), {"fillet_r": 3.5}, output_path=str(out), in_place=True)
+    assert result["valid_solid"] is True
+    assert result["changes"][0]["old"] == pytest.approx(3.0)
+    assert result["changes"][0]["new"] == pytest.approx(3.5)
+    assert out.is_file()
+    longer = edit_script(str(script), {"base_x": 44}, output_path=str(tmp_path / "out2.step"),
+                         in_place=True)
+    assert longer["valid_solid"] is True
+    text = script.read_text(encoding="utf-8")
+    assert re.search(r"^fillet_r\s*=\s*3\.5", text, re.M)
+    assert re.search(r"^base_x\s*=\s*44\.0", text, re.M)
+
+
+def test_mcp_edits_bracket_fillet(tmp_path):
+    pytest.importorskip("mcp")
+    from mesh2cad.mcp_server import edit_params, list_params
+    mesh = _mesh(tmp_path, filleted_bracket, "bracket")
+    script = _script(tmp_path, mesh, "cadquery")
+    listed = list_params(str(script))
+    names = {p["name"]: p for p in listed["parameters"]}
+    assert names["fillet_r"]["kind"] == "radius" and names["fillet_r"]["value"] == pytest.approx(3.0)
+    assert names["leg_x"]["kind"] == "length" and names["leg_y"]["kind"] == "length"
+    assert names["base_x"]["value"] == pytest.approx(40.0)
+    out = tmp_path / "edited.step"
+    result = edit_params(str(script), {"fillet_r": 3.5, "leg_y": 9}, str(out))
+    assert "error" not in result
+    assert result["valid_solid"] is True
+    assert out.is_file()
+    text = script.read_text(encoding="utf-8")
+    assert re.search(r"^fillet_r\s*=\s*3\.5", text, re.M)
+    assert re.search(r"^leg_y\s*=\s*9\.0", text, re.M)
+    refused = edit_params(str(script), {"fillet_r": 5})
+    assert "fillet_r" in refused["error"]
+    assert "3.5" in script.read_text(encoding="utf-8")
 
 
 def test_fillet_that_collapses_the_base_is_refused(tmp_path):

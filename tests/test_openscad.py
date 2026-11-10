@@ -266,11 +266,43 @@ def test_boss_on_a_filleted_box(sigma, seed):
     assert "union()" in code
 
 
-def test_bracket_fillet_is_not_a_box_script():
+def _bracket_mesh(sigma, seed):
     ref = to_mesh(filleted_bracket())
-    res = convert_mesh(ref, tol=0.01, with_report=False)
-    with pytest.raises(Unsupported):
-        to_openscad(res.mesh, res.regions, res.tol)
+    tol = max(sigma, 0.01)
+    mesh = add_noise(ref, sigma, seed=seed) if sigma else ref
+    return mesh, tol
+
+
+_BRACKET_PASS = {(0.0, 0), (0.0, 1), (0.0, 2), (0.05, 0), (0.05, 2)}
+
+
+@needs_openscad
+@pytest.mark.parametrize("seed", [0, 1, 2])
+@pytest.mark.parametrize("sigma", [0.0, 0.05, 0.2])
+def test_bracket_fillet_is_a_script(sigma, seed):
+    """L-bracket, vertical edges including the inner corner. The usual gate decides."""
+    mesh, tol = _bracket_mesh(sigma, seed)
+    res = convert_mesh(mesh, tol=tol, with_report=False)
+    if (sigma, seed) not in _BRACKET_PASS:
+        with pytest.raises(Unsupported) as exc:
+            to_openscad(res.mesh, res.regions, res.tol)
+        if sigma == 0.05:
+            assert "deviates by" in str(exc.value)
+        return
+    code, q = to_openscad(res.mesh, res.regions, res.tol)
+    assert q["max_deviation"] <= max(4 * tol, 0.1)
+    assert q["volume_error_pct"] <= 1.0
+    params = _params(code)
+    assert params["fillet_r"] == pytest.approx(3.0, abs=0.05)
+    assert params["base_x"] == pytest.approx(40.0, abs=0.15)
+    assert params["base_y"] == pytest.approx(30.0, abs=0.15)
+    assert params["base_t"] == pytest.approx(12.0, abs=0.15)
+    assert params["leg_x"] == pytest.approx(8.0, abs=0.15)
+    assert params["leg_y"] == pytest.approx(8.0, abs=0.15)
+    assert "edge_fillet_r" not in params
+    assert "offset(r=-fillet_r)" in code
+    assert "polygon(" in code
+    assert _slider_hi(code, "fillet_r") < min(params["leg_x"], params["leg_y"]) / 2
 
 
 def test_unsupported_part():
