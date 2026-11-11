@@ -18,7 +18,14 @@ Supported parts:
   and leg thicknesses ``leg_x`` / ``leg_y``), plus round through-holes in the
   foot (``base_hole_N_d``, ``base_hole_N_x``, ``base_hole_N_y``) and the
   upright (``leg_hole_N_d``, ``leg_hole_N_x``, ``leg_hole_N_y``) when the
-  circle stays in that member and clears the vertical rounds;
+  circle stays in that member and clears the vertical rounds. Three or more
+  plain Z through-holes of one diameter, in a line at one pitch, are one row
+  (``hole_row_1_n``, ``hole_row_1_pitch``, and the start and direction). An
+  axis-aligned rectangle of them is one grid (``hole_grid_1_nx``,
+  ``hole_grid_1_ny``, ``hole_grid_1_pitch_x``, ``hole_grid_1_pitch_y``). The
+  same grouping is applied to ``base_hole_*`` and ``leg_hole_*``. Two holes,
+  a bolt circle, and any hole that is blind, countersunk, counterbored, or
+  not along Z stay individual parameters;
 * a straight extrusion of a 2D outline along X, Y, or Z, including a polygonal
   through-opening in that outline and round through-holes;
 * a counterbored through-hole (a larger cylinder opening on one face, the
@@ -1373,6 +1380,8 @@ def iter_bracket_holes(feats: dict):
 
 def bracket_parameters(feats: dict, tol: float = 0.01) -> list[tuple[str, float, str]]:
     """``(name, value, note)`` for a filleted L-bracket."""
+    from .patterns import member_pattern_parameters
+
     b = feats["bracket"]
     rows = [
         ("base_x", b["x"], "outer length along X"),
@@ -1385,12 +1394,22 @@ def bracket_parameters(feats: dict, tol: float = 0.01) -> list[tuple[str, float,
         ("base_y0", b["y0"], "heel position along Y"),
         ("base_z0", b["z0"], "bottom face height"),
     ]
-    for name, hole in iter_bracket_holes(feats):
-        where = "foot" if name.startswith("base_") else "upright"
-        rows.append((f"{name}_d", hole["d"], f"diameter, through the {where}"))
-        rows.append((f"{name}_x", hole["x"], ""))
-        rows.append((f"{name}_y", hole["y"], ""))
-    return [(name, _nice(val, tol), note) for name, val, note in rows]
+    for member in ("base", "leg"):
+        rows.extend(member_pattern_parameters(b, member))
+        where = "foot" if member == "base" else "upright"
+        stem = f"{member}_hole"
+        for i, hole in enumerate(b.get(f"{member}_holes") or (), 1):
+            rows.append((f"{stem}_{i}_d", hole["d"], f"diameter, through the {where}"))
+            rows.append((f"{stem}_{i}_x", hole["x"], ""))
+            rows.append((f"{stem}_{i}_y", hole["y"], ""))
+    # A pattern direction is rounded like a length. Snapping it to the nearest
+    # half degree would slide the far holes off the mesh.
+    def _tol_for(name: str) -> float:
+        if ("angle" in name or "deg" in name) and "_row_" not in name and "_grid_" not in name:
+            return 0.5
+        return tol
+
+    return [(name, _nice(val, _tol_for(name)), note) for name, val, note in rows]
 
 
 def _cluster_walls(items, eps: float) -> list[dict]:
@@ -1836,6 +1855,8 @@ def chamfer_is_square(d: dict, tol: float) -> bool:
 
 def named_parameters(feats: dict, tol: float = 0.01) -> list[tuple[str, float, str]]:
     """``(name, value, note)`` in the order every emitter prints them."""
+    from .patterns import box_pattern_parameters
+
     P: list[tuple[str, float, str]] = []
 
     def p(name, val, note=""):
@@ -1887,6 +1908,13 @@ def named_parameters(feats: dict, tol: float = 0.01) -> list[tuple[str, float, s
             for coord in "xyz":
                 if coord != ax.lower() and coord in d:
                     p(f"{n}_{coord}", d[coord])
+    for name, val, note in box_pattern_parameters(feats):
+        # Direction uses the length tolerance. Half a degree would move the
+        # last hole of a long row by more than the deviation gate.
+        if name.endswith("_angle"):
+            P.append((name, _nice(val, tol), note))
+        else:
+            p(name, val, note)
     for i, d in enumerate(feats["holes"], 1):
         n = f"hole_{i}"
         ax = d.get("axis", "Z")
