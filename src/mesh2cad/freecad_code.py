@@ -10,7 +10,10 @@ one vertical corner radius, for every edge of a rectangular box
 for an L-bracket whose vertical edges, including the inner corner, share
 one radius (``fillet_r``, with ``leg_x`` and ``leg_y``; a through-hole in
 the foot or the upright is cut after that fillet, ``base_hole_N_d`` /
-``leg_hole_N_d``),
+``leg_hole_N_d``). Three or more plain Z through-holes on one pitch are a
+loop over ``hole_row_N_*`` (or ``base_hole_row_N_*`` / ``leg_hole_row_N_*``).
+An axis-aligned rectangle of them is ``hole_grid_N_*``. Holes that do not
+fit stay ``hole_N_*``.
 and for a quarter-torus fillet on a vertical boss
 or hole (``boss_N_fillet``, ``hole_N_rim_r``, ``hole_N_bot_rim_r``,
 ``hole_N_floor_r``). A part that is a few extrusions (their
@@ -40,6 +43,7 @@ import trimesh
 from .csg import _OVERLAP, _fmt_py, _grown_expr, _hole_limits, _names, _param_rows
 from .extrude import (profile_cbore_cutter, profile_cutter, profile_parameters,
                       profile_point_lists)
+from .patterns import iter_box_patterns, iter_bracket_patterns, pattern_attempts, python_pattern_cuts
 from .parametric import (Unsupported, axis_point_expr, boss_span, bracket_parameters,
                          bracket_profile_exprs, cbore_cut_span, chamfer_is_square,
                          deviation_problem, hole_cut_span, iter_bracket_holes,
@@ -382,6 +386,8 @@ def _render_box(feats: dict, tol: float, source: str | None) -> str:
             )
             if "fillet" in d:
                 body.append(_fc_fillet(f"{n}_x, {n}_y, top", f"{n}_d / 2", f"{n}_fillet"))
+    for prefix, kind in iter_box_patterns(feats):
+        body.extend(python_pattern_cuts(prefix, kind, "freecad"))
     for i, d in enumerate(feats["holes"], 1):
         n = f"hole_{i}"
         if d.get("axis", "Z") != "Z":
@@ -587,6 +593,8 @@ def _render_bracket(feats: dict, tol: float, source: str | None) -> str:
         "result = Part.Face(Part.makePolygon(_pts)).extrude(App.Vector(0, 0, base_t))",
     ])
     body.extend(_fillet_lines())
+    for prefix, kind in iter_bracket_patterns(feats):
+        body.extend(python_pattern_cuts(prefix, kind, "freecad"))
     for name, _hole in iter_bracket_holes(feats):
         body.append(
             f"result = result.cut(Part.makeCylinder({name}_d / 2, base_t + 2, "
@@ -661,13 +669,11 @@ def check(code: str, m: trimesh.Trimesh, work: Path, n: int = 4000) -> dict:
             "volume_error_pct": float(100.0 * abs(vo - vm) / vm) if vm else float("inf")}
 
 
-def _proxy_gate(m: trimesh.Trimesh, regions, tol: float) -> None:
-    """Same deviation and volume gate, measured by another backend.
+def _proxy_measure(feat: dict, mesh: trimesh.Trimesh, tol: float):
+    """Deviation of ``feat`` measured by CadQuery, or by OpenSCAD.
 
-    CadQuery is used when it is installed. Otherwise OpenSCAD is used when
-    ``openscad`` is on ``PATH``. Neither measurement is a FreeCAD result.
-    When neither can run, there is nothing to compare and the caller keeps
-    the unverified macro.
+    ``None`` when neither backend can run. A failure to build the solid is
+    raised. The number is not a FreeCAD measurement.
     """
     try:
         import cadquery  # noqa: F401
@@ -676,13 +682,40 @@ def _proxy_gate(m: trimesh.Trimesh, regions, tol: float) -> None:
     else:
         cadquery_ok = True
     if cadquery_ok:
-        from .cadquery_code import to_cadquery
-        to_cadquery(m, regions, tol)
-        return
-    from .openscad_code import openscad_bin, to_openscad
+        from .cadquery_code import check as cq_check
+        from .cadquery_code import render as cq_render
+        return cq_check(cq_render(feat, tol=tol), mesh)
+    from .openscad_code import check as scad_check
+    from .openscad_code import openscad_bin
+    from .openscad_code import render as scad_render
     if openscad_bin() is None:
-        return
-    to_openscad(m, regions, tol)
+        return None
+    with tempfile.TemporaryDirectory(prefix="mesh2cad-scad-") as d:
+        return scad_check(scad_render(feat, tol=tol), mesh, Path(d))
+
+
+def _first_accepted(attempts, measure, tol: float):
+    """``(feats, code, measurement)`` for the first attempt that passes.
+
+    ``measure(feats)`` returns ``(code, q)``. ``q`` is ``None`` when the solid
+    was not measured, which accepts that attempt. A deviation miss, or a
+    raised exception, tries the next attempt. The last failure is raised.
+    """
+    last_problem = None
+    for i, feat in enumerate(attempts):
+        try:
+            code, q = measure(feat)
+        except Exception as e:  # noqa: BLE001
+            if i == len(attempts) - 1:
+                raise Unsupported(f"generated macro failed to run: {e}") from e
+            continue
+        if q is None:
+            return feat, code, None
+        problem = deviation_problem(q, tol)
+        if not problem:
+            return feat, code, q
+        last_problem = problem
+    raise Unsupported(last_problem)
 
 
 def to_freecad(m: trimesh.Trimesh, regions, tol: float, source: str | None = None,
@@ -694,20 +727,25 @@ def to_freecad(m: trimesh.Trimesh, regions, tol: float, source: str | None = Non
     runs that same check. A miss on deviation or volume raises
     :class:`Unsupported` and the macro is not returned. A pass still returns
     ``(code, None)``: ``freecadcmd`` did not measure the macro, so the caller
-    reports it unverified.
+    reports it unverified. A hole pattern is tried first. If that solid misses
+    the gate, the macro is written with one parameter set per hole. The proxy
+    check uses the same choice, so the macro matches the solid that passed.
     """
-    code = render(recognize(m, regions, tol), tol=tol, source=source)
+    attempts = list(pattern_attempts(recognize(m, regions, tol), tol))
     if not verify:
-        return code, None
+        return render(attempts[0], tol=tol, source=source), None
     if freecad_bin() is None:
-        _proxy_gate(m, regions, tol)
+        def measure(feat):
+            q = _proxy_measure(feat, m, tol)
+            return render(feat, tol=tol, source=source), q
+
+        _feat, code, _q = _first_accepted(attempts, measure, tol)
         return code, None
-    try:
+
+    def measure_freecad(feat):
+        code = render(feat, tol=tol, source=source)
         with tempfile.TemporaryDirectory(prefix="mesh2cad-fc-") as d:
-            q = check(code, m, Path(d))
-    except Exception as e:  # noqa: BLE001
-        raise Unsupported(f"generated macro failed to run: {e}") from e
-    problem = deviation_problem(q, tol)
-    if problem:
-        raise Unsupported(problem)
+            return code, check(code, m, Path(d))
+
+    _feat, code, q = _first_accepted(attempts, measure_freecad, tol)
     return code, q

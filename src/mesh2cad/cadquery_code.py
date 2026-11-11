@@ -13,6 +13,9 @@ inner corner, share one radius is a polyline extruded and then
 ``edges("|Z").fillet(fillet_r)``, with ``leg_x`` and ``leg_y`` for the two
 thicknesses. A through-hole in the foot or the upright of that L is cut
 after the fillet (``base_hole_N_d`` / ``leg_hole_N_d`` and its position).
+Three or more plain Z through-holes on one pitch are ``hole_row_N_*`` (or
+``base_hole_row_N_*`` / ``leg_hole_row_N_*``). An axis-aligned rectangle of
+them is ``hole_grid_N_*``. Holes that do not fit stay ``hole_N_*``.
 A quarter-torus fillet on a vertical boss
 or hole becomes ``boss_N_fillet``, ``hole_N_rim_r``, ``hole_N_bot_rim_r``, or
 ``hole_N_floor_r``, applied with ``Solid.fillet`` on that circular edge. A
@@ -35,6 +38,7 @@ from .parametric import (Unsupported, axis_point_expr, boss_span, bracket_parame
                          bracket_profile_exprs, cadquery_axis_dir, cbore_cut_span,
                          chamfer_is_square, deviation_problem, extract, hole_cut_span,
                          iter_bracket_holes, named_parameters, recognize)
+from .patterns import iter_box_patterns, iter_bracket_patterns, pattern_attempts, python_pattern_cuts
 
 __all__ = ["Unsupported", "check", "extract", "render", "run_script", "to_cadquery"]
 
@@ -150,6 +154,8 @@ def _render_bracket(feats: dict, tol: float, source: str | None) -> str:
         "          .close().extrude(base_t)",
         "          .edges(\"|Z\").fillet(fillet_r))",
     ]
+    for prefix, kind in iter_bracket_patterns(feats):
+        body.extend(python_pattern_cuts(prefix, kind, "cadquery"))
     for name, _hole in iter_bracket_holes(feats):
         body.append(
             f"result = result.cut(cq.Workplane(\"XY\", origin=({name}_x, {name}_y, base_z0 - 1))"
@@ -212,6 +218,8 @@ def render(feats: dict, tol: float = 0.01, source: str | None = None) -> str:
                         f".circle({n}_d / 2).extrude({n}_h))")
             if "fillet" in d:
                 body.append(_cq_fillet(f"{n}_x, {n}_y, top", f"{n}_d / 2", f"{n}_fillet"))
+    for prefix, kind in iter_box_patterns(feats):
+        body.extend(python_pattern_cuts(prefix, kind, "cadquery"))
     for i, d in enumerate(feats["holes"], 1):
         n = f"hole_{i}"
         if d.get("axis", "Z") != "Z":
@@ -293,19 +301,31 @@ def check(code: str, m: trimesh.Trimesh, n: int = 4000) -> dict:
 def to_cadquery(m: trimesh.Trimesh, regions, tol: float, source: str | None = None,
                 verify: bool = True) -> tuple[str, dict | None]:
     """Generate the script; when ``verify`` and cadquery is installed, run it and
-    raise :class:`Unsupported` if it does not reproduce the mesh."""
-    code = render(recognize(m, regions, tol), tol=tol, source=source)
-    if not verify:
-        return code, None
+    raise :class:`Unsupported` if it does not reproduce the mesh.
+
+    A hole pattern is tried first. If that solid misses the deviation gate,
+    the same part is written with one parameter set per hole.
+    """
+    attempts = list(pattern_attempts(recognize(m, regions, tol), tol))
     try:
         import cadquery  # noqa: F401
     except ImportError:
-        return code, None
-    try:
-        q = check(code, m)
-    except Exception as e:  # noqa: BLE001
-        raise Unsupported(f"generated script failed to run: {e}") from e
-    problem = deviation_problem(q, tol)
-    if problem:
-        raise Unsupported(problem)
-    return code, q
+        cadquery_ok = False
+    else:
+        cadquery_ok = True
+    if not verify or not cadquery_ok:
+        return render(attempts[0], tol=tol, source=source), None
+    last_problem = None
+    for i, feat in enumerate(attempts):
+        code = render(feat, tol=tol, source=source)
+        try:
+            q = check(code, m)
+        except Exception as e:  # noqa: BLE001
+            if i == len(attempts) - 1:
+                raise Unsupported(f"generated script failed to run: {e}") from e
+            continue
+        problem = deviation_problem(q, tol)
+        if not problem:
+            return code, q
+        last_problem = problem
+    raise Unsupported(last_problem)

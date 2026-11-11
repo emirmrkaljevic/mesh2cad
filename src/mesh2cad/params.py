@@ -29,6 +29,8 @@ _ASSIGN = re.compile(r"^[ \t]*(?P<name>[A-Za-z_][A-Za-z0-9_]*)[ \t]*=[ \t]*")
 _NUMBER = re.compile(r"[+-]?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][+-]?\d+)?")
 _HOLE_D = re.compile(r"hole_(\d+)_d\Z")
 _MEMBER_HOLE_D = re.compile(r"(base_hole|leg_hole)_(\d+)_d\Z")
+_ROW_N = re.compile(r"^((?:hole|base_hole|leg_hole)_row_\d+)_n\Z")
+_GRID_NX = re.compile(r"^((?:hole|base_hole|leg_hole)_grid_\d+)_nx\Z")
 _EXTRUDE_LEN = re.compile(r"extrude_([xyz])(\d*)_len\Z")
 _FACE = {"X": "yz", "Y": "xz", "Z": "xy"}
 _PLANE_AXIS = {"XY": "Z", "XZ": "Y", "YZ": "X"}
@@ -455,6 +457,13 @@ def _classify(name: str, note: str, value) -> tuple[str, str | None]:
         return "offset", "mm"
     if "angle" in name or name.endswith("_deg"):
         return "angle", "deg"
+    if re.fullmatch(r"(?:hole|base_hole|leg_hole)_(?:row_\d+_n|grid_\d+_n[xy])", name):
+        return "count", None
+    if (re.fullmatch(r"(?:hole|base_hole|leg_hole)_row_\d+_pitch", name)
+            or re.fullmatch(r"(?:hole|base_hole|leg_hole)_grid_\d+_pitch_[xy]", name)):
+        return "length", "mm"
+    if re.fullmatch(r"(?:hole|base_hole|leg_hole)_(?:row|grid)_\d+_[xy]", name):
+        return "position", "mm"
     if (name in ("base_cx", "base_cy", "base_z0") or name.endswith("_0")
             or re.fullmatch(r"(?:base_hole|leg_hole|hole|boss|pad|cone)_\d+_[xyz]", name)
             or re.fullmatch(r"hole_\d+_[xyz][01]", name)):
@@ -569,9 +578,15 @@ def _check_geometry(script: Script, resolved: dict[str, float]) -> None:
     solids, mode = _solids(script, scalars)
     if solids:
         _check_holes(scalars, notes, solids, mode)
+        _check_patterns(scalars, solids, mode)
 
 
 def _check_scalar(name: str, value: float, kind: str, scalars: dict[str, float]) -> None:
+    if kind == "count":
+        if value < 1 or value > 200 or abs(value - round(value)) > 1e-6:
+            raise GeometryError(
+                f"{name}={format_number(value)} must be a whole number of holes from 1 to 200"
+            )
     if kind in ("length", "depth", "diameter") or (kind == "radius" and not name.endswith("_r1")):
         if value <= 0:
             raise GeometryError(f"{name}={format_number(value)} must be greater than 0")
@@ -722,6 +737,58 @@ def _check_holes(scalars, notes, solids, mode: str) -> None:
             continue
         _require_fit(name, value / 2.0, "Z", (scalars[f"{prefix}_x"], scalars[f"{prefix}_y"]),
                      solids, mode)
+
+
+def _pattern_centers(prefix: str, kind: str, scalars: dict[str, float]):
+    """Centers a row or grid cuts, in the same order as the generated loop."""
+    if kind == "row":
+        keys = ("n", "pitch", "x", "y")
+        if any(f"{prefix}_{key}" not in scalars for key in keys):
+            return []
+        count = int(round(scalars[f"{prefix}_n"]))
+        pitch = scalars[f"{prefix}_pitch"]
+        ang = math.radians(scalars.get(f"{prefix}_angle", 0.0))
+        step_x = pitch * math.cos(ang)
+        step_y = pitch * math.sin(ang)
+        x0, y0 = scalars[f"{prefix}_x"], scalars[f"{prefix}_y"]
+        return [(x0 + i * step_x, y0 + i * step_y) for i in range(max(count, 0))]
+    keys = ("nx", "ny", "pitch_x", "pitch_y", "x", "y")
+    if any(f"{prefix}_{key}" not in scalars for key in keys):
+        return []
+    nx = int(round(scalars[f"{prefix}_nx"]))
+    ny = int(round(scalars[f"{prefix}_ny"]))
+    pitch_x = scalars[f"{prefix}_pitch_x"]
+    pitch_y = scalars[f"{prefix}_pitch_y"]
+    ang = math.radians(scalars.get(f"{prefix}_angle", 0.0))
+    ca, sa = math.cos(ang), math.sin(ang)
+    x0, y0 = scalars[f"{prefix}_x"], scalars[f"{prefix}_y"]
+    centers = []
+    for j in range(max(ny, 0)):
+        for i in range(max(nx, 0)):
+            centers.append((
+                x0 + i * pitch_x * ca - j * pitch_y * sa,
+                y0 + i * pitch_x * sa + j * pitch_y * ca,
+            ))
+    return centers
+
+
+def _check_patterns(scalars, solids, mode: str) -> None:
+    """Every hole a pattern would cut has to sit in the wall, same as hole_N."""
+    patterns = []
+    for name in scalars:
+        row = _ROW_N.fullmatch(name)
+        if row:
+            patterns.append((row.group(1), "row"))
+        grid = _GRID_NX.fullmatch(name)
+        if grid:
+            patterns.append((grid.group(1), "grid"))
+    for prefix, kind in patterns:
+        diameter = scalars.get(f"{prefix}_d")
+        if diameter is None:
+            continue
+        for x, y in _pattern_centers(prefix, kind, scalars):
+            _require_fit(f"{prefix}_d", diameter / 2.0, "Z", (x, y), solids, mode,
+                         label=f"{prefix}_d")
 
 
 def _require_fit(name: str, radius: float, axis: str, uv, solids, mode: str, label: str | None = None) -> None:
