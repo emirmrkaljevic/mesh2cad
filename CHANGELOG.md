@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.26.0 - 2026-11-11
 
 - Parametric CadQuery, OpenSCAD, and FreeCAD export group plain Z through-holes when they form a regular pattern. A row of three or more holes, one diameter, collinear centers, and one pitch, is `hole_row_1_n`, `hole_row_1_pitch`, `hole_row_1_d`, the start `hole_row_1_x` / `hole_row_1_y`, and `hole_row_1_angle` (degrees, 0 along +X). An axis-aligned rectangle of at least two by two is `hole_grid_1_nx`, `hole_grid_1_ny`, `hole_grid_1_pitch_x`, `hole_grid_1_pitch_y`, the corner, and `hole_grid_1_angle`. The same names with a `base_hole_` or `leg_hole_` prefix are used for the foot and the upright of a filleted L-bracket. A fully filleted box uses the same `hole_row_*` / `hole_grid_*` parameters, cut after `edge_fillet_r`. Holes that do not fit the pattern stay `hole_N_*`. `mesh2cad edit`, `mesh2cad params`, and the MCP tools `list_params` / `edit_params` list and edit the new numbers, including the count. A count has to be a whole number from 1 to 200. An edit that puts a hole outside the wall is refused and nothing is written.
 - Two holes are not a row. One gap is not a pattern. A bolt circle is not detected. Blind holes, countersinks, counterbores, and holes along X or Y stay individual parameters. Extrusions and combined booleans are not grouped. A center has to lie within max(4·tol, 0.25) mm of the ideal pitch. If the patterned solid misses the usual gate (max deviation at most max(4·tol, 0.1), volume error at most 1%), the script is written with one parameter set per hole.
