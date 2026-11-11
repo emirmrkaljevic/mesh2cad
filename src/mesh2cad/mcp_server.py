@@ -68,7 +68,9 @@ def to_cadquery(input_path: str, output_path: str | None = None, tol: float | No
     rounds is cut after the fillet, and a straight boss that clears them is
     fused after it), fillet_r on every vertical edge of an L-bracket including
     the inner corner (base_x, base_y, base_t, leg_x, leg_y), through-holes in
-    the foot and the upright of that bracket (base_hole_N_d, leg_hole_N_d), a fillet at the base of a vertical
+    the foot and the upright of that bracket (base_hole_N_d, leg_hole_N_d), a row or
+    axis-aligned grid of plain Z through-holes (hole_row_1_n, hole_row_1_pitch,
+    hole_grid_1_nx, hole_grid_1_pitch_x), a fillet at the base of a vertical
     boss (boss_N_fillet), a
     round on a vertical hole rim (hole_N_rim_r, hole_N_bot_rim_r) and a
     blind-hole floor fillet (hole_N_floor_r), a straight extrusion of a 2D
@@ -100,11 +102,12 @@ def to_openscad(input_path: str, output_path: str | None = None, tol: float | No
     rounds is cut after the fillet, and a straight boss that clears them is
     fused after it), fillet_r on every vertical edge of an L-bracket including
     the inner corner (leg_x, leg_y), through-holes in the foot and the upright
-    of that bracket (base_hole_N_d, leg_hole_N_d), a quarter-torus
+    of that bracket (base_hole_N_d, leg_hole_N_d), a row or axis-aligned grid of
+    plain Z through-holes (hole_row_1_n, hole_row_1_pitch, hole_grid_1_nx), a quarter-torus
     fillet on a vertical boss or hole (boss_N_fillet, hole_N_rim_r,
     hole_N_floor_r), a straight extrusion of a 2D outline, and a small boolean
     of those extrusions. Parameter names match the CadQuery script
-    (hole_1_d, boss_1_h, fillet_r, edge_fillet_r, leg_x, base_hole_1_d, boss_1_fillet, extrude_len, ...). Edit one and
+    (hole_1_d, hole_row_1_n, boss_1_h, fillet_r, edge_fillet_r, leg_x, base_hole_1_d, boss_1_fillet, extrude_len, ...). Edit one and
     render in OpenSCAD. Returns the parameters, whether the openscad CLI
     verified the script against the mesh, and the measured deviation when it
     did. Without the openscad program the script is still written and verified
@@ -130,11 +133,12 @@ def to_freecad(input_path: str, output_path: str | None = None, tol: float | Non
     rounds is cut after the fillet, and a straight boss that clears them is
     fused after it), fillet_r on every vertical edge of an L-bracket including
     the inner corner (leg_x, leg_y), through-holes in the foot and the upright
-    of that bracket (base_hole_N_d, leg_hole_N_d), a quarter-torus
+    of that bracket (base_hole_N_d, leg_hole_N_d), a row or axis-aligned grid of
+    plain Z through-holes (hole_row_1_n, hole_row_1_pitch, hole_grid_1_nx), a quarter-torus
     fillet on a vertical boss or hole (boss_N_fillet, hole_N_rim_r,
     hole_N_floor_r), a straight extrusion of a 2D outline, and a small boolean
     of those extrusions. Parameter names match the CadQuery script
-    (hole_1_d, boss_1_h, fillet_r, edge_fillet_r, leg_x, base_hole_1_d, boss_1_fillet, extrude_len, ...). Edit one and run the
+    (hole_1_d, hole_row_1_n, boss_1_h, fillet_r, edge_fillet_r, leg_x, base_hole_1_d, boss_1_fillet, extrude_len, ...). Edit one and run the
     macro in FreeCAD, or with freecadcmd. Returns the parameters, whether
     freecadcmd verified the macro against the mesh, and the measured deviation
     when it did. Without freecadcmd the same deviation and volume check is

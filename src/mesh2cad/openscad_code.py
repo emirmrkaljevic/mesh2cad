@@ -12,6 +12,10 @@ An L-bracket whose vertical edges, including the inner corner, share one
 radius is ``offset`` on that L profile, sized by ``fillet_r``, ``leg_x``,
 and ``leg_y``. A through-hole in the foot or the upright is a ``cylinder``
 subtracted after that extrusion (``base_hole_N_d`` / ``leg_hole_N_d``).
+Three or more plain Z through-holes on one pitch are a ``for`` loop over
+``hole_row_N_*`` (or ``base_hole_row_N_*`` / ``leg_hole_row_N_*``). An
+axis-aligned rectangle of them is ``hole_grid_N_*``. Holes that do not fit
+stay ``hole_N_*``.
 A quarter-torus fillet on a vertical boss or hole is a revolved
 square-minus-quarter-circle: ``boss_N_fillet`` added at the base of a boss,
 ``hole_N_rim_r`` and ``hole_N_bot_rim_r`` cut from a hole rim, and
@@ -31,6 +35,7 @@ returned, with no check. OpenSCAD is not a package dependency.
 from __future__ import annotations
 
 import math
+import re
 import shutil
 import subprocess
 import tempfile
@@ -44,6 +49,8 @@ from .parametric import (Unsupported, axis_point_expr, boss_span, bracket_parame
                          bracket_profile_exprs, cbore_cut_span, chamfer_is_square,
                          deviation_problem, hole_cut_span, iter_bracket_holes,
                          named_parameters, openscad_axis_rotate, recognize)
+from .patterns import (iter_box_patterns, iter_bracket_patterns, openscad_pattern_cut,
+                       pattern_attempts)
 from .report import deviation
 
 # Chord error of a radius-8 circle at this count is about 0.004 mm, under the
@@ -130,6 +137,21 @@ def _customizer_range(name: str, value: float, by_name: dict[str, float]) -> str
     leg_hole = _indexed(name, "leg_hole_", "_d")
     if leg_hole and "leg_x" in by_name and "base_y" in by_name:
         return _slider(0.2, min(by_name["leg_x"], by_name["base_y"]), 0.1, value)
+    count = re.fullmatch(
+        r"(?:hole|base_hole|leg_hole)_(?:row_\d+_n|grid_\d+_n[xy])", name)
+    if count:
+        return _slider(1, max(float(value), 16), 1, value)
+    pattern_d = re.fullmatch(
+        r"(hole_row|hole_grid|base_hole_row|base_hole_grid|leg_hole_row|leg_hole_grid)_\d+_d",
+        name)
+    if pattern_d and "base_x" in by_name and "base_y" in by_name:
+        if name.startswith("base_hole_") and "leg_y" in by_name:
+            limit = min(by_name["leg_y"], by_name["base_x"])
+        elif name.startswith("leg_hole_") and "leg_x" in by_name:
+            limit = min(by_name["leg_x"], by_name["base_y"])
+        else:
+            limit = min(by_name["base_x"], by_name["base_y"])
+        return _slider(0.2, limit, 0.1, value)
     hole_d = _indexed(name, "hole_", "_d")
     if hole_d:
         return _slider(0.2, _face_limit(by_name, _feature_axis(by_name, "hole", hole_d)), 0.1, value)
@@ -351,6 +373,8 @@ def _solids(feats: dict, tol: float) -> list[str]:
 
 def _cuts(feats: dict) -> list[str]:
     cuts = []
+    for prefix, kind in iter_box_patterns(feats):
+        cuts.append(openscad_pattern_cut(prefix, kind))
     for i, d in enumerate(feats["holes"], 1):
         n = f"hole_{i}"
         if d.get("axis", "Z") != "Z":
@@ -606,11 +630,12 @@ def _render_bracket(feats: dict, tol: float, source: str | None) -> str:
     )
     placed = ("translate([base_x0, base_y0, base_z0])\n"
               "  linear_extrude(base_t)\n" + _indent(profile, 2))
-    cuts = [
+    cuts = [openscad_pattern_cut(prefix, kind) for prefix, kind in iter_bracket_patterns(feats)]
+    cuts.extend(
         f"translate([{name}_x, {name}_y, base_z0 - 1])\n"
         f"  cylinder(h=base_t + 2, d={name}_d);"
         for name, _hole in iter_bracket_holes(feats)
-    ]
+    )
     if cuts:
         lines = ["// --- model ---", "module mesh2cad_part() {", "  difference() {",
                  _indent(placed, 2)]
@@ -686,17 +711,29 @@ def to_openscad(m: trimesh.Trimesh, regions, tol: float, source: str | None = No
     it and raise :class:`Unsupported` if it does not reproduce the mesh.
 
     Returns ``(code, None)`` when OpenSCAD is not available: the script is
-    still produced, and the caller reports it as unverified.
+    still produced, and the caller reports it as unverified. A hole pattern
+    is tried first. If that solid misses the deviation gate, the same part
+    is written with one parameter set per hole.
     """
-    code = render(recognize(m, regions, tol), tol=tol, source=source)
+    attempts = list(pattern_attempts(recognize(m, regions, tol), tol))
     if not verify or openscad_bin() is None:
-        return code, None
+        return render(attempts[0], tol=tol, source=source), None
+    last_problem = None
     try:
         with tempfile.TemporaryDirectory(prefix="mesh2cad-scad-") as d:
-            q = check(code, m, Path(d))
-    except Exception as e:  # noqa: BLE001
-        raise Unsupported(f"generated script failed to render: {e}") from e
-    problem = deviation_problem(q, tol)
-    if problem:
-        raise Unsupported(problem)
-    return code, q
+            work = Path(d)
+            for i, feat in enumerate(attempts):
+                code = render(feat, tol=tol, source=source)
+                try:
+                    q = check(code, m, work)
+                except Exception as e:  # noqa: BLE001
+                    if i == len(attempts) - 1:
+                        raise Unsupported(f"generated script failed to render: {e}") from e
+                    continue
+                problem = deviation_problem(q, tol)
+                if not problem:
+                    return code, q
+                last_problem = problem
+    except Unsupported:
+        raise
+    raise Unsupported(last_problem)
