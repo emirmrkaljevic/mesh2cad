@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.27.0 - 2026-11-12
 
 - Parametric CadQuery, OpenSCAD, and FreeCAD export write a straight obround through-slot along Z on a plate as `slot_1_len` (center to center), `slot_1_w` (width, the end diameter), `slot_1_x`, `slot_1_y`, and `slot_1_angle` (degrees, 0 along +X, 90 along +Y). Another angle is kept when the same two ends and two walls fit. CadQuery uses `slot2D` with an end-to-end length of `slot_1_len + slot_1_w`. OpenSCAD hulls the two end cylinders. FreeCAD fuses those cylinders with the bar between them. `mesh2cad edit`, `mesh2cad params`, and the MCP tools `list_params` / `edit_params` list and edit the new numbers. An edit that pushes a round end out of the plate is refused and nothing is written.
 - The honesty gate is unchanged: max deviation at most max(4·tol, 0.1), volume error at most 1%. A miss is not rewritten as a slot.
