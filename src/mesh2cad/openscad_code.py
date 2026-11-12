@@ -15,7 +15,8 @@ subtracted after that extrusion (``base_hole_N_d`` / ``leg_hole_N_d``).
 Three or more plain Z through-holes on one pitch are a ``for`` loop over
 ``hole_row_N_*`` (or ``base_hole_row_N_*`` / ``leg_hole_row_N_*``). An
 axis-aligned rectangle of them is ``hole_grid_N_*``. Holes that do not fit
-stay ``hole_N_*``.
+stay ``hole_N_*``. A straight obround through-slot along Z is the hull of
+two cylinders (``slot_N_len``, ``slot_N_w``, ``slot_N_angle``).
 A quarter-torus fillet on a vertical boss or hole is a revolved
 square-minus-quarter-circle: ``boss_N_fillet`` added at the base of a boss,
 ``hole_N_rim_r`` and ``hole_N_bot_rim_r`` cut from a hole rim, and
@@ -52,6 +53,7 @@ from .parametric import (Unsupported, axis_point_expr, boss_span, bracket_parame
 from .patterns import (iter_box_patterns, iter_bracket_patterns, openscad_pattern_cut,
                        pattern_attempts)
 from .report import deviation
+from .slots import openscad_slot_cut
 
 # Chord error of a radius-8 circle at this count is about 0.004 mm, under the
 # fidelity limits used for these parts. Hidden from the Customizer.
@@ -152,6 +154,12 @@ def _customizer_range(name: str, value: float, by_name: dict[str, float]) -> str
         else:
             limit = min(by_name["base_x"], by_name["base_y"])
         return _slider(0.2, limit, 0.1, value)
+    slot_w = _indexed(name, "slot_", "_w")
+    if slot_w and "base_x" in by_name and "base_y" in by_name:
+        return _slider(0.2, min(by_name["base_x"], by_name["base_y"]), 0.1, value)
+    slot_len = _indexed(name, "slot_", "_len")
+    if slot_len and "base_x" in by_name and "base_y" in by_name:
+        return _slider(0.2, max(by_name["base_x"], by_name["base_y"]), 0.1, value)
     hole_d = _indexed(name, "hole_", "_d")
     if hole_d:
         return _slider(0.2, _face_limit(by_name, _feature_axis(by_name, "hole", hole_d)), 0.1, value)
@@ -236,6 +244,8 @@ def _param_lines(params: list[tuple[str, float, str]]) -> list[str]:
             return "Bosses"
         if name.startswith(("hole_", "base_hole_", "leg_hole_")):
             return "Holes"
+        if name.startswith("slot_"):
+            return "Slots"
         return "Base"
 
     lines = ["// --- parameters ---"]
@@ -435,6 +445,8 @@ def _cuts(feats: dict) -> list[str]:
                 f"          circle(r={n}_bot_rim_r);\n"
                 f"      }}"
             )
+    for i, _slot in enumerate(feats.get("slots") or (), 1):
+        cuts.append(openscad_slot_cut(f"slot_{i}"))
     return cuts
 
 
