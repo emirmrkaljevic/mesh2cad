@@ -13,8 +13,9 @@ the foot or the upright is cut after that fillet, ``base_hole_N_d`` /
 ``leg_hole_N_d``). Three or more plain Z through-holes on one pitch are a
 loop over ``hole_row_N_*`` (or ``base_hole_row_N_*`` / ``leg_hole_row_N_*``).
 An axis-aligned rectangle of them is ``hole_grid_N_*``. Holes that do not
-fit stay ``hole_N_*``.
-and for a quarter-torus fillet on a vertical boss
+fit stay ``hole_N_*``. A straight obround through-slot along Z is
+``slot_N_len``, ``slot_N_w``, and ``slot_N_angle``, cut as two cylinders
+and the bar between them. A quarter-torus fillet on a vertical boss
 or hole (``boss_N_fillet``, ``hole_N_rim_r``, ``hole_N_bot_rim_r``,
 ``hole_N_floor_r``). A part that is a few extrusions (their
 intersection, a union of partial-depth extrusions, or one minus cuts along
@@ -44,6 +45,7 @@ from .csg import _OVERLAP, _fmt_py, _grown_expr, _hole_limits, _names, _param_ro
 from .extrude import (profile_cbore_cutter, profile_cutter, profile_parameters,
                       profile_point_lists)
 from .patterns import iter_box_patterns, iter_bracket_patterns, pattern_attempts, python_pattern_cuts
+from .slots import FREECAD_SLOT_FN, freecad_slot_cut
 from .parametric import (Unsupported, axis_point_expr, boss_span, bracket_parameters,
                          bracket_profile_exprs, cbore_cut_span, chamfer_is_square,
                          deviation_problem, hole_cut_span, iter_bracket_holes,
@@ -436,8 +438,12 @@ def _render_box(feats: dict, tol: float, source: str | None) -> str:
         if "floor_r" in d:
             floor_z = f"top - {n}_depth" if d.get("floor_end", "low") == "low" else f"base_z0 + {n}_depth"
             body.append(_fc_fillet(f"{n}_x, {n}_y, {floor_z}", f"{n}_d / 2", f"{n}_floor_r"))
+    for i, _slot in enumerate(feats.get("slots") or (), 1):
+        body.append(freecad_slot_cut(f"slot_{i}"))
     params = _number_lines(named_parameters(feats, tol), [])
     helpers = [_CIRCLE_EDGES] if _needs_circle_edges(feats) else []
+    if feats.get("slots"):
+        helpers.append(FREECAD_SLOT_FN)
     return _finish(_head(source), params, helpers, body)
 
 

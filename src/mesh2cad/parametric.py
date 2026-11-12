@@ -25,7 +25,10 @@ Supported parts:
   ``hole_grid_1_ny``, ``hole_grid_1_pitch_x``, ``hole_grid_1_pitch_y``). The
   same grouping is applied to ``base_hole_*`` and ``leg_hole_*``. Two holes,
   a bolt circle, and any hole that is blind, countersunk, counterbored, or
-  not along Z stay individual parameters;
+  not along Z stay individual parameters. A straight obround through-slot
+  along Z is ``slot_N_len`` (centre to centre), ``slot_N_w`` (width, the end
+  diameter), ``slot_N_x``, ``slot_N_y``, and ``slot_N_angle`` (0 along +X,
+  90 along +Y);
 * a straight extrusion of a 2D outline along X, Y, or Z, including a polygonal
   through-opening in that outline and round through-holes;
 * a counterbored through-hole (a larger cylinder opening on one face, the
@@ -1020,11 +1023,19 @@ def extract(m: trimesh.Trimesh, regions, tol: float) -> dict:
     for r in regions:
         if not isinstance(r.surface, (Plane, Cylinder, Cone, Torus)):
             raise Unsupported(f"{r.surface.kind} faces are not supported yet")
+    # Round ends of a slot are partial cylinders, or a ring of flat facets on
+    # a clean tessellation. Claiming them first keeps those facets from being
+    # read as a tilted plane, and keeps the ends from being read as fillets.
+    from .slots import find_obround_slots
+    slots, slot_planes, slot_cyls = find_obround_slots(m, regions, tol)
+    pos = []
     for r in planes:
+        if id(r) in slot_planes:
+            continue
         n = np.abs(r.surface.normal)
         if n.max() < math.cos(math.radians(2)):
             raise Unsupported("plane that is not axis-aligned")
-    pos = [(r, *_plane_pos(r.surface)) for r in planes]
+        pos.append((r, *_plane_pos(r.surface)))
     down = [(r, c) for r, i, sg, c in pos if i == 2 and sg < 0]
     if not down:
         raise Unsupported("no bottom face")
@@ -1035,10 +1046,11 @@ def extract(m: trimesh.Trimesh, regions, tol: float) -> dict:
     plane_coords[2].append(zmin)
     # corner fillets are partial cylinders; leaving them in the stacks makes
     # them look like bosses that do not start on the top face
-    fillet_regs = _vertical_fillets(m, regions)
+    fillet_regs = [r for r in _vertical_fillets(m, regions) if id(r) not in slot_cyls]
     fillet_ids = {id(r) for r in fillet_regs}
     stacks = _stacks(m, [r for r in regions
-                         if id(r) not in fillet_ids and not isinstance(r.surface, Torus)],
+                         if id(r) not in fillet_ids and id(r) not in slot_cyls
+                         and not isinstance(r.surface, Torus)],
                      tol, plane_coords)
     _apply_torus_fillets(stacks, tori, plane_coords, tol)
 
@@ -1207,6 +1219,8 @@ def extract(m: trimesh.Trimesh, regions, tol: float) -> dict:
             feats["bosses"].append(b)
     if fillet_regs:
         feats["fillet_r"] = _base_fillet_radius(m, fillet_regs, lo, hi, zmin, ztop, tol)
+    if slots:
+        feats["slots"] = slots
     return feats
 
 
@@ -1259,6 +1273,9 @@ def _feature_volume(feats: dict) -> float:
             v -= quarter_ring_volume(radius, float(hole["rim_lo"]), True)
         if "floor_r" in hole:
             v += quarter_ring_volume(radius, float(hole["floor_r"]), False)
+    for slot in feats.get("slots") or ():
+        radius = float(slot["w"]) / 2.0
+        v -= (float(slot["len"]) * float(slot["w"]) + math.pi * radius * radius) * float(b["t"])
     return v
 
 
@@ -1956,6 +1973,15 @@ def named_parameters(feats: dict, tol: float = 0.01) -> list[tuple[str, float, s
                 p(f"{n}_cbore_d", d["cbore_d"], "counterbore diameter")
                 p(f"{n}_cbore_depth", d["cbore_depth"],
                   f"counterbore depth from the {_face_name(ax, d['from'])} face")
+    for i, slot in enumerate(feats.get("slots") or (), 1):
+        n = f"slot_{i}"
+        p(f"{n}_len", slot["len"], "center-to-center length")
+        p(f"{n}_w", slot["w"], "width, the end diameter")
+        p(f"{n}_x", slot["x"], "center")
+        p(f"{n}_y", slot["y"], "center")
+        # Same tolerance as a length. Half a degree would slide the round ends.
+        P.append((f"{n}_angle", _nice(float(slot["angle"]), tol),
+                  "direction of the slot axis, degrees"))
     return P
 
 

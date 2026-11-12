@@ -30,6 +30,7 @@ _NUMBER = re.compile(r"[+-]?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][+-]?\d+)?")
 _HOLE_D = re.compile(r"hole_(\d+)_d\Z")
 _MEMBER_HOLE_D = re.compile(r"(base_hole|leg_hole)_(\d+)_d\Z")
 _ROW_N = re.compile(r"^((?:hole|base_hole|leg_hole)_row_\d+)_n\Z")
+_SLOT_LEN = re.compile(r"^(slot_\d+)_len\Z")
 _GRID_NX = re.compile(r"^((?:hole|base_hole|leg_hole)_grid_\d+)_nx\Z")
 _EXTRUDE_LEN = re.compile(r"extrude_([xyz])(\d*)_len\Z")
 _FACE = {"X": "yz", "Y": "xz", "Z": "xy"}
@@ -465,12 +466,12 @@ def _classify(name: str, note: str, value) -> tuple[str, str | None]:
     if re.fullmatch(r"(?:hole|base_hole|leg_hole)_(?:row|grid)_\d+_[xy]", name):
         return "position", "mm"
     if (name in ("base_cx", "base_cy", "base_z0") or name.endswith("_0")
-            or re.fullmatch(r"(?:base_hole|leg_hole|hole|boss|pad|cone)_\d+_[xyz]", name)
+            or re.fullmatch(r"(?:base_hole|leg_hole|hole|boss|pad|cone|slot)_\d+_[xyz]", name)
             or re.fullmatch(r"hole_\d+_[xyz][01]", name)):
         return "position", "mm"
     if name.endswith("_depth"):
         return "depth", "mm"
-    if name.endswith("_d"):
+    if name.endswith("_d") or re.fullmatch(r"slot_\d+_w", name):
         return "diameter", "mm"
     if (re.fullmatch(r"boss_\d+_fillet", name) or name.endswith(("_r", "_r0", "_r1"))
             or name == "fillet_r"):
@@ -579,6 +580,7 @@ def _check_geometry(script: Script, resolved: dict[str, float]) -> None:
     if solids:
         _check_holes(scalars, notes, solids, mode)
         _check_patterns(scalars, solids, mode)
+        _check_slots(scalars, solids, mode)
 
 
 def _check_scalar(name: str, value: float, kind: str, scalars: dict[str, float]) -> None:
@@ -789,6 +791,33 @@ def _check_patterns(scalars, solids, mode: str) -> None:
         for x, y in _pattern_centers(prefix, kind, scalars):
             _require_fit(f"{prefix}_d", diameter / 2.0, "Z", (x, y), solids, mode,
                          label=f"{prefix}_d")
+
+
+def _slot_ends(prefix: str, scalars: dict[str, float]):
+    """The two round-end centres of one obround slot."""
+    length = scalars.get(f"{prefix}_len")
+    if length is None or f"{prefix}_x" not in scalars or f"{prefix}_y" not in scalars:
+        return []
+    ang = math.radians(scalars.get(f"{prefix}_angle", 0.0))
+    dx = (length / 2.0) * math.cos(ang)
+    dy = (length / 2.0) * math.sin(ang)
+    x0, y0 = scalars[f"{prefix}_x"], scalars[f"{prefix}_y"]
+    return [(x0 - dx, y0 - dy), (x0 + dx, y0 + dy)]
+
+
+def _check_slots(scalars, solids, mode: str) -> None:
+    """Both round ends have to sit in the wall, same as a hole of that width."""
+    for name in scalars:
+        matched = _SLOT_LEN.fullmatch(name)
+        if not matched:
+            continue
+        prefix = matched.group(1)
+        width = scalars.get(f"{prefix}_w")
+        if width is None:
+            continue
+        for x, y in _slot_ends(prefix, scalars):
+            _require_fit(f"{prefix}_w", width / 2.0, "Z", (x, y), solids, mode,
+                         label=f"{prefix}_w")
 
 
 def _require_fit(name: str, radius: float, axis: str, uv, solids, mode: str, label: str | None = None) -> None:
