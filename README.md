@@ -6,6 +6,9 @@ mesh2cad converts an STL mesh of a simple mechanical part into editable parametr
 [![PyPI](https://img.shields.io/pypi/v/mesh2cad)](https://pypi.org/project/mesh2cad/)
 [![emirmrkaljevic/mesh2cad MCP server](https://glama.ai/mcp/servers/emirmrkaljevic/mesh2cad/badges/score.svg)](https://glama.ai/mcp/servers/emirmrkaljevic/mesh2cad)
 
+<p align="center"><a href="https://skintoscan.com/#packages"><img src=".github/assets/skintoscan-support.svg" width="684" alt="Support my open-source work: get a SkinToScan pack"></a><br><sub>If you find this useful, you can support me by getting a SkinToScan pack, my other project. It's a one-time purchase that directly funds my open-source work.</sub></p>
+<p align="center"><a href="https://skintoscan.com/checkout/?add-to-cart=138"><img src=".github/assets/skintoscan-pack-1.svg" width="220" alt="Buy Single Picture Check, €4.49"></a> <a href="https://skintoscan.com/checkout/?add-to-cart=139"><img src=".github/assets/skintoscan-pack-5.svg" width="220" alt="Buy 5 Picture Pack, €19.99 (popular)"></a> <a href="https://skintoscan.com/checkout/?add-to-cart=140"><img src=".github/assets/skintoscan-pack-15.svg" width="220" alt="Buy 15 Picture Pack, €54.99"></a></p>
+
 OBJ and PLY meshes work the same way. The fit runs on your machine. Nothing is uploaded.
 
 A STEP file is the solid. When the fit is exact, a hole is one cylindrical face, not a ring of triangles. A script is for changing a dimension and rebuilding. CadQuery is Python. OpenSCAD is the text the Customizer on Thingiverse and Printables edits. The FreeCAD file is a macro. All three use the same names, so `hole_1_d` is the same hole in each of them.
