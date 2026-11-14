@@ -1,4 +1,4 @@
-# Limits (v0.27.0)
+# Limits (v0.28.0)
 
 This is what the STEP fitter rebuilds, what becomes a named parameter in a script, and what is refused. Version numbers in the text are the releases where a measurement was taken. They are not a claim that older behavior is still current, except where the sentence says the output is unchanged.
 
