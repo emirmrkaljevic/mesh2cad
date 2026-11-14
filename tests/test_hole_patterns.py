@@ -102,52 +102,52 @@ def _export(wp, sigma=0.0, seed=0):
 
 
 def test_detector_groups_rows_and_grids_and_leaves_the_rest():
-    kept, rows, grids = partition_holes(
+    kept, rows, grids, circles = partition_holes(
         [_hole(-18), _hole(-6), _hole(6), _hole(18)], 0.01)
-    assert kept == []
+    assert kept == [] and circles == []
     assert len(rows) == 1 and rows[0]["n"] == 4
     assert rows[0]["pitch"] == pytest.approx(12)
     assert rows[0]["angle"] == pytest.approx(0)
     assert rows[0]["x"] == pytest.approx(-18)
 
-    kept, rows, grids = partition_holes([_hole(-18), _hole(18)], 0.01)
-    assert rows == [] and grids == [] and len(kept) == 2
+    kept, rows, grids, circles = partition_holes([_hole(-18), _hole(18)], 0.01)
+    assert rows == [] and grids == [] and circles == [] and len(kept) == 2
 
-    kept, rows, grids = partition_holes(
+    kept, rows, grids, circles = partition_holes(
         [_hole(-18), _hole(-6), _hole(8), _hole(18)], 0.01)
     assert rows == [] and grids == [] and len(kept) == 4
 
     # The detector accepts this row. The export gate is what refuses it.
-    kept, rows, grids = partition_holes(
+    kept, rows, grids, circles = partition_holes(
         [_hole(-18), _hole(-6), _hole(6), _hole(18.6)], 0.01)
     assert len(rows) == 1 and rows[0]["n"] == 4
     assert rows[0]["pitch"] == pytest.approx(12.18, abs=0.02)
 
     points = [(x, y) for x in (-20, 0, 20) for y in (-12, 12)]
-    kept, rows, grids = partition_holes([_hole(x, y, d=5) for x, y in points], 0.01)
-    assert rows == [] and kept == []
+    kept, rows, grids, circles = partition_holes([_hole(x, y, d=5) for x, y in points], 0.01)
+    assert rows == [] and circles == [] and kept == []
     assert grids[0]["nx"] == 3 and grids[0]["ny"] == 2
     assert grids[0]["pitch_x"] == pytest.approx(20)
     assert grids[0]["pitch_y"] == pytest.approx(24)
     assert grids[0]["x"] == pytest.approx(-20) and grids[0]["y"] == pytest.approx(-12)
 
-    kept, rows, _grids = partition_holes(
+    kept, rows, _grids, _circles = partition_holes(
         [_hole(0, 0), _hole(10, 10), _hole(20, 20), _hole(30, 30)], 0.01)
     assert kept == [] and rows[0]["n"] == 4
     assert rows[0]["angle"] == pytest.approx(45)
     assert rows[0]["pitch"] == pytest.approx(10 * math.sqrt(2))
 
-    kept, rows, _grids = partition_holes(
+    kept, rows, _grids, _circles = partition_holes(
         [_hole(0, -18), _hole(0, -6), _hole(0, 6), _hole(0, 18)], 0.01)
     assert rows[0]["angle"] == pytest.approx(90)
     assert rows[0]["y"] == pytest.approx(-18)
 
-    kept, rows, _grids = partition_holes(
+    kept, rows, _grids, _circles = partition_holes(
         [_hole(-18), _hole(-6), _hole(6), _hole(18), _hole(0, 14)], 0.01)
     assert len(rows) == 1 and len(kept) == 1 and kept[0]["y"] == pytest.approx(14)
 
     blind = [_hole(i, 0, depth=4) for i in (0, 12, 24, 36)]
-    kept, rows, grids = partition_holes(blind, 0.01)
+    kept, rows, grids, circles = partition_holes(blind, 0.01)
     assert rows == [] and grids == [] and len(kept) == 4
 
 
@@ -199,6 +199,7 @@ def test_grid_is_one_pattern():
     assert params["hole_grid_1_y"] == pytest.approx(-12, abs=0.05)
     assert params["hole_grid_1_angle"] == pytest.approx(0, abs=0.05)
     assert "hole_row_1_n" not in params
+    assert "hole_circle_1_n" not in params
     assert "hole_1_d" not in params
     assert "for _j in range(int(round(hole_grid_1_ny))):" in code
     solid = run_script(code)

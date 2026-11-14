@@ -14,8 +14,9 @@ and ``leg_y``. A through-hole in the foot or the upright is a ``cylinder``
 subtracted after that extrusion (``base_hole_N_d`` / ``leg_hole_N_d``).
 Three or more plain Z through-holes on one pitch are a ``for`` loop over
 ``hole_row_N_*`` (or ``base_hole_row_N_*`` / ``leg_hole_row_N_*``). An
-axis-aligned rectangle of them is ``hole_grid_N_*``. Holes that do not fit
-stay ``hole_N_*``. A straight obround through-slot along Z is the hull of
+axis-aligned rectangle of them is ``hole_grid_N_*``. Equally spaced holes on
+one circle are ``hole_circle_N_*`` (``hole_circle_N_r`` is the pitch-circle
+radius). Holes that do not fit stay ``hole_N_*``. A straight obround through-slot along Z is the hull of
 two cylinders (``slot_N_len``, ``slot_N_w``, ``slot_N_angle``).
 A quarter-torus fillet on a vertical boss or hole is a revolved
 square-minus-quarter-circle: ``boss_N_fillet`` added at the base of a boss,
@@ -140,11 +141,12 @@ def _customizer_range(name: str, value: float, by_name: dict[str, float]) -> str
     if leg_hole and "leg_x" in by_name and "base_y" in by_name:
         return _slider(0.2, min(by_name["leg_x"], by_name["base_y"]), 0.1, value)
     count = re.fullmatch(
-        r"(?:hole|base_hole|leg_hole)_(?:row_\d+_n|grid_\d+_n[xy])", name)
+        r"(?:hole|base_hole|leg_hole)_(?:row_\d+_n|grid_\d+_n[xy]|circle_\d+_n)", name)
     if count:
         return _slider(1, max(float(value), 16), 1, value)
     pattern_d = re.fullmatch(
-        r"(hole_row|hole_grid|base_hole_row|base_hole_grid|leg_hole_row|leg_hole_grid)_\d+_d",
+        r"(hole_row|hole_grid|hole_circle|base_hole_row|base_hole_grid|base_hole_circle|"
+        r"leg_hole_row|leg_hole_grid|leg_hole_circle)_\d+_d",
         name)
     if pattern_d and "base_x" in by_name and "base_y" in by_name:
         if name.startswith("base_hole_") and "leg_y" in by_name:

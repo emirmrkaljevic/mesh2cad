@@ -48,7 +48,7 @@ If the part is outside what a script can express, or the rebuilt solid misses th
 
 ## What it handles
 
-It is meant for simple mechanical parts: plates, brackets, and boxes with holes, slots, bosses, and fillets. It fits planes, cylinders, spheres, cones, and constant-radius rounds, and writes those as faces you can select.
+It is meant for simple mechanical parts: plates, brackets, and boxes with holes, bolt circles, slots, bosses, and fillets. It fits planes, cylinders, spheres, cones, and constant-radius rounds, and writes those as faces you can select.
 
 It does not recover organic or sculpted shapes, scans, or free-form surfaces. When a fit is poor it does not invent a surface. STEP output falls back to a faceted solid that is still valid, and the report names that fallback. A script is held to a tighter check: deviation at most max(4 times the tolerance, 0.1 mm), and volume error at most 1%. Miss that, and the script is refused.
 

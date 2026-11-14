@@ -12,8 +12,9 @@ one radius (``fillet_r``, with ``leg_x`` and ``leg_y``; a through-hole in
 the foot or the upright is cut after that fillet, ``base_hole_N_d`` /
 ``leg_hole_N_d``). Three or more plain Z through-holes on one pitch are a
 loop over ``hole_row_N_*`` (or ``base_hole_row_N_*`` / ``leg_hole_row_N_*``).
-An axis-aligned rectangle of them is ``hole_grid_N_*``. Holes that do not
-fit stay ``hole_N_*``. A straight obround through-slot along Z is
+An axis-aligned rectangle of them is ``hole_grid_N_*``. Equally spaced holes
+on one circle are ``hole_circle_N_*`` (``hole_circle_N_r`` is the pitch-circle
+radius). Holes that do not fit stay ``hole_N_*``. A straight obround through-slot along Z is
 ``slot_N_len``, ``slot_N_w``, and ``slot_N_angle``, cut as two cylinders
 and the bar between them. A quarter-torus fillet on a vertical boss
 or hole (``boss_N_fillet``, ``hole_N_rim_r``, ``hole_N_bot_rim_r``,
