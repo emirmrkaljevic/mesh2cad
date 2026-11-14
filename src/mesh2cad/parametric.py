@@ -22,10 +22,13 @@ Supported parts:
   plain Z through-holes of one diameter, in a line at one pitch, are one row
   (``hole_row_1_n``, ``hole_row_1_pitch``, and the start and direction). An
   axis-aligned rectangle of them is one grid (``hole_grid_1_nx``,
-  ``hole_grid_1_ny``, ``hole_grid_1_pitch_x``, ``hole_grid_1_pitch_y``). The
-  same grouping is applied to ``base_hole_*`` and ``leg_hole_*``. Two holes,
-  a bolt circle, and any hole that is blind, countersunk, counterbored, or
-  not along Z stay individual parameters. A straight obround through-slot
+  ``hole_grid_1_ny``, ``hole_grid_1_pitch_x``, ``hole_grid_1_pitch_y``).
+  Three or more on one circle, equally spaced, are one bolt circle
+  (``hole_circle_1_n``, ``hole_circle_1_d``, ``hole_circle_1_r`` for the
+  pitch-circle radius, ``hole_circle_1_cx``, ``hole_circle_1_cy``, and
+  ``hole_circle_1_angle``). The same grouping is applied to ``base_hole_*``
+  and ``leg_hole_*``. Two holes, and any hole that is blind, countersunk,
+  counterbored, or not along Z, stay individual parameters. A straight obround through-slot
   along Z is ``slot_N_len`` (centre to centre), ``slot_N_w`` (width, the end
   diameter), ``slot_N_x``, ``slot_N_y``, and ``slot_N_angle`` (0 along +X,
   90 along +Y);
@@ -1422,7 +1425,8 @@ def bracket_parameters(feats: dict, tol: float = 0.01) -> list[tuple[str, float,
     # A pattern direction is rounded like a length. Snapping it to the nearest
     # half degree would slide the far holes off the mesh.
     def _tol_for(name: str) -> float:
-        if ("angle" in name or "deg" in name) and "_row_" not in name and "_grid_" not in name:
+        if ("angle" in name or "deg" in name) and not any(
+                token in name for token in ("_row_", "_grid_", "_circle_")):
             return 0.5
         return tol
 
