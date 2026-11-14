@@ -32,6 +32,7 @@ _MEMBER_HOLE_D = re.compile(r"(base_hole|leg_hole)_(\d+)_d\Z")
 _ROW_N = re.compile(r"^((?:hole|base_hole|leg_hole)_row_\d+)_n\Z")
 _SLOT_LEN = re.compile(r"^(slot_\d+)_len\Z")
 _GRID_NX = re.compile(r"^((?:hole|base_hole|leg_hole)_grid_\d+)_nx\Z")
+_CIRCLE_N = re.compile(r"^((?:hole|base_hole|leg_hole)_circle_\d+)_n\Z")
 _EXTRUDE_LEN = re.compile(r"extrude_([xyz])(\d*)_len\Z")
 _FACE = {"X": "yz", "Y": "xz", "Z": "xy"}
 _PLANE_AXIS = {"XY": "Z", "XZ": "Y", "YZ": "X"}
@@ -458,12 +459,14 @@ def _classify(name: str, note: str, value) -> tuple[str, str | None]:
         return "offset", "mm"
     if "angle" in name or name.endswith("_deg"):
         return "angle", "deg"
-    if re.fullmatch(r"(?:hole|base_hole|leg_hole)_(?:row_\d+_n|grid_\d+_n[xy])", name):
+    if re.fullmatch(r"(?:hole|base_hole|leg_hole)_(?:row_\d+_n|grid_\d+_n[xy]|circle_\d+_n)", name):
         return "count", None
     if (re.fullmatch(r"(?:hole|base_hole|leg_hole)_row_\d+_pitch", name)
             or re.fullmatch(r"(?:hole|base_hole|leg_hole)_grid_\d+_pitch_[xy]", name)):
         return "length", "mm"
     if re.fullmatch(r"(?:hole|base_hole|leg_hole)_(?:row|grid)_\d+_[xy]", name):
+        return "position", "mm"
+    if re.fullmatch(r"(?:hole|base_hole|leg_hole)_circle_\d+_c[xy]", name):
         return "position", "mm"
     if (name in ("base_cx", "base_cy", "base_z0") or name.endswith("_0")
             or re.fullmatch(r"(?:base_hole|leg_hole|hole|boss|pad|cone|slot)_\d+_[xyz]", name)
@@ -581,6 +584,7 @@ def _check_geometry(script: Script, resolved: dict[str, float]) -> None:
         _check_holes(scalars, notes, solids, mode)
         _check_patterns(scalars, solids, mode)
         _check_slots(scalars, solids, mode)
+        _check_overlaps(scalars)
 
 
 def _check_scalar(name: str, value: float, kind: str, scalars: dict[str, float]) -> None:
@@ -742,7 +746,7 @@ def _check_holes(scalars, notes, solids, mode: str) -> None:
 
 
 def _pattern_centers(prefix: str, kind: str, scalars: dict[str, float]):
-    """Centers a row or grid cuts, in the same order as the generated loop."""
+    """Centers a row, grid, or bolt circle cuts, in the generated loop order."""
     if kind == "row":
         keys = ("n", "pitch", "x", "y")
         if any(f"{prefix}_{key}" not in scalars for key in keys):
@@ -754,6 +758,21 @@ def _pattern_centers(prefix: str, kind: str, scalars: dict[str, float]):
         step_y = pitch * math.sin(ang)
         x0, y0 = scalars[f"{prefix}_x"], scalars[f"{prefix}_y"]
         return [(x0 + i * step_x, y0 + i * step_y) for i in range(max(count, 0))]
+    if kind == "circle":
+        keys = ("n", "r", "cx", "cy")
+        if any(f"{prefix}_{key}" not in scalars for key in keys):
+            return []
+        count = int(round(scalars[f"{prefix}_n"]))
+        if count <= 0:
+            return []
+        radius = scalars[f"{prefix}_r"]
+        ang0 = math.radians(scalars.get(f"{prefix}_angle", 0.0))
+        step = 2.0 * math.pi / count
+        cx, cy = scalars[f"{prefix}_cx"], scalars[f"{prefix}_cy"]
+        return [
+            (cx + radius * math.cos(ang0 + i * step), cy + radius * math.sin(ang0 + i * step))
+            for i in range(count)
+        ]
     keys = ("nx", "ny", "pitch_x", "pitch_y", "x", "y")
     if any(f"{prefix}_{key}" not in scalars for key in keys):
         return []
@@ -784,6 +803,9 @@ def _check_patterns(scalars, solids, mode: str) -> None:
         grid = _GRID_NX.fullmatch(name)
         if grid:
             patterns.append((grid.group(1), "grid"))
+        circle = _CIRCLE_N.fullmatch(name)
+        if circle:
+            patterns.append((circle.group(1), "circle"))
     for prefix, kind in patterns:
         diameter = scalars.get(f"{prefix}_d")
         if diameter is None:
@@ -791,6 +813,50 @@ def _check_patterns(scalars, solids, mode: str) -> None:
         for x, y in _pattern_centers(prefix, kind, scalars):
             _require_fit(f"{prefix}_d", diameter / 2.0, "Z", (x, y), solids, mode,
                          label=f"{prefix}_d")
+
+
+def _hole_disks(scalars: dict[str, float]):
+    """``(name, x, y, radius)`` for every plain Z hole the script would cut."""
+    disks = []
+    for name, value in scalars.items():
+        matched = _HOLE_D.fullmatch(name)
+        if matched:
+            idx = matched.group(1)
+            if f"hole_{idx}_x" in scalars and f"hole_{idx}_y" in scalars:
+                disks.append((name, scalars[f"hole_{idx}_x"], scalars[f"hole_{idx}_y"], value / 2.0))
+            continue
+        matched = _MEMBER_HOLE_D.fullmatch(name)
+        if not matched:
+            continue
+        prefix = f"{matched.group(1)}_{matched.group(2)}"
+        if f"{prefix}_x" in scalars and f"{prefix}_y" in scalars:
+            disks.append((name, scalars[f"{prefix}_x"], scalars[f"{prefix}_y"], value / 2.0))
+    patterns = []
+    for name in scalars:
+        for regex, kind in ((_ROW_N, "row"), (_GRID_NX, "grid"), (_CIRCLE_N, "circle")):
+            matched = regex.fullmatch(name)
+            if matched:
+                patterns.append((matched.group(1), kind))
+    for prefix, kind in patterns:
+        diameter = scalars.get(f"{prefix}_d")
+        if diameter is None:
+            continue
+        for x, y in _pattern_centers(prefix, kind, scalars):
+            disks.append((f"{prefix}_d", x, y, diameter / 2.0))
+    return disks
+
+
+def _check_overlaps(scalars) -> None:
+    """Refuse an edit whose holes cut into each other. Nothing is written."""
+    disks = _hole_disks(scalars)
+    for i, (name_a, xa, ya, ra) in enumerate(disks):
+        for name_b, xb, yb, rb in disks[i + 1:]:
+            dist = math.hypot(xa - xb, ya - yb)
+            if dist + 1e-6 >= ra + rb:
+                continue
+            if name_a == name_b:
+                raise GeometryError(f"{name_a} overlaps another hole of the same pattern")
+            raise GeometryError(f"{name_a} overlaps {name_b}")
 
 
 def _slot_ends(prefix: str, scalars: dict[str, float]):
@@ -825,8 +891,9 @@ def _require_fit(name: str, radius: float, axis: str, uv, solids, mode: str, lab
     shown = label or name
     diameter = radius * 2.0
     shorter = _shorter_side(solids, mode, axis, u, v)
-    # Slack on the rim must not let a hole through that is wider than the wall.
-    if shorter is not None and diameter >= shorter - 0.05:
+    # A center outside the wall reports a host span of 0. That is the hole
+    # leaving the plate, not a diameter larger than the plate.
+    if shorter is not None and shorter > 0.05 and diameter >= shorter - 0.05:
         raise GeometryError(
             f"{shown}={format_number(diameter)} does not fit: the hole is larger than the wall "
             f"it sits in ({format_number(shorter)} mm on the shorter side)"
