@@ -506,6 +506,12 @@ def _render_profile(feats: dict, tol: float, source: str | None) -> str:
     origin, length = "extrude_0", "extrude_len"
     body = _extrude_lines("result", pr["axis"], origin, length, "outline",
                           pr["cutouts"], "cutout")
+    for i, _boss in enumerate(feats.get("bosses") or [], 1):
+        n = f"boss_{i}"
+        body.append(
+            f"result = result.fuse(Part.makeCylinder({n}_d / 2, {n}_h, "
+            f"App.Vector({n}_x, {n}_y, extrude_0 + extrude_len), App.Vector(0, 0, 1)))"
+        )
     for i, hole in enumerate(feats["holes"], 1):
         n = f"hole_{i}"
         start, hlen = profile_cutter(hole, "cadquery")

@@ -582,6 +582,7 @@ def _check_geometry(script: Script, resolved: dict[str, float]) -> None:
     solids, mode = _solids(script, scalars)
     if solids:
         _check_holes(scalars, notes, solids, mode)
+        _check_outline_bosses(scalars, solids, mode)
         _check_patterns(scalars, solids, mode)
         _check_slots(scalars, solids, mode)
         _check_overlaps(scalars)
@@ -708,6 +709,25 @@ def _check_features(scalars: dict[str, float]) -> None:
                     f"{name}={format_number(value)} is at least the base thickness "
                     f"({format_number(thick)} mm)"
                 )
+
+
+def _check_outline_bosses(scalars, solids, mode: str) -> None:
+    """A boss on a single Z extrusion has to stay inside that outline."""
+    if "extrude_len" not in scalars or "base_x" in scalars or "base_x0" in scalars:
+        return
+    if mode != "single" or len(solids) != 1 or solids[0].axis != "Z":
+        return
+    for name, value in scalars.items():
+        matched = re.fullmatch(r"boss_(\d+)_d", name)
+        if not matched:
+            continue
+        idx = matched.group(1)
+        if f"boss_{idx}_z" in scalars or f"boss_{idx}_x" not in scalars or f"boss_{idx}_y" not in scalars:
+            continue
+        _require_fit(
+            name, value / 2.0, "Z", (scalars[f"boss_{idx}_x"], scalars[f"boss_{idx}_y"]),
+            solids, mode, label=name, noun="boss",
+        )
 
 
 def _check_holes(scalars, notes, solids, mode: str) -> None:
@@ -886,22 +906,23 @@ def _check_slots(scalars, solids, mode: str) -> None:
                          label=f"{prefix}_w")
 
 
-def _require_fit(name: str, radius: float, axis: str, uv, solids, mode: str, label: str | None = None) -> None:
+def _require_fit(name: str, radius: float, axis: str, uv, solids, mode: str,
+                 label: str | None = None, noun: str = "hole") -> None:
     u, v = uv
     shown = label or name
     diameter = radius * 2.0
     shorter = _shorter_side(solids, mode, axis, u, v)
-    # A center outside the wall reports a host span of 0. That is the hole
+    # A center outside the wall reports a host span of 0. That is the feature
     # leaving the plate, not a diameter larger than the plate.
     if shorter is not None and shorter > 0.05 and diameter >= shorter - 0.05:
         raise GeometryError(
-            f"{shown}={format_number(diameter)} does not fit: the hole is larger than the wall "
+            f"{shown}={format_number(diameter)} does not fit: the {noun} is larger than the wall "
             f"it sits in ({format_number(shorter)} mm on the shorter side)"
         )
     if _circle_fits(solids, mode, axis, u, v, radius):
         return
     raise GeometryError(
-        f"{shown}={format_number(diameter)} does not fit: the hole crosses the edge of the wall it sits in"
+        f"{shown}={format_number(diameter)} does not fit: the {noun} crosses the edge of the wall it sits in"
     )
 
 

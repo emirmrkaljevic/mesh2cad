@@ -2,9 +2,11 @@
 
 A part qualifies when it is a prism along X, Y, or Z: two end caps, side
 walls parallel to that axis, optional polygonal through-openings in the
-outline, and optional round through-holes. The outline vertices and the
-extrusion length become named parameters. The box/pad vocabulary stays in
-charge for parts it already explains; this module is the fallback.
+outline, and optional round through-holes. A Z extrusion may also carry
+straight round bosses on its top face (``boss_N_d``, ``boss_N_h``,
+``boss_N_x``, ``boss_N_y``). The outline vertices and the extrusion length
+become named parameters. The box/pad vocabulary stays in charge for parts it
+already explains; this module is the fallback.
 """
 from __future__ import annotations
 
@@ -455,6 +457,264 @@ def _outward(mesh, region, cyl) -> bool:
     return float(np.mean(np.sum(mesh.face_normals[region.faces] * radial, axis=1))) > 0
 
 
+def _cone_outward(mesh, region, cone) -> bool:
+    ax = _unit(cone.axis)
+    c = np.asarray(cone.apex, float)
+    fc = mesh.triangles_center[region.faces]
+    radial = fc - c
+    radial = radial - np.outer(radial @ ax, ax)
+    nrm = np.linalg.norm(radial, axis=1, keepdims=True)
+    radial = radial / np.maximum(nrm, 1e-12)
+    return float(np.mean(np.sum(mesh.face_normals[region.faces] * radial, axis=1))) > 0
+
+
+def _full_turn(mesh, surface, faces) -> bool:
+    """False for a partial cylinder (a fillet). None span is kept, as elsewhere."""
+    span = _partial_span(mesh, surface, faces)
+    return span is None or span >= np.radians(250.0)
+
+
+def _piled_end(verts, sign: int, tol: float) -> float:
+    """Median Z of the vertices piled at a free end.
+
+    The single furthest vertex sits past the cap once the mesh is noisy, and
+    the cap triangles are often absorbed into the cylinder region.
+    """
+    along = np.asarray(verts, float)[:, 2]
+    extreme = float(along.min() if sign < 0 else along.max())
+    band = max(6.0 * tol, 0.4)
+    near = along[along <= extreme + band] if sign < 0 else along[along >= extreme - band]
+    if near.size < 8:
+        return extreme
+    return float(np.median(near))
+
+
+def _absorbed_cap(verts, z_end: float, point, radius: float, tol: float) -> bool:
+    """True when vertices pile up on a flat disk at ``z_end`` inside the cylinder."""
+    band = max(6.0 * tol, 0.45)
+    near = np.asarray(verts, float)
+    near = near[np.abs(near[:, 2] - float(z_end)) <= band]
+    if len(near) < 12:
+        return False
+    if float(np.std(near[:, 2])) > max(4.0 * tol, 0.2):
+        return False
+    rel = near[:, :2] - np.asarray(point, float)[:2]
+    rho = np.linalg.norm(rel, axis=1)
+    return float(np.percentile(rho, 90)) <= float(radius) + _eps(tol, 0.5)
+
+
+def _disk_cap(mesh, region, point, radius, tol) -> bool:
+    """A Z cap whose vertices stay inside one cylinder (a boss end, or an annulus)."""
+    if not isinstance(region.surface, Plane):
+        return False
+    if _attitude(region.surface.normal, 2, 8.0) != "cap":
+        return False
+    verts = mesh.vertices[np.unique(mesh.faces[region.faces])]
+    if len(verts) < 3:
+        return False
+    rel = verts - np.asarray(point, float)
+    rel[:, 2] = 0.0
+    rho = np.linalg.norm(rel, axis=1)
+    return float(np.percentile(rho, 95)) <= float(radius) + _eps(tol, 0.45)
+
+
+def _circle_inside(center, radius, outline, cutouts, slack) -> bool:
+    """True when the circle lies in the outline and clear of every cutout.
+
+    ``slack`` shrinks the tested radius, so a fit that drifted by about that
+    much still counts as inside.
+    """
+    rad = float(radius) - float(slack)
+    cx, cy = float(center[0]), float(center[1])
+    if not _inside_profile((cx, cy), outline, cutouts):
+        return False
+    if rad <= 0.05:
+        return True
+    for k in range(48):
+        ang = 2.0 * math.pi * k / 48.0
+        if not _inside_profile((cx + rad * math.cos(ang), cy + rad * math.sin(ang)),
+                               outline, cutouts):
+            return False
+    return True
+
+
+def _outward_groups(mesh, cylinders, tol, axis):
+    """Coaxial outward cylinders of one radius, along ``axis``."""
+    groups = []
+    gtol = _eps(tol, 0.35)
+    for region in cylinders:
+        surface = region.surface
+        if not isinstance(surface, Cylinder) or region.area < _min_area(mesh):
+            continue
+        if _principal_axis(surface.axis) != axis or not _outward(mesh, region, surface):
+            continue
+        if not _full_turn(mesh, surface, region.faces):
+            continue
+        point = np.asarray(surface.point, float)
+        for group in groups:
+            if (_perp_dist(axis, group["point"], point) <= gtol
+                    and abs(group["radius"] - float(surface.radius)) <= gtol):
+                group["regs"].append(region)
+                group["point"] = group["point"] + point
+                group["n"] += 1
+                break
+        else:
+            groups.append({
+                "point": point.copy(), "radius": float(surface.radius),
+                "regs": [region], "n": 1,
+            })
+    for group in groups:
+        group["point"] = group["point"] / group["n"]
+    return groups
+
+
+def _z_boss_plan(mesh, caps, cylinders, tol):
+    """Straight top bosses on a Z extrusion, and the end caps that belong to them.
+
+    Returns ``(previews, drop_caps)``. A side boss, a bottom boss, or an
+    outward cylinder that is not a straight boss on one top face raises
+    :class:`_Reject`. No outward cylinder returns empty lists. A partial
+    cylinder is left for the rounded-edge check.
+    """
+    for region in cylinders:
+        surface = region.surface
+        if not isinstance(surface, Cylinder) or region.area < _min_area(mesh):
+            continue
+        ax = _principal_axis(surface.axis)
+        if ax is None or ax == 2 or not _outward(mesh, region, surface):
+            continue
+        if not _full_turn(mesh, surface, region.faces):
+            continue
+        raise _Reject("a boss on a side face of an extruded outline is not supported yet", 6)
+    groups = _outward_groups(mesh, cylinders, tol, 2)
+    if not groups:
+        return [], []
+    gap = _eps(tol, 0.35)
+    previews = []
+    drop = []
+    for group in groups:
+        verts = np.vstack([
+            mesh.vertices[np.unique(mesh.faces[region.faces])] for region in group["regs"]
+        ])
+        z0 = float(verts[:, 2].min())
+        z1 = float(verts[:, 2].max())
+        z_lo = _piled_end(verts, -1, tol)
+        z_hi = _piled_end(verts, 1, tol)
+        if z_hi - z_lo <= gap:
+            raise _Reject("a boss on an extruded outline is not supported yet", 6)
+        point = group["point"]
+        radius = group["radius"]
+        near_lo, near_hi = [], []
+        for cap in caps:
+            coord = _plane_coord(cap.surface, 2)
+            if abs(coord - z_lo) <= gap or abs(coord - z0) <= gap:
+                near_lo.append(cap)
+            if abs(coord - z_hi) <= gap or abs(coord - z1) <= gap:
+                near_hi.append(cap)
+        hi_disk = [cap for cap in near_hi if _disk_cap(mesh, cap, point, radius, tol)]
+        lo_disk = [cap for cap in near_lo if _disk_cap(mesh, cap, point, radius, tol)]
+        lo_ids = {id(cap) for cap in lo_disk}
+        hi_ids = {id(cap) for cap in hi_disk}
+        lo_broad = [cap for cap in near_lo if id(cap) not in lo_ids]
+        hi_broad = [cap for cap in near_hi if id(cap) not in hi_ids]
+        flat_top = bool(hi_disk) or _absorbed_cap(verts, z_hi, point, radius, tol)
+        # A broad face under the cylinder is the plate top. An extra disk there
+        # is the underside of a boss that hangs off that face, not a second part.
+        # The end disk is often merged into the cylinder, so the flat top can
+        # also be just the vertices piled at z_hi.
+        if lo_broad and flat_top:
+            previews.append({
+                "point": np.asarray(point, float),
+                "radius": float(radius),
+                "z0": z_lo,
+                "z1": z1,
+            })
+            drop.extend(hi_disk)
+            continue
+        if lo_disk and hi_broad and not hi_disk:
+            raise _Reject(
+                "a boss on the bottom face of an extruded outline is not supported yet", 6)
+        raise _Reject("a boss on an extruded outline is not supported yet", 6)
+    base = previews[0]["z0"]
+    if any(abs(item["z0"] - base) > gap for item in previews):
+        raise _Reject("a boss does not start on the top face of the extruded outline", 6)
+    return previews, drop
+
+
+def _within_bosses(points, previews, gap) -> bool:
+    """True when every point sits inside some preview boss."""
+    if len(points) == 0:
+        return True
+    for point in np.asarray(points, float):
+        covered = False
+        for boss in previews:
+            if point[2] < boss["z0"] - gap or point[2] > boss["z1"] + gap:
+                continue
+            if math.hypot(point[0] - boss["point"][0], point[1] - boss["point"][1]) <= boss["radius"] + gap:
+                covered = True
+                break
+        if not covered:
+            return False
+    return True
+
+
+def _bosses_outside(previews, outline, cutouts, tol) -> bool:
+    slack = max(4.0 * tol, 0.2)
+    for boss in previews:
+        center = (float(boss["point"][0]), float(boss["point"][1]))
+        if not _circle_inside(center, boss["radius"], outline, cutouts, slack):
+            return True
+    return False
+
+
+def _loops_of(built):
+    """Polygon entries and the raw point lists of curve entries."""
+    if built is None:
+        return None, None
+    polygons = [item for item in built if item[1] == "polygon"]
+    curves = [item[2] for item in built if item[1] == "curve"]
+    return polygons, curves
+
+
+def _merge_equal_radii(segs, gap):
+    """Join coaxial cylinders of one radius that already meet."""
+    merged = []
+    for seg in segs:
+        if (merged and merged[-1].kind == "cylinder" and seg.kind == "cylinder"
+                and abs(merged[-1].zb - seg.za) <= gap
+                and abs(merged[-1].ra - seg.ra) <= gap
+                and abs(merged[-1].rb - seg.rb) <= gap):
+            merged[-1].zb = seg.zb
+            continue
+        merged.append(seg)
+    return merged
+
+
+def _boss_host(xy, radius, bosses, gap):
+    """``(index, kind)`` for a hole circle against the boss disks.
+
+    ``kind`` is ``inside`` (fully in exactly one boss), ``overlap`` (meets a
+    boss but is not inside it), ``many``, or ``clear``.
+    """
+    x, y = float(xy[0]), float(xy[1])
+    inside = []
+    overlap = False
+    for index, boss in enumerate(bosses):
+        dist = math.hypot(x - boss["x"], y - boss["y"])
+        limit = float(boss["d"]) / 2.0
+        if dist + float(radius) <= limit + gap:
+            inside.append(index)
+        elif dist < limit + float(radius) - gap:
+            overlap = True
+    if len(inside) > 1:
+        return None, "many"
+    if len(inside) == 1 and not overlap:
+        return inside[0], "inside"
+    if overlap or inside:
+        return None, "overlap"
+    return None, "clear"
+
+
 def _perp_dist(axis: int, p, q) -> float:
     d = np.asarray(p, float) - np.asarray(q, float)
     d[axis] = 0.0
@@ -479,6 +739,81 @@ def _hole_segments(m, regs, ax, tol):
     return segs
 
 
+def _top_bosses(mesh, outward_regs, tol, axis, origin, length, outline, cutouts, plane_coords):
+    """Straight cylindrical bosses on the top face of a Z extrusion.
+
+    Other outward cylinders are refused here, with a message that says which.
+    """
+    if not outward_regs:
+        return []
+    if axis != 2:
+        for region in outward_regs:
+            if _principal_axis(region.surface.axis) != axis:
+                raise Unsupported(
+                    "a boss on a side face of an extruded outline is not supported yet")
+        raise Unsupported("a boss on an extruded outline is not supported yet")
+    for region in outward_regs:
+        if _principal_axis(region.surface.axis) != 2:
+            raise Unsupported("a boss on a side face of an extruded outline is not supported yet")
+    groups = _outward_groups(mesh, outward_regs, tol, 2)
+    gap = _eps(tol)
+    top = float(origin + length)
+    slack = max(4.0 * tol, 0.2)
+    bosses = []
+    for group in groups:
+        verts = np.vstack([
+            mesh.vertices[np.unique(mesh.faces[region.faces])] for region in group["regs"]
+        ])
+        # A noisy cap plane can sit further from the true end than the vertices
+        # piled on it. Snap only when the plane is already that close.
+        snap = max(2.0 * tol, 0.08)
+        z0 = _snap(_piled_end(verts, -1, tol), plane_coords[2], snap)
+        z1 = _snap(_piled_end(verts, 1, tol), plane_coords[2], snap)
+        if abs(z0 - top) > gap:
+            if z1 <= origin + gap and z0 < origin - gap:
+                raise Unsupported(
+                    "a boss on the bottom face of an extruded outline is not supported yet")
+            raise Unsupported("a boss does not start on the top face of the extruded outline")
+        height = z1 - top
+        if height <= gap:
+            raise Unsupported("a boss on an extruded outline is not supported yet")
+        center = (float(group["point"][0]), float(group["point"][1]))
+        if not _circle_inside(center, group["radius"], outline, cutouts, slack):
+            raise Unsupported("a boss is partly outside the extruded outline")
+        bosses.append({
+            "d": 2.0 * float(group["radius"]),
+            "h": float(height),
+            "axis": "Z",
+            "from": 1,
+            "x": center[0],
+            "y": center[1],
+        })
+    bosses.sort(key=lambda boss: (boss["x"], boss["y"], boss["d"]))
+    return bosses
+
+
+def _hole_through_boss(segs, point, bosses, origin, length, gap):
+    """1-based boss index when ``segs`` is a hole that comes out that boss top.
+
+    None when the hole does not run past the extrusion. A hole that meets a
+    boss and does not come out the top is refused.
+    """
+    if not bosses or len(segs) != 1 or getattr(segs[0], "kind", "cylinder") != "cylinder":
+        return None
+    seg = segs[0]
+    top = float(origin + length)
+    if not (abs(float(seg.za) - float(origin)) <= gap and float(seg.zb) > top + gap):
+        return None
+    host, kind = _boss_host((float(point[0]), float(point[1])), float(seg.ra), bosses, gap)
+    if kind == "clear":
+        return None
+    if kind != "inside":
+        raise Unsupported("a hole meets a boss but does not pass through it")
+    if abs(float(seg.zb) - (top + float(bosses[host]["h"]))) <= gap:
+        return host + 1
+    raise Unsupported("a hole that stops inside a boss is not supported yet")
+
+
 def _apply_cbore(feat, stepped):
     if "cbore_d" in stepped:
         feat["cbore_d"] = stepped["cbore_d"]
@@ -488,9 +823,15 @@ def _apply_cbore(feat, stepped):
 
 
 def _cylinder_features(m, regions, tol, axis, origin, length, outline, cutouts):
-    """Through-holes and counterbored through-holes. Bosses and fillets are refused."""
+    """Through-holes, counterbored through-holes, and straight top bosses on Z.
+
+    A hole that continues through one of those bosses is the same through-hole,
+    with the cutter extended by that boss height. A hole that meets a boss and
+    stops short is refused. Fillets stay refused.
+    """
     U, V = _PROFILE_AXES[axis]
     cyl_regs = []
+    outward_regs = []
     for r in regions:
         s = r.surface
         if not isinstance(s, Cylinder) or not len(r.faces):
@@ -504,7 +845,8 @@ def _cylinder_features(m, regions, tol, axis, origin, length, outline, cutouts):
         if span is not None and span < np.radians(250.0):
             raise Unsupported("a rounded edge is not part of an editable outline")
         if _outward(m, r, s):
-            raise Unsupported("a boss on an extruded outline is not supported yet")
+            outward_regs.append(r)
+            continue
         cyl_regs.append(r)
     # snap targets: planes perpendicular to each axis
     plane_coords = {0: [], 1: [], 2: []}
@@ -514,6 +856,7 @@ def _cylinder_features(m, regions, tol, axis, origin, length, outline, cutouts):
             for ax in range(3):
                 if _attitude(s.normal, ax, 4.0) == "cap":
                     plane_coords[ax].append(_plane_coord(s, ax))
+    bosses = _top_bosses(m, outward_regs, tol, axis, origin, length, outline, cutouts, plane_coords)
     groups = []
     gtol = _eps(tol, 0.35)
     for r in cyl_regs:
@@ -541,12 +884,19 @@ def _cylinder_features(m, regions, tol, axis, origin, length, outline, cutouts):
             if abs(a.zb - b.za) <= gap:
                 mid = 0.5 * (a.zb + b.za)
                 a.zb = b.za = mid
+        segs = _merge_equal_radii(segs, gap)
         name = _AXIS_NAME[ax]
         if ax == axis:
             uv = (float(pt @ U), float(pt @ V))
             if not _inside_profile(uv, outline, cutouts):
                 raise Unsupported("hole is outside the extruded outline")
+            through = _hole_through_boss(segs, pt, bosses, origin, length, gap)
             stepped = _plain_or_counterbore(segs, origin, origin + length, gap)
+            if through is not None:
+                stepped = {"d": 2.0 * float(segs[0].ra)}
+            elif stepped is not None and bosses and _boss_host(
+                    (float(pt[0]), float(pt[1])), float(segs[0].ra), bosses, gap)[1] != "clear":
+                raise Unsupported("a hole meets a boss but does not pass through it")
             if stepped is None:
                 if len(segs) == 1:
                     raise Unsupported("hole along the extrusion does not pass through both ends")
@@ -555,6 +905,8 @@ def _cylinder_features(m, regions, tol, axis, origin, length, outline, cutouts):
             for i, coord in enumerate("xyz"):
                 if i != ax:
                     feat[coord] = float(pt[i])
+            if through is not None:
+                feat["through_boss"] = through
             holes.append(_apply_cbore(feat, stepped))
             continue
         profile_axes = [i for i in range(3) if i != axis]
@@ -585,14 +937,18 @@ def _cylinder_features(m, regions, tol, axis, origin, length, outline, cutouts):
                 feat[coord] = float(pt[i])
         holes.append(_apply_cbore(feat, stepped))
     holes.sort(key=lambda h: (h["axis"], h.get("x", 0.0), h.get("y", 0.0), h.get("z", 0.0)))
-    return holes
+    return holes, bosses
 
 
 def profile_extent(hole: dict, lang: str) -> tuple[str, str]:
     """``(low, high)`` of the material a hole passes through, as script expressions."""
     span = hole["span"]
     if span == "extrude":
-        return "extrude_0", "(extrude_0 + extrude_len)"
+        hi = "(extrude_0 + extrude_len)"
+        boss = hole.get("through_boss")
+        if boss:
+            hi = f"(extrude_0 + extrude_len + boss_{boss}_h)"
+        return "extrude_0", hi
     idx = span[1]
     if lang == "cadquery":
         lo = f"min(p[{idx}] for p in outline)"
@@ -625,6 +981,12 @@ def profile_parameters(feats: dict, tol: float) -> list[tuple[str, float, str]]:
         ("extrude_len", _nice(pr["length"], tol), f"length along {ax}"),
         ("extrude_0", _nice(pr["origin"], tol), f"start along {ax}"),
     ]
+    for i, d in enumerate(feats.get("bosses") or [], 1):
+        n = f"boss_{i}"
+        P.append((f"{n}_d", _nice(d["d"], tol), "diameter at the top face"))
+        P.append((f"{n}_h", _nice(d["h"], tol), "height"))
+        P.append((f"{n}_x", _nice(d["x"], tol), ""))
+        P.append((f"{n}_y", _nice(d["y"], tol), ""))
     for i, d in enumerate(feats.get("holes") or [], 1):
         n = f"hole_{i}"
         P.append((f"{n}_d", _nice(d["d"], tol), f"diameter (axis {d['axis']})"))
@@ -695,6 +1057,25 @@ def _along(m, regions, tol, axis: int) -> dict:
             f"(largest {largest:.0f} mm²)",
             1,
         )
+    boss_preview = []
+    if axis == 2:
+        # A drafted boss is an outward cone that is not the 45 degree chamfer
+        # a combined extrusion already writes. Name it before the extra end
+        # cap is read as a second extrusion. A 45 degree cone stays on the
+        # path that already handles hole chamfers.
+        for region in regions:
+            cone = region.surface
+            if not isinstance(cone, Cone) or region.area < _min_area(m):
+                continue
+            if _principal_axis(cone.axis) != 2 or not _cone_outward(m, region, cone):
+                continue
+            if abs(float(cone.half_angle) - math.pi / 4.0) <= math.radians(3.0):
+                continue
+            raise _Reject("a tapered boss on an extruded outline is not supported yet", 6)
+        boss_preview, drop_caps = _z_boss_plan(m, caps, cylinders, tol)
+        if drop_caps:
+            drop_ids = {id(cap) for cap in drop_caps}
+            caps = [cap for cap in caps if id(cap) not in drop_ids]
     if len(caps) < 2:
         raise _Reject("fewer than two end faces", 2)
     coords = [(_plane_coord(r.surface, axis), r) for r in caps]
@@ -735,7 +1116,15 @@ def _along(m, regions, tol, axis: int) -> dict:
     if length <= gap:
         raise _Reject("the extrusion length is zero", 2)
     extent = m.vertices[:, axis]
-    if abs(float(extent.min()) - origin) > gap or abs(float(extent.max()) - end) > gap:
+    if abs(float(extent.min()) - origin) > gap:
+        raise _Reject("the solid sticks out past the two end faces", 3)
+    if boss_preview:
+        if abs(end - boss_preview[0]["z0"]) > _eps(tol, 0.35):
+            raise _Reject("a boss does not start on the top face of the extruded outline", 6)
+        above = m.vertices[extent > end + gap]
+        if not _within_bosses(above, boss_preview, _eps(tol, 0.35)):
+            raise _Reject("the solid sticks out past the two end faces", 3)
+    elif abs(float(extent.max()) - end) > gap:
         raise _Reject("the solid sticks out past the two end faces", 3)
     wall_planes = _merge_walls([r.surface for r in walls], tol)
     if len(wall_planes) < 3:
@@ -743,7 +1132,25 @@ def _along(m, regions, tol, axis: int) -> dict:
     U, V = _PROFILE_AXES[axis]
     low_poly = _polygons_from_cap(m, _cap_faces(m, low, axis), wall_planes, U, V, tol)
     high_poly = _polygons_from_cap(m, _cap_faces(m, high, axis), wall_planes, U, V, tol)
-    matched = _same_loops(low_poly, high_poly, tol)
+    curve_extra: list = []
+    if boss_preview:
+        # Boss footprints and a hole that continues through a boss are curves
+        # on one end only. The polygonal outline still has to match.
+        low_p, low_c = _loops_of(low_poly)
+        high_p, high_c = _loops_of(high_poly)
+        matched = _same_loops(low_p, high_p, tol) if low_p and high_p else None
+        if matched is None and low_p:
+            outline_try = _nice_loop(_drop_collinear(low_p[0][2], tol), tol)
+            cut_try = []
+            for _area, _kind, pts in low_p[1:]:
+                loop = _nice_loop(_drop_collinear(pts, tol), tol)
+                if len(loop) >= 3 and abs(_shoelace(loop)) > 1e-3:
+                    cut_try.append(loop)
+            if len(outline_try) >= 3 and _bosses_outside(boss_preview, outline_try, cut_try, tol):
+                raise _Reject("a boss is partly outside the extruded outline", 6)
+        curve_extra = list(low_c or []) + list(high_c or [])
+    else:
+        matched = _same_loops(low_poly, high_poly, tol)
     if matched is None:
         # one end can be a single triangle fan that still yields the outline;
         # accept it when the other end agrees, otherwise say so
@@ -765,6 +1172,9 @@ def _along(m, regions, tol, axis: int) -> dict:
                 cutouts.append(loop)
         else:
             curve_loops.append(pts)
+    curve_loops.extend(curve_extra)
+    if boss_preview and _bosses_outside(boss_preview, outline, cutouts, tol):
+        raise _Reject("a boss is partly outside the extruded outline", 6)
     # a round hole is a non-polygonal loop on a cylinder along the extrusion
     axial = [r for r in cylinders if _principal_axis(r.surface.axis) == axis]
     axis_vec = np.zeros(3)
@@ -821,7 +1231,7 @@ def _along(m, regions, tol, axis: int) -> dict:
             6,
         )
     try:
-        holes = _cylinder_features(m, regions, tol, axis, origin, length, outline, cutouts)
+        holes, bosses = _cylinder_features(m, regions, tol, axis, origin, length, outline, cutouts)
     except Unsupported as e:
         raise _Reject(str(e), 6) from e
     return {
@@ -833,7 +1243,7 @@ def _along(m, regions, tol, axis: int) -> dict:
             "cutouts": cutouts,
         },
         "holes": holes,
-        "bosses": [],
+        "bosses": bosses,
         "pads": [],
     }
 

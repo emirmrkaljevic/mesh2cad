@@ -110,7 +110,7 @@ def _refuse_surfaces(m, regions):
             if span is not None and span < np.radians(250.0):
                 raise Unsupported("a rounded edge is not part of an editable outline")
             if _outward(m, r, s):
-                raise Unsupported("a boss on an extruded outline is not supported yet")
+                raise Unsupported("a boss on a combined extrusion is not supported yet")
 
 
 def _annulus(m, region, axis, point, radius, tol) -> bool:

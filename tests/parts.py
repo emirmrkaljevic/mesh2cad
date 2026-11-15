@@ -147,6 +147,23 @@ def slanted_outline():
     return solid.cut(cq.Workplane().add(hole))
 
 
+def l_plate_with_bosses():
+    """L-shaped 6 mm plate with two round bosses, one of them drilled through.
+
+    Outline (x, y): (0, 0), (48, 0), (48, 18), (18, 18), (18, 40), (0, 40).
+    Boss at (10, 9): diameter 12, 8 mm tall, with a diameter 5 hole through
+    the boss and the plate. Boss at (34, 9): diameter 10, 6 mm tall, solid.
+    Both circles sit inside the outline.
+    """
+    outline = [(0, 0), (48, 0), (48, 18), (18, 18), (18, 40), (0, 40)]
+    plate = cq.Workplane("XY").polyline(outline).close().extrude(6)
+    drilled = cq.Solid.makeCylinder(6.0, 8.0, cq.Vector(10.0, 9.0, 6.0), cq.Vector(0, 0, 1))
+    solid = cq.Solid.makeCylinder(5.0, 6.0, cq.Vector(34.0, 9.0, 6.0), cq.Vector(0, 0, 1))
+    hole = cq.Solid.makeCylinder(2.5, 20.0, cq.Vector(10.0, 9.0, -1.0), cq.Vector(0, 0, 1))
+    return (plate.union(cq.Workplane().add(drilled)).union(cq.Workplane().add(solid))
+            .cut(cq.Workplane().add(hole)))
+
+
 def slotted_plate():
     """40×24×6 plate extruded along Z with a 16×8 rectangular through-slot."""
     outer = [(0, 0), (40, 0), (40, 24), (0, 24)]
