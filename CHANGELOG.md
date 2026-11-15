@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.29.0 - 2026-11-15
 
 - Parametric CadQuery, OpenSCAD, and FreeCAD export write straight round bosses on the top face of a single Z extrusion. The names match the box path: `boss_N_d`, `boss_N_h`, `boss_N_x`, `boss_N_y`. CadQuery extrudes a circle on the top face and unions it. OpenSCAD unions a cylinder. FreeCAD fuses `Part.makeCylinder`. A through-hole whose circle lies inside one boss and whose wall comes out the top of that boss stays `hole_N_d`, and the cutter is longer by that `boss_N_h`. `mesh2cad edit`, `mesh2cad params`, and the MCP tools `list_params` / `edit_params` list and edit the boss numbers. An edit that moves the boss circle out of the outline is refused and nothing is written.
 - The honesty gate is unchanged: max deviation at most max(4·tol, 0.1), volume error at most 1%. A miss is not rewritten.
