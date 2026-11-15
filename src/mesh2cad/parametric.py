@@ -1310,6 +1310,19 @@ _BOX_SUPERSEDED = (
     "overhang",
 )
 
+# The extrusion fitter named the obstacle. The combined-extrusion fallback
+# would replace that with a less specific refusal, so these stay as said.
+_OUTLINE_KEPT = (
+    "a boss is partly outside the extruded outline",
+    "a boss on the bottom face",
+    "a boss on a side face",
+    "a boss does not start on the top face of the extruded outline",
+    "a tapered boss on an extruded outline",
+    "a hole meets a boss",
+    "a hole that stops inside a boss",
+    "a boss on an extruded outline is not supported yet",
+)
+
 
 def _flatten_planar_spheres(m, regions, tol):
     """Read a sphere as a plane when the patch really is an axis-aligned face.
@@ -1855,6 +1868,8 @@ def recognize(m: trimesh.Trimesh, regions, tol: float) -> dict:
         return extract_extrusion(m, regions, tol)
     except Unsupported as e:
         ext = e
+    if ext is not None and any(text in str(ext) for text in _OUTLINE_KEPT):
+        raise ext
     # A hard box failure (a sphere, an angled axis, an unfitted patch) is the
     # reason to report. "Not a rectangular box" is not: the extrusion or the
     # CSG may still explain the part, and its message names the real obstacle.

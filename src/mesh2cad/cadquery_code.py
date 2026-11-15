@@ -24,7 +24,9 @@ A quarter-torus fillet on a vertical boss
 or hole becomes ``boss_N_fillet``, ``hole_N_rim_r``, ``hole_N_bot_rim_r``, or
 ``hole_N_floor_r``, applied with ``Solid.fillet`` on that circular edge. A
 straight extrusion of a 2D outline is a
-``polyline`` extruded by ``extrude_len``. A part that is a few of those
+``polyline`` extruded by ``extrude_len``. A straight round boss on the top
+face of a Z extrusion is fused after that (``boss_N_d``, ``boss_N_h``,
+``boss_N_x``, ``boss_N_y``). A part that is a few of those
 extrusions (their intersection, a union of partial-depth extrusions, or one
 minus cuts along the other axes, plus a counterbored hole or a planar clip)
 is a short boolean of the same pieces. Anything outside that vocabulary
@@ -108,6 +110,12 @@ def _render_profile(feats: dict, tol: float, source: str | None) -> str:
     for i, _loop in enumerate(pr["cutouts"], 1):
         body.append(f"result = result.cut({wp}")
         body.append(f"                     .polyline(cutout_{i}).close().extrude(extrude_len))")
+    for i, _boss in enumerate(feats.get("bosses") or [], 1):
+        n = f"boss_{i}"
+        body.append(
+            f"result = result.union(cq.Workplane(\"XY\", origin=({n}_x, {n}_y, extrude_0 + extrude_len))"
+            f".circle({n}_d / 2).extrude({n}_h))"
+        )
     for i, hole in enumerate(feats["holes"], 1):
         n = f"hole_{i}"
         start, length = profile_cutter(hole, "cadquery")

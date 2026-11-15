@@ -547,6 +547,17 @@ def _profile_param_lines(feats: dict, tol: float) -> list[str]:
         if note:
             lines.append(f"// {note}")
         lines.append(f"{name} = {_fmt_points_scad(pts)};")
+    boss_rows = [(n, v, note) for n, v, note in numbers if n.startswith("boss_")]
+    if boss_rows:
+        lines += ["", "/* [Bosses] */"]
+        for name, value, note in boss_rows:
+            if note:
+                lines.append(f"// {note}")
+            line = f"{name.ljust(width)} = {value!r};"
+            if name.endswith("_d"):
+                # the boss stands on the outline, so the slider follows that face
+                line += f" // {_slider(0.2, min(span_u, span_v), 0.1, value)}"
+            lines.append(line)
     hole_rows = [(n, v, note) for n, v, note in numbers if n.startswith("hole_")]
     if hole_rows:
         lines += ["", "/* [Holes] */"]
@@ -605,15 +616,29 @@ def _profile_model(feats: dict) -> list[str]:
         if "cbore_d" in hole:
             c0, clen = profile_cbore_cutter(hole, n, "openscad")
             holes.append(_side_cylinder(n, hole, f"{n}_cbore_d", c0, clen))
+    bosses = []
+    for i, _boss in enumerate(feats.get("bosses") or [], 1):
+        n = f"boss_{i}"
+        bosses.append(
+            f"translate([{n}_x, {n}_y, extrude_0 + extrude_len])\n"
+            f"  cylinder(h={n}_h, d={n}_d);"
+        )
+    solids = [placed, *bosses]
     lines = ["// --- model ---", "module mesh2cad_part() {"]
+    indent = 2 if holes else 1
     if holes:
         lines.append("  difference() {")
-        lines.append(_indent(placed, 2))
-        for h in holes:
-            lines.append(_indent(h, 2))
-        lines.append("  }")
+    if len(solids) == 1:
+        lines.append(_indent(solids[0], indent))
     else:
-        lines.append(_indent(placed, 1))
+        lines.append(f"{'  ' * indent}union() {{")
+        for solid in solids:
+            lines.append(_indent(solid, indent + 1))
+        lines.append(f"{'  ' * indent}}}")
+    if holes:
+        for hole in holes:
+            lines.append(_indent(hole, 2))
+        lines.append("  }")
     lines += ["}", "", "mesh2cad_part();", ""]
     return lines
 
