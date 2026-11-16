@@ -2,11 +2,15 @@
 
 A part qualifies when it is a prism along X, Y, or Z: two end caps, side
 walls parallel to that axis, optional polygonal through-openings in the
-outline, and optional round through-holes. A Z extrusion may also carry
-straight round bosses on its top face (``boss_N_d``, ``boss_N_h``,
-``boss_N_x``, ``boss_N_y``). The outline vertices and the extrusion length
-become named parameters. The box/pad vocabulary stays in charge for parts it
-already explains; this module is the fallback.
+outline, and optional round through-holes. A through-hole along the
+extrusion may be counterbored. On a Z extrusion a vertical through-hole may
+also be countersunk, opening on the top or the bottom face (``hole_N_csk_d``,
+``hole_N_csk_angle``), including a 45 degree mouth, which is a 90 degree
+countersink. A Z extrusion may also carry straight round bosses on its top
+face (``boss_N_d``, ``boss_N_h``, ``boss_N_x``, ``boss_N_y``). The outline
+vertices and the extrusion length become named parameters. The box/pad
+vocabulary stays in charge for parts it already explains; this module is the
+fallback.
 """
 from __future__ import annotations
 
@@ -409,7 +413,7 @@ def _polygons_from_cap(mesh, face_ids, walls, U, V, tol):
     return built
 
 
-def _same_loops(low, high, tol):
+def _same_loops_ordered(low, high, tol):
     """Average matching polygonal loops. Curve loops are checked loosely."""
     if low is None or high is None or len(low) != len(high):
         return None
@@ -436,6 +440,45 @@ def _same_loops(low, high, tol):
     return averaged
 
 
+def _same_loops(low, high, tol):
+    """Match the two end caps.
+
+    Area order is enough when both ends carry the same circles. A countersink
+    or a counterbore makes the mouth wider than the through-hole, so the two
+    ends can list those circles in a different order. Pair by centre then,
+    and leave a match that already succeeded on the area order alone.
+    """
+    matched = _same_loops_ordered(low, high, tol)
+    if matched is not None or not low or not high or len(low) != len(high):
+        return matched
+    lim = _eps(tol, 0.35)
+    used = [False] * len(high)
+    ordered = []
+    for _area, kind, pts in low:
+        best_i = None
+        best_err = None
+        for i, (_area2, kind2, pts2) in enumerate(high):
+            if used[i] or kind2 != kind:
+                continue
+            if kind == "curve":
+                c1 = np.mean(np.asarray(pts, float), axis=0)
+                c2 = np.mean(np.asarray(pts2, float), axis=0)
+                err = float(np.linalg.norm(c1 - c2))
+            else:
+                hit = _align_error(_ccw(pts), _ccw(pts2))
+                if hit is None:
+                    continue
+                err = hit[0]
+            if best_err is None or err < best_err:
+                best_err = err
+                best_i = i
+        if best_i is None or best_err > lim:
+            return None
+        used[best_i] = True
+        ordered.append(high[best_i])
+    return _same_loops_ordered(low, ordered, tol)
+
+
 def _on_cylinder(pts, cyl, axis: int, tol) -> bool:
     if _principal_axis(cyl.axis) != axis:
         return False
@@ -455,6 +498,40 @@ def _outward(mesh, region, cyl) -> bool:
     nrm = np.linalg.norm(radial, axis=1, keepdims=True)
     radial = radial / np.maximum(nrm, 1e-12)
     return float(np.mean(np.sum(mesh.face_normals[region.faces] * radial, axis=1))) > 0
+
+
+def _cone_radius_at(cone, z: float, axis: int) -> float:
+    """Cone radius at world coordinate ``z`` along ``axis``.
+
+    ``cone.axis`` is a unit vector from the apex into the cone, so the radius
+    is ``h * tan(half_angle)`` with ``h`` measured from the apex.
+    """
+    apex = np.asarray(cone.apex, float)
+    direction = np.asarray(cone.axis, float)
+    comp = float(direction[axis])
+    if abs(comp) < 1e-9:
+        return float("nan")
+    h = (float(z) - float(apex[axis])) / comp
+    return h * math.tan(float(cone.half_angle))
+
+
+def _on_cone(pts, cone, axis: int, tol) -> bool:
+    """True when ``pts`` sit on ``cone`` and the cone runs along ``axis``."""
+    if _principal_axis(cone.axis) != axis:
+        return False
+    pts = np.asarray(pts, float)
+    apex = np.asarray(cone.apex, float)
+    direction = np.asarray(cone.axis, float)
+    comp = float(direction[axis])
+    if abs(comp) < 1e-9:
+        return False
+    h = (pts[:, axis] - float(apex[axis])) / comp
+    if float(np.min(h)) < -_eps(tol, 0.3):
+        return False
+    expected = h * math.tan(float(cone.half_angle))
+    axial = apex + np.outer(h, direction)
+    rho = np.linalg.norm(pts - axial, axis=1)
+    return float(np.max(np.abs(rho - expected))) <= _eps(tol, 0.3)
 
 
 def _cone_outward(mesh, region, cone) -> bool:
@@ -822,10 +899,89 @@ def _apply_cbore(feat, stepped):
     return feat
 
 
-def _cylinder_features(m, regions, tol, axis, origin, length, outline, cutouts):
+def _apply_step(feat, stepped):
+    """Copy a counterbore or a countersink onto ``feat``."""
+    feat = _apply_cbore(feat, stepped)
+    if "csk_d" in stepped:
+        feat["csk_d"] = stepped["csk_d"]
+        feat["csk_angle"] = stepped["csk_angle"]
+        feat["from"] = stepped["from"]
+    return feat
+
+
+def _csk_angle(seg) -> float | None:
+    cone = getattr(seg, "cone", None)
+    if cone is not None:
+        return 2.0 * math.degrees(float(cone.half_angle))
+    height = float(seg.zb - seg.za)
+    if height <= 1e-6:
+        return None
+    return 2.0 * math.degrees(math.atan2(abs(float(seg.rb) - float(seg.ra)), height))
+
+
+def _countersunk_through(segs, lo: float, hi: float, gap: float) -> dict | None:
+    """A through-hole with a conical mouth on one end, spanning ``lo``..``hi``.
+
+    The cone opens toward the face (radius grows that way) and meets the
+    cylinder. The included angle is ``hole_N_csk_angle``, the same name a box
+    uses. A 45 degree mouth is the 90 degree case of that angle.
+    """
+    if len(segs) != 2:
+        return None
+    if abs(float(segs[0].za) - lo) > gap or abs(float(segs[-1].zb) - hi) > gap:
+        return None
+    if abs(float(segs[0].zb) - float(segs[1].za)) > gap:
+        return None
+    first, second = segs
+    if first.kind == "cylinder" and second.kind == "cone":
+        # mouth on the high face
+        if float(second.rb) <= float(second.ra) + gap:
+            return None
+        if abs(float(second.ra) - float(first.ra)) > gap:
+            return None
+        angle = _csk_angle(second)
+        if angle is None:
+            return None
+        return {"d": 2.0 * float(first.ra), "csk_d": 2.0 * float(second.rb),
+                "csk_angle": angle, "from": 1}
+    if first.kind == "cone" and second.kind == "cylinder":
+        if float(first.ra) <= float(first.rb) + gap:
+            return None
+        if abs(float(first.rb) - float(second.ra)) > gap:
+            return None
+        angle = _csk_angle(first)
+        if angle is None:
+            return None
+        return {"d": 2.0 * float(second.ra), "csk_d": 2.0 * float(first.ra),
+                "csk_angle": angle, "from": -1}
+    return None
+
+
+def _cone_segment(m, region, ax: int):
+    """One cone as a segment. Radii are refreshed after the ends snap."""
+    cone = region.surface
+    verts = m.vertices[np.unique(m.faces[region.faces])]
+    along = verts[:, ax]
+    za, zb = float(along.min()), float(along.max())
+    seg = Segment("cone", za, zb, _cone_radius_at(cone, za, ax), _cone_radius_at(cone, zb, ax))
+    seg.cone = cone
+    return seg
+
+
+def _refresh_cone_radii(segs, ax: int) -> None:
+    for seg in segs:
+        cone = getattr(seg, "cone", None)
+        if cone is None:
+            continue
+        seg.ra = _cone_radius_at(cone, seg.za, ax)
+        seg.rb = _cone_radius_at(cone, seg.zb, ax)
+
+
+def _cylinder_features(m, regions, tol, axis, origin, length, outline, cutouts, cones=()):
     """Through-holes, counterbored through-holes, and straight top bosses on Z.
 
-    A hole that continues through one of those bosses is the same through-hole,
+    A Z extrusion may also carry a countersunk through-hole along Z. A hole
+    that continues through one of the top bosses is the same through-hole,
     with the cutter extended by that boss height. A hole that meets a boss and
     stops short is refused. Fillets stay refused.
     """
@@ -870,20 +1026,54 @@ def _cylinder_features(m, regions, tol, axis, origin, length, outline, cutouts):
                 g["n"] += 1
                 break
         else:
-            groups.append({"axis": ax, "point": pt.copy(), "regs": [r], "n": 1})
+            groups.append({"axis": ax, "point": pt.copy(), "regs": [r], "n": 1, "cones": []})
+    for region in cones:
+        cone = region.surface
+        cax = _principal_axis(cone.axis)
+        tip = np.asarray(cone.apex, float)
+        host = None
+        for g in groups:
+            if g["axis"] == cax == 2 and _perp_dist(cax, g["point"] / g["n"], tip) <= gtol:
+                host = g
+                break
+        if host is None:
+            raise Unsupported(
+                "a countersink, chamfer or draft on an extruded outline is not supported yet")
+        host["cones"].append(region)
     holes = []
     gap = _eps(tol)
     for g in groups:
         ax = g["axis"]
         pt = g["point"] / g["n"]
         segs = _hole_segments(m, g["regs"], ax, tol)
+        cone_regs = g.get("cones") or ()
+        if cone_regs:
+            # A countersink is a vertical cone on a Z extrusion. Anything else
+            # (a draft, a chamfer on an X or Y hole) keeps the old refusal.
+            if ax != 2 or axis != 2:
+                raise Unsupported(
+                    "a countersink, chamfer or draft on an extruded outline is not supported yet")
+            for region in cone_regs:
+                segs.append(_cone_segment(m, region, ax))
+            segs.sort(key=lambda s: (s.za, 0 if s.kind == "cylinder" else 1))
         for s in segs:
-            s.za = _snap(s.za, plane_coords[ax], gap)
-            s.zb = _snap(s.zb, plane_coords[ax], gap)
+            if s.kind == "cone" and ax == axis:
+                # Snap the mouth onto an end face. The junction is not a cap,
+                # and another hole's counterbore floor must not pull it there.
+                ends = (float(origin), float(origin + length))
+                s.za = _snap(s.za, ends, gap)
+                s.zb = _snap(s.zb, ends, gap)
+            else:
+                s.za = _snap(s.za, plane_coords[ax], gap)
+                s.zb = _snap(s.zb, plane_coords[ax], gap)
+        if cone_regs:
+            _refresh_cone_radii(segs, ax)
         for a, b in zip(segs, segs[1:]):
             if abs(a.zb - b.za) <= gap:
                 mid = 0.5 * (a.zb + b.za)
                 a.zb = b.za = mid
+        if cone_regs:
+            _refresh_cone_radii(segs, ax)
         segs = _merge_equal_radii(segs, gap)
         name = _AXIS_NAME[ax]
         if ax == axis:
@@ -892,14 +1082,19 @@ def _cylinder_features(m, regions, tol, axis, origin, length, outline, cutouts):
                 raise Unsupported("hole is outside the extruded outline")
             through = _hole_through_boss(segs, pt, bosses, origin, length, gap)
             stepped = _plain_or_counterbore(segs, origin, origin + length, gap)
+            if stepped is None and axis == 2:
+                stepped = _countersunk_through(segs, origin, origin + length, gap)
             if through is not None:
                 stepped = {"d": 2.0 * float(segs[0].ra)}
             elif stepped is not None and bosses and _boss_host(
                     (float(pt[0]), float(pt[1])), float(segs[0].ra), bosses, gap)[1] != "clear":
                 raise Unsupported("a hole meets a boss but does not pass through it")
             if stepped is None:
-                if len(segs) == 1:
+                if len(segs) == 1 and segs[0].kind == "cylinder":
                     raise Unsupported("hole along the extrusion does not pass through both ends")
+                if any(s.kind == "cone" for s in segs):
+                    raise Unsupported(
+                        "a countersink, chamfer or draft on an extruded outline is not supported yet")
                 raise Unsupported("stepped hole is not a counterbored through-hole")
             feat = {"d": stepped["d"], "axis": name, "span": "extrude"}
             for i, coord in enumerate("xyz"):
@@ -907,7 +1102,7 @@ def _cylinder_features(m, regions, tol, axis, origin, length, outline, cutouts):
                     feat[coord] = float(pt[i])
             if through is not None:
                 feat["through_boss"] = through
-            holes.append(_apply_cbore(feat, stepped))
+            holes.append(_apply_step(feat, stepped))
             continue
         profile_axes = [i for i in range(3) if i != axis]
         fixed_world = profile_axes[0] if profile_axes[1] == ax else profile_axes[1]
@@ -973,6 +1168,35 @@ def profile_cbore_cutter(hole: dict, name: str, lang: str) -> tuple[str, str]:
     return f"({hi} - {name}_cbore_depth)", f"{name}_cbore_depth + 1"
 
 
+def profile_csk_exprs(hole: dict, name: str, lang: str) -> tuple[str, str, str, str, str] | None:
+    """Countersink cone as ``(height, start, length, r1, r2)`` expressions.
+
+    The cone runs 1 mm past the face it opens on, and the radius follows the
+    countersink slope over that extra millimetre, the same construction the
+    box vocabulary uses. ``lang`` is ``cadquery`` or ``openscad``. FreeCAD
+    uses the CadQuery expressions. The height is assigned to ``{name}_csk_h``
+    before the cutter, so the start of a top countersink can name it.
+    """
+    if "csk_d" not in hole:
+        return None
+    lo, hi = profile_extent(hole, lang)
+    if lang == "openscad":
+        slope = f"tan({name}_csk_angle / 2)"
+    else:
+        slope = f"math.tan(math.radians({name}_csk_angle / 2))"
+    height = f"({name}_csk_d - {name}_d) / 2 / {slope}"
+    if hole.get("from", 1) < 0:
+        start = f"({lo} - 1)"
+        r1 = f"{name}_csk_d / 2 + {slope}"
+        r2 = f"{name}_d / 2"
+    else:
+        start = f"(({hi}) - {name}_csk_h)"
+        r1 = f"{name}_d / 2"
+        r2 = f"{name}_csk_d / 2 + {slope}"
+    length = f"({name}_csk_h + 1)"
+    return height, start, length, r1, r2
+
+
 def profile_parameters(feats: dict, tol: float) -> list[tuple[str, float, str]]:
     """Float parameters of an extruded profile, in emitter order."""
     pr = feats["profile"]
@@ -993,6 +1217,11 @@ def profile_parameters(feats: dict, tol: float) -> list[tuple[str, float, str]]:
         for coord in "xyz":
             if coord != d["axis"].lower() and coord in d:
                 P.append((f"{n}_{coord}", _nice(d[coord], tol), ""))
+        if "csk_d" in d:
+            end = f"{'+' if d.get('from', 1) > 0 else '-'}{d['axis']}"
+            P.append((f"{n}_csk_d", _nice(d["csk_d"], tol), f"countersink diameter at the {end} end"))
+            # Half a degree, the same rounding the box vocabulary uses for this angle.
+            P.append((f"{n}_csk_angle", _nice(d["csk_angle"], 0.5), "countersink angle"))
         if "cbore_d" in d:
             end = f"{'+' if d.get('from', 1) > 0 else '-'}{d['axis']}"
             P.append((f"{n}_cbore_d", _nice(d["cbore_d"], tol), "counterbore diameter"))
@@ -1179,9 +1408,12 @@ def _along(m, regions, tol, axis: int) -> dict:
     axial = [r for r in cylinders if _principal_axis(r.surface.axis) == axis]
     axis_vec = np.zeros(3)
     axis_vec[axis] = 1.0
+    cone_regions = [r for r in regions if isinstance(r.surface, Cone)]
     for pts in curve_loops:
         cloud = np.array([p[0] * U + p[1] * V + origin * axis_vec for p in pts])
-        if not any(_on_cylinder(cloud, r.surface, axis, tol) for r in axial):
+        on_wall = any(_on_cylinder(cloud, r.surface, axis, tol) for r in axial)
+        on_mouth = any(_on_cone(cloud, r.surface, axis, tol) for r in cone_regions)
+        if not on_wall and not on_mouth:
             raise _Reject(
                 "an opening in the outline is neither a straight cutout nor a round hole",
                 5,
@@ -1225,13 +1457,30 @@ def _along(m, regions, tol, axis: int) -> dict:
                 "a side face does not run the whole length, so the outline is not constant",
                 4,
             )
-    if any(isinstance(r.surface, Cone) for r in regions):
-        raise _Reject(
-            "a countersink, chamfer or draft on an extruded outline is not supported yet",
-            6,
-        )
+    # A vertical countersink on a Z extrusion is a cone. A draft, a boss
+    # chamfer, and a cone whose axis is not Z stay refused, with the same
+    # message as before. An X or Y extrusion never takes the countersink path,
+    # so a 45 degree chamfer on a side hole still falls through to the
+    # combined-extrusion script.
+    hole_cones = []
+    if cone_regions:
+        if axis != 2:
+            raise _Reject(
+                "a countersink, chamfer or draft on an extruded outline is not supported yet",
+                6,
+            )
+        for region in cone_regions:
+            cone = region.surface
+            if (region.area < _min_area(m) or _principal_axis(cone.axis) != 2
+                    or _cone_outward(m, region, cone)):
+                raise _Reject(
+                    "a countersink, chamfer or draft on an extruded outline is not supported yet",
+                    6,
+                )
+            hole_cones.append(region)
     try:
-        holes, bosses = _cylinder_features(m, regions, tol, axis, origin, length, outline, cutouts)
+        holes, bosses = _cylinder_features(
+            m, regions, tol, axis, origin, length, outline, cutouts, hole_cones)
     except Unsupported as e:
         raise _Reject(str(e), 6) from e
     return {

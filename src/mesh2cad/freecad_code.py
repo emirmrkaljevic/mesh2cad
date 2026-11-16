@@ -43,8 +43,8 @@ from pathlib import Path
 import trimesh
 
 from .csg import _OVERLAP, _fmt_py, _grown_expr, _hole_limits, _names, _param_rows
-from .extrude import (profile_cbore_cutter, profile_cutter, profile_parameters,
-                      profile_point_lists)
+from .extrude import (profile_cbore_cutter, profile_csk_exprs, profile_cutter,
+                      profile_parameters, profile_point_lists)
 from .patterns import iter_box_patterns, iter_bracket_patterns, pattern_attempts, python_pattern_cuts
 from .slots import FREECAD_SLOT_FN, freecad_slot_cut
 from .parametric import (Unsupported, axis_point_expr, boss_span, bracket_parameters,
@@ -521,6 +521,11 @@ def _render_profile(feats: dict, tol: float, source: str | None) -> str:
             body.append(
                 f"result = result.cut({_cylinder(n, hole, f'{n}_cbore_d / 2', c0, clen)})"
             )
+        csk = profile_csk_exprs(hole, n, "cadquery")
+        if csk is not None:
+            height, start, length, r1, r2 = csk
+            body.append(f"{n}_csk_h = {height}")
+            body.append(f"result = result.cut({_cone(n, hole, r1, r2, start, length)})")
     return _finish(_head(source), _number_lines(numbers, lists), [_EXTRUDE_FN], body)
 
 

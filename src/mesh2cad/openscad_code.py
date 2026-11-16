@@ -45,8 +45,8 @@ from pathlib import Path
 
 import trimesh
 
-from .extrude import (profile_cbore_cutter, profile_cutter, profile_parameters,
-                      profile_point_lists)
+from .extrude import (profile_cbore_cutter, profile_csk_exprs, profile_cutter,
+                      profile_parameters, profile_point_lists)
 from .parametric import (Unsupported, axis_point_expr, boss_span, bracket_parameters,
                          bracket_profile_exprs, cbore_cut_span, chamfer_is_square,
                          deviation_problem, hole_cut_span, iter_bracket_holes,
@@ -560,6 +560,7 @@ def _profile_param_lines(feats: dict, tol: float) -> list[str]:
             lines.append(line)
     hole_rows = [(n, v, note) for n, v, note in numbers if n.startswith("hole_")]
     if hole_rows:
+        by_name = {n: v for n, v, _ in numbers}
         lines += ["", "/* [Holes] */"]
         for name, value, note in hole_rows:
             if note:
@@ -570,6 +571,16 @@ def _profile_param_lines(feats: dict, tol: float) -> list[str]:
                 slider = _slider(by_name.get(f"{stem}_d", 0.2), max(face, value), 0.1, value)
             elif name.endswith("_cbore_depth"):
                 slider = _slider(0.2, feats["profile"]["length"], 0.1, value)
+            elif name.endswith("_csk_d"):
+                stem = name[: -len("_csk_d")]
+                slider = _slider(by_name.get(f"{stem}_d", 0.2), max(face, value), 0.1, value)
+            elif name.endswith("_csk_angle"):
+                if 60.0 <= value <= 120.0:
+                    slider = _slider(60.0, 120.0, 1.0, value)
+                elif 30.0 <= value <= 150.0:
+                    slider = _slider(30.0, 150.0, 1.0, value)
+                else:
+                    slider = ""
             elif name.endswith("_d"):
                 slider = _slider(0.2, face, 0.1, value)
             else:
@@ -609,6 +620,7 @@ def _profile_model(feats: dict) -> list[str]:
                   "  rotate([90, 0, 90])\n"
                   "    linear_extrude(extrude_len)\n" + _indent(profile_2d, 3))
     holes = []
+    heights = []
     for i, hole in enumerate(feats["holes"], 1):
         n = f"hole_{i}"
         start, length = profile_cutter(hole, "openscad")
@@ -616,6 +628,16 @@ def _profile_model(feats: dict) -> list[str]:
         if "cbore_d" in hole:
             c0, clen = profile_cbore_cutter(hole, n, "openscad")
             holes.append(_side_cylinder(n, hole, f"{n}_cbore_d", c0, clen))
+        csk = profile_csk_exprs(hole, n, "openscad")
+        if csk is not None:
+            height, cstart, clen, r1, r2 = csk
+            heights.append(f"{n}_csk_h = {height};")
+            point = axis_point_expr(hole["axis"], n, cstart)
+            holes.append(
+                f"translate([{point}])\n"
+                f"  rotate({openscad_axis_rotate(hole['axis'])})\n"
+                f"    cylinder(h={clen}, r1={r1}, r2={r2});"
+            )
     bosses = []
     for i, _boss in enumerate(feats.get("bosses") or [], 1):
         n = f"boss_{i}"
@@ -625,6 +647,8 @@ def _profile_model(feats: dict) -> list[str]:
         )
     solids = [placed, *bosses]
     lines = ["// --- model ---", "module mesh2cad_part() {"]
+    for height in heights:
+        lines.append(f"  {height}")
     indent = 2 if holes else 1
     if holes:
         lines.append("  difference() {")
