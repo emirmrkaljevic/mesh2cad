@@ -1,4 +1,6 @@
 """Synthetic ground-truth parts (cadquery) -> trimesh."""
+import math
+
 import cadquery as cq
 import numpy as np
 import trimesh
@@ -145,6 +147,29 @@ def slanted_outline():
     solid = cq.Workplane("XY").polyline(outline).close().extrude(12).translate((0, 0, -6))
     hole = cq.Solid.makeCylinder(4.0, 30.0, cq.Vector(14.0, 12.0, -20.0), cq.Vector(0, 0, 1))
     return solid.cut(cq.Workplane().add(hole))
+
+
+def _hex_outline(radius=28.0):
+    """Point list of a hex, flat-to-flat along X, centre at the origin."""
+    return [
+        (radius * math.cos(math.radians(60 * i - 30)),
+         radius * math.sin(math.radians(60 * i - 30)))
+        for i in range(6)
+    ]
+
+
+def hex_flange(face="top"):
+    """Hex flange, 6 mm thick, 56 mm across the vertices.
+
+    An Ø6 hole at (-12, 0) with a 90 degree Ø12 countersink, and an Ø5.5 hole
+    at (12, 0) with an Ø10 counterbore 5 mm deep. ``face`` is ``top`` or
+    ``bottom``, the face both holes open on. The mouths are 14 mm apart at
+    the closest points, so they stay separate circles.
+    """
+    part = cq.Workplane("XY").polyline(_hex_outline()).close().extrude(6)
+    selector = ">Z" if face == "top" else "<Z"
+    part = part.faces(selector).workplane().pushPoints([(-12.0, 0.0)]).cskHole(6, 12, 90)
+    return part.faces(selector).workplane().pushPoints([(12.0, 0.0)]).cboreHole(5.5, 10, 5)
 
 
 def l_plate_with_bosses():
