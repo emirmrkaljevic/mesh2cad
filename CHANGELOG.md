@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.30.0 - 2026-11-17
 
 - Parametric CadQuery, OpenSCAD, and FreeCAD export write a vertical countersink on a single Z extrusion of an outline. The names match the box path: `hole_N_csk_d` and `hole_N_csk_angle`, plus the existing `hole_N_d`, `hole_N_x`, and `hole_N_y`. The countersink may open on the top face or the bottom face. CadQuery cuts a cone. OpenSCAD subtracts a `cylinder` with `r1` and `r2`, extended 1 mm past that face, the same overlap the other hole cuts use. FreeCAD cuts `Part.makeCone`. A 45 degree mouth on that hole is the 90 degree case of `hole_N_csk_angle`. The mouth is wider than the through-hole by twice the axial length of the cone. A counterbored through-hole on a single outline was already `hole_N_cbore_d` and `hole_N_cbore_depth`, on either face, and that output is unchanged. `mesh2cad edit`, `mesh2cad params`, and the MCP tools `list_params` / `edit_params` list and edit the countersink numbers. An edit that makes the through-hole as wide as the countersink, or that pushes the countersink circle out of the outline, is refused and nothing is written.
 - The honesty gate is unchanged: max deviation at most max(4·tol, 0.1), volume error at most 1%. A miss is not rewritten.

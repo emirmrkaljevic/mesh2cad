@@ -52,7 +52,7 @@ It is meant for simple mechanical parts: plates, brackets, and boxes with holes,
 
 It does not recover organic or sculpted shapes, scans, or free-form surfaces. When a fit is poor it does not invent a surface. STEP output falls back to a faceted solid that is still valid, and the report names that fallback. A script is held to a tighter check: deviation at most max(4 times the tolerance, 0.1 mm), and volume error at most 1%. Miss that, and the script is refused.
 
-Six Original Prusa i3 MK3S printed parts in the test set come back as exact STEP, and all six also as a script. The measurements, including the small belt-profile patches that stay faceted, are in [Real parts](docs/real-parts.md). Synthetic noise tests are in [Benchmarks](docs/benchmarks.md). The fitted-surface list, the parameter names, and the refusals are in [Limits](docs/limits.md) (v0.29.0). The pipeline is in [How it works](docs/how-it-works.md).
+Six Original Prusa i3 MK3S printed parts in the test set come back as exact STEP, and all six also as a script. The measurements, including the small belt-profile patches that stay faceted, are in [Real parts](docs/real-parts.md). Synthetic noise tests are in [Benchmarks](docs/benchmarks.md). The fitted-surface list, the parameter names, and the refusals are in [Limits](docs/limits.md) (v0.30.0). The pipeline is in [How it works](docs/how-it-works.md).
 
 ## MCP
 
