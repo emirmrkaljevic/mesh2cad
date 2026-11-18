@@ -172,6 +172,37 @@ def hex_flange(face="top"):
     return part.faces(selector).workplane().pushPoints([(12.0, 0.0)]).cboreHole(5.5, 10, 5)
 
 
+def filleted_t_plate():
+    """T plate, 6 mm thick, every vertical corner rounded at r=3, two through-holes.
+
+    Sharp outline (x, y): (16, 0), (34, 0), (34, 28), (50, 28), (50, 42),
+    (0, 42), (0, 28), (16, 28). The bar is 14 mm thick and the stem is 18 mm
+    wide, so r=3 does not meet. An Ø5 hole sits in the bar at (25, 35) and an
+    Ø4 hole sits in the stem at (25, 14).
+    """
+    outline = [(16, 0), (34, 0), (34, 28), (50, 28), (50, 42), (0, 42), (0, 28), (16, 28)]
+    plate = cq.Workplane("XY").polyline(outline).close().extrude(6).edges("|Z").fillet(3)
+    bar = cq.Solid.makeCylinder(2.5, 20.0, cq.Vector(25.0, 35.0, -2.0), cq.Vector(0, 0, 1))
+    stem = cq.Solid.makeCylinder(2.0, 20.0, cq.Vector(25.0, 14.0, -2.0), cq.Vector(0, 0, 1))
+    return plate.cut(cq.Workplane().add(bar)).cut(cq.Workplane().add(stem))
+
+
+def filleted_t_with_boss_and_countersink():
+    """The same T, with an Ø5 90 degree Ø9 countersink in the bar and an Ø8 boss on the stem.
+
+    The countersink opens on the top face. Its cone is 2 mm deep, which is the
+    90 degree mouth on an Ø5 hole ending at Ø9. The boss is 5 mm tall at
+    (25, 12) and its circle stays inside the stem, clear of the rounds.
+    """
+    outline = [(16, 0), (34, 0), (34, 28), (50, 28), (50, 42), (0, 42), (0, 28), (16, 28)]
+    plate = cq.Workplane("XY").polyline(outline).close().extrude(6).edges("|Z").fillet(3)
+    hole = cq.Solid.makeCylinder(2.5, 20.0, cq.Vector(25.0, 35.0, -2.0), cq.Vector(0, 0, 1))
+    mouth = cq.Solid.makeCone(2.5, 4.5, 2.0, cq.Vector(25.0, 35.0, 4.0), cq.Vector(0, 0, 1))
+    boss = cq.Solid.makeCylinder(4.0, 5.0, cq.Vector(25.0, 12.0, 6.0), cq.Vector(0, 0, 1))
+    return plate.cut(cq.Workplane().add(hole)).cut(cq.Workplane().add(mouth)).union(
+        cq.Workplane().add(boss))
+
+
 def l_plate_with_bosses():
     """L-shaped 6 mm plate with two round bosses, one of them drilled through.
 

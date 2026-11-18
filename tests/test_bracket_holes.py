@@ -88,13 +88,38 @@ def _expect_holes(params, layout):
         assert not any(name.startswith("leg_hole_") for name in params)
 
 
+def _outline_keeps_the_hole(code, q, res, layout):
+    """A noisy L that misses the bracket detector can still be one outline."""
+    assert "outline_fillet_r" in code
+    assert q["max_deviation"] <= max(4 * res.tol, 0.1)
+    assert q["volume_error_pct"] <= 1.0
+    params = _params(code)
+    assert params["outline_fillet_r"] == pytest.approx(3.0, abs=0.2)
+    assert "fillet_r" not in params
+    holes = [
+        (params[f"hole_{i}_d"], params[f"hole_{i}_x"], params[f"hole_{i}_y"])
+        for i in range(1, 5)
+        if f"hole_{i}_d" in params
+    ]
+    near = 0.5
+    if layout in ("both", "base"):
+        assert any(abs(d - 4) <= near and abs(x - 24) <= near and abs(y - 4) <= near
+                   for d, x, y in holes)
+    if layout in ("both", "leg"):
+        assert any(abs(d - 4) <= near and abs(x - 4) <= near and abs(y - 19) <= near
+                   for d, x, y in holes)
+
+
 def _run(export, res, passed, gate, layout, sigma, seed):
     key = (sigma, seed)
     if key not in passed:
-        with pytest.raises(Unsupported) as exc:
-            export(res.mesh, res.regions, res.tol)
-        if key in gate:
-            assert "deviates by" in str(exc.value)
+        try:
+            code, q = export(res.mesh, res.regions, res.tol)
+        except Unsupported as exc:
+            if key in gate:
+                assert "deviates by" in str(exc)
+            return None
+        _outline_keeps_the_hole(code, q, res, layout)
         return None
     code, q = export(res.mesh, res.regions, res.tol)
     assert q["max_deviation"] <= max(4 * res.tol, 0.1)

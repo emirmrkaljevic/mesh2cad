@@ -18,7 +18,9 @@ radius). Holes that do not fit stay ``hole_N_*``. A straight obround through-slo
 ``slot_N_len``, ``slot_N_w``, and ``slot_N_angle``, cut as two cylinders
 and the bar between them. A quarter-torus fillet on a vertical boss
 or hole (``boss_N_fillet``, ``hole_N_rim_r``, ``hole_N_bot_rim_r``,
-``hole_N_floor_r``). A part that is a few extrusions (their
+``hole_N_floor_r``). Vertical corners of a Z extrusion that share one
+radius are ``makeFillet(outline_fillet_r, ...)`` on the edges parallel to Z.
+A part that is a few extrusions (their
 intersection, a union of partial-depth extrusions, or one minus cuts along
 the other axes, plus a counterbored hole or a planar clip) is the same
 boolean. Every dimension is a named parameter at the top of the file
@@ -318,7 +320,7 @@ def _fc_fillet(point: str, radius: str, fillet: str) -> str:
             f"_circle_edges(result, {point}, {radius}))")
 
 
-def _fillet_lines() -> list[str]:
+def _fillet_lines(radius: str = "fillet_r") -> list[str]:
     return [
         "_fillet_edges = []",
         "for _edge in result.Edges:",
@@ -329,7 +331,7 @@ def _fillet_lines() -> list[str]:
         "    if (abs(_p0.x - _p1.x) < 1e-7 and abs(_p0.y - _p1.y) < 1e-7 "
         "and abs(_p0.z - _p1.z) > 1e-7):",
         "        _fillet_edges.append(_edge)",
-        "result = result.makeFillet(fillet_r, _fillet_edges)",
+        f"result = result.makeFillet({radius}, _fillet_edges)",
     ]
 
 
@@ -504,8 +506,13 @@ def _render_profile(feats: dict, tol: float, source: str | None) -> str:
     numbers = profile_parameters(feats, tol)
     lists = profile_point_lists(feats)
     origin, length = "extrude_0", "extrude_len"
-    body = _extrude_lines("result", pr["axis"], origin, length, "outline",
-                          pr["cutouts"], "cutout")
+    body = [f'result = _extrude(outline, "{pr["axis"]}", {origin}, {length})']
+    if pr.get("fillet_r"):
+        body.extend(_fillet_lines("outline_fillet_r"))
+    for i in range(1, len(pr["cutouts"]) + 1):
+        body.append(
+            f'result = result.cut(_extrude(cutout_{i}, "{pr["axis"]}", {origin}, {length}))'
+        )
     for i, _boss in enumerate(feats.get("bosses") or [], 1):
         n = f"boss_{i}"
         body.append(
