@@ -579,6 +579,7 @@ def _check_geometry(script: Script, resolved: dict[str, float]) -> None:
             continue
         _check_scalar(name, value, param.kind, scalars)
     _check_features(scalars)
+    _check_outline_fillet(script, scalars)
     solids, mode = _solids(script, scalars)
     if solids:
         _check_holes(scalars, notes, solids, mode)
@@ -708,6 +709,56 @@ def _check_features(scalars: dict[str, float]) -> None:
                 raise GeometryError(
                     f"{name}={format_number(value)} is at least the base thickness "
                     f"({format_number(thick)} mm)"
+                )
+
+
+def _check_outline_fillet(script: Script, scalars: dict[str, float]) -> None:
+    """A shared vertical round has to leave a straight bit, and clear holes and bosses."""
+    if "outline_fillet_r" not in scalars or "extrude_len" not in scalars or "base_x" in scalars:
+        return
+    param = script.get("outline")
+    if param is None or not isinstance(param.value, list) or len(param.value) < 3:
+        return
+    from .extrude import outline_fillet_centers, outline_fillet_conflict
+
+    radius = float(scalars["outline_fillet_r"])
+    conflict = outline_fillet_conflict(param.value, radius)
+    if conflict == "corner":
+        raise GeometryError(
+            f"outline_fillet_r={format_number(radius)} does not fit this outline"
+        )
+    if isinstance(conflict, tuple):
+        raise GeometryError(
+            f"outline_fillet_r={format_number(radius)} is large enough that the "
+            f"vertical rounds meet (edge of {format_number(conflict[0])} mm)"
+        )
+    centers = outline_fillet_centers(param.value, radius)
+    if not centers:
+        raise GeometryError(
+            f"outline_fillet_r={format_number(radius)} does not fit this outline"
+        )
+    disks = []
+    for name, value in scalars.items():
+        matched = re.fullmatch(r"(hole|boss)_(\d+)_d", name)
+        if not matched:
+            continue
+        kind, idx = matched.group(1), matched.group(2)
+        if f"{kind}_{idx}_x" not in scalars or f"{kind}_{idx}_y" not in scalars:
+            continue
+        rad = float(value) / 2.0
+        owner = name
+        if kind == "hole":
+            for wider in (f"hole_{idx}_cbore_d", f"hole_{idx}_csk_d"):
+                if wider in scalars and float(scalars[wider]) / 2.0 > rad:
+                    rad = float(scalars[wider]) / 2.0
+                    owner = wider
+        disks.append((owner, scalars[f"{kind}_{idx}_x"], scalars[f"{kind}_{idx}_y"], rad))
+    for name, x, y, rad in disks:
+        for cx, cy in centers:
+            if math.hypot(float(x) - cx, float(y) - cy) + 0.05 < radius + rad:
+                raise GeometryError(
+                    f"{name}={format_number(rad * 2.0)} does not fit: it crosses "
+                    f"a rounded corner of the outline"
                 )
 
 

@@ -24,7 +24,9 @@ A quarter-torus fillet on a vertical boss
 or hole becomes ``boss_N_fillet``, ``hole_N_rim_r``, ``hole_N_bot_rim_r``, or
 ``hole_N_floor_r``, applied with ``Solid.fillet`` on that circular edge. A
 straight extrusion of a 2D outline is a
-``polyline`` extruded by ``extrude_len``. A straight round boss on the top
+``polyline`` extruded by ``extrude_len``. Vertical corners of a Z extrusion
+that share one radius are ``edges("|Z").fillet(outline_fillet_r)`` on that
+sharp outline. A straight round boss on the top
 face of a Z extrusion is fused after that (``boss_N_d``, ``boss_N_h``,
 ``boss_N_x``, ``boss_N_y``). A part that is a few of those
 extrusions (their intersection, a union of partial-depth extrusions, or one
@@ -107,6 +109,10 @@ def _render_profile(feats: dict, tol: float, source: str | None) -> str:
     wp = _profile_workplane(pr["axis"])
     body = [f"result = ({wp}",
             "          .polyline(outline).close().extrude(extrude_len))"]
+    if pr.get("fillet_r"):
+        # The sharp outline is filleted before cutouts, so a polygonal opening
+        # keeps square corners and only the outline's vertical edges round.
+        body.append('result = result.edges("|Z").fillet(outline_fillet_r)')
     for i, _loop in enumerate(pr["cutouts"], 1):
         body.append(f"result = result.cut({wp}")
         body.append(f"                     .polyline(cutout_{i}).close().extrude(extrude_len))")

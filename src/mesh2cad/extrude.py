@@ -7,10 +7,12 @@ extrusion may be counterbored. On a Z extrusion a vertical through-hole may
 also be countersunk, opening on the top or the bottom face (``hole_N_csk_d``,
 ``hole_N_csk_angle``), including a 45 degree mouth, which is a 90 degree
 countersink. A Z extrusion may also carry straight round bosses on its top
-face (``boss_N_d``, ``boss_N_h``, ``boss_N_x``, ``boss_N_y``). The outline
-vertices and the extrusion length become named parameters. The box/pad
-vocabulary stays in charge for parts it already explains; this module is the
-fallback.
+face (``boss_N_d``, ``boss_N_h``, ``boss_N_x``, ``boss_N_y``). When every
+vertical corner of a Z extrusion, convex and concave, shares one radius, that
+radius is ``outline_fillet_r`` and ``outline`` stays the sharp polygon the
+walls meet at. The outline vertices and the extrusion length become named
+parameters. The box/pad vocabulary stays in charge for parts it already
+explains; this module is the fallback.
 """
 from __future__ import annotations
 
@@ -20,7 +22,7 @@ from collections import defaultdict
 import numpy as np
 import trimesh
 
-from .fit import Cone, Cylinder, Plane, Sphere
+from .fit import Cone, Cylinder, Plane, Sphere, fit_principal_cylinder
 from .parametric import Segment, Unsupported, _nice, _plain_or_counterbore, _principal_axis, _snap
 from .segment import _partial_span
 
@@ -213,11 +215,13 @@ def _merge_walls(planes, tol):
     return [g for g, _ in groups]
 
 
-def _loop_polygon(mesh, loop, walls, U, V, tol):
+def _loop_polygon(mesh, loop, walls, U, V, tol, round_corners=False):
     """Corners of one boundary loop from the wall planes it runs along.
 
     Returns (points, "polygon") or (points2d, "curve") when the loop does not
     lie on walls (a round hole). None when the loop is too broken to use.
+    ``round_corners`` keeps the wall intersection when a vertical round puts
+    the mesh vertex at the tangent instead of at that sharp corner.
     """
     if len(loop) < 3:
         return None
@@ -291,7 +295,8 @@ def _loop_polygon(mesh, loop, walls, U, V, tol):
         nxt = cleaned[(i + 1) % len(cleaned)][1][0]
         vtx = xy[nxt]
         if math.hypot(hit[0] - float(vtx[0]), hit[1] - float(vtx[1])) > max(12.0 * tol, 0.8):
-            return None
+            if not round_corners:
+                return None
         corners.append(hit)
     corners = _drop_collinear(corners, tol)
     if len(corners) < 3:
@@ -390,13 +395,13 @@ def _nice_loop(pts, tol):
     return _ccw([( _nice(p[0], tol), _nice(p[1], tol)) for p in pts])
 
 
-def _polygons_from_cap(mesh, face_ids, walls, U, V, tol):
+def _polygons_from_cap(mesh, face_ids, walls, U, V, tol, round_corners=False):
     loops = _loops(mesh, face_ids)
     if not loops:
         return None
     built = []
     for loop in loops:
-        got = _loop_polygon(mesh, loop, walls, U, V, tol)
+        got = _loop_polygon(mesh, loop, walls, U, V, tol, round_corners)
         if got is None:
             return None
         pts, kind = got
@@ -549,6 +554,126 @@ def _full_turn(mesh, surface, faces) -> bool:
     """False for a partial cylinder (a fillet). None span is kept, as elsewhere."""
     span = _partial_span(mesh, surface, faces)
     return span is None or span >= np.radians(250.0)
+
+
+def _turn(prev, corner, nxt):
+    """Signed turn at ``corner`` of a CCW outline, and the direction to its fillet centre.
+
+    Positive turn is a convex left turn. The unit vector points from the sharp
+    corner toward the centre: into the material for a convex corner, into the
+    notch for a concave one.
+    """
+    din = (corner[0] - prev[0], corner[1] - prev[1])
+    dout = (nxt[0] - corner[0], nxt[1] - corner[1])
+    lin = math.hypot(din[0], din[1])
+    lout = math.hypot(dout[0], dout[1])
+    if lin < 1e-9 or lout < 1e-9:
+        return None
+    din = (din[0] / lin, din[1] / lin)
+    dout = (dout[0] / lout, dout[1] / lout)
+    cross = din[0] * dout[1] - din[1] * dout[0]
+    dot = din[0] * dout[0] + din[1] * dout[1]
+    theta = math.atan2(cross, max(-1.0, min(1.0, dot)))
+    bis = (-din[1] - dout[1], din[0] + dout[0])
+    bl = math.hypot(bis[0], bis[1])
+    if bl < 1e-8:
+        return None
+    sign = 1.0 if theta > 0.0 else -1.0
+    return theta, sign * bis[0] / bl, sign * bis[1] / bl
+
+
+def _fillet_center_at(prev, corner, nxt, radius):
+    """``((x, y), turn)`` of the round at one corner, or None."""
+    got = _turn(prev, corner, nxt)
+    if got is None:
+        return None
+    theta, ux, uy = got
+    half = abs(theta) / 2.0
+    # A nearly straight corner, or a hairpin, is not this fillet.
+    if half < math.radians(8.0) or abs(abs(theta) - math.pi) < math.radians(4.0):
+        return None
+    sine = math.sin(half)
+    if sine < 1e-6:
+        return None
+    dist = float(radius) / sine
+    return (corner[0] + dist * ux, corner[1] + dist * uy), theta
+
+
+def _outline_pts(outline):
+    pts = [(float(p[0]), float(p[1])) for p in outline]
+    if len(pts) < 3:
+        return None
+    return pts
+
+
+def outline_fillet_centers(outline, radius: float):
+    """Centre of the vertical round at each corner, or None if one corner cannot take it."""
+    pts = _outline_pts(outline)
+    if pts is None or float(radius) <= 0.0:
+        return None
+    centers = []
+    n = len(pts)
+    for i, corner in enumerate(pts):
+        got = _fillet_center_at(pts[i - 1], corner, pts[(i + 1) % n], radius)
+        if got is None:
+            return None
+        centers.append(got[0])
+    return centers
+
+
+def outline_fillet_limit(outline) -> float | None:
+    """Largest radius that still leaves a straight bit on every edge."""
+    pts = _outline_pts(outline)
+    if pts is None:
+        return None
+    tans = []
+    n = len(pts)
+    for i, corner in enumerate(pts):
+        got = _turn(pts[i - 1], corner, pts[(i + 1) % n])
+        if got is None:
+            return None
+        half = abs(got[0]) / 2.0
+        if half < math.radians(8.0) or abs(abs(got[0]) - math.pi) < math.radians(4.0):
+            return None
+        tans.append(math.tan(half))
+    limit = None
+    for i in range(n):
+        nxt = pts[(i + 1) % n]
+        length = math.hypot(nxt[0] - pts[i][0], nxt[1] - pts[i][1])
+        denom = tans[i] + tans[(i + 1) % n]
+        if denom < 1e-9:
+            return None
+        cap = length / denom
+        if limit is None or cap < limit:
+            limit = cap
+    return limit
+
+
+def outline_fillet_conflict(outline, radius: float):
+    """None when ``radius`` fits.
+
+    ``"corner"`` when a corner cannot take a fillet. A one-tuple is the length
+    of an edge whose two rounds meet.
+    """
+    pts = _outline_pts(outline)
+    if pts is None:
+        return "corner"
+    tans = []
+    n = len(pts)
+    for i, corner in enumerate(pts):
+        got = _turn(pts[i - 1], corner, pts[(i + 1) % n])
+        if got is None:
+            return "corner"
+        half = abs(got[0]) / 2.0
+        if half < math.radians(8.0) or abs(abs(got[0]) - math.pi) < math.radians(4.0):
+            return "corner"
+        tans.append(math.tan(half))
+    for i in range(n):
+        nxt = pts[(i + 1) % n]
+        length = math.hypot(nxt[0] - pts[i][0], nxt[1] - pts[i][1])
+        if float(radius) * (tans[i] + tans[(i + 1) % n]) >= length - 1e-9:
+            return (length,)
+    return None
 
 
 def _piled_end(verts, sign: int, tol: float) -> float:
@@ -977,18 +1102,23 @@ def _refresh_cone_radii(segs, ax: int) -> None:
         seg.rb = _cone_radius_at(cone, seg.zb, ax)
 
 
-def _cylinder_features(m, regions, tol, axis, origin, length, outline, cutouts, cones=()):
+def _cylinder_features(m, regions, tol, axis, origin, length, outline, cutouts, cones=(),
+                       skip=()):
     """Through-holes, counterbored through-holes, and straight top bosses on Z.
 
     A Z extrusion may also carry a countersunk through-hole along Z. A hole
     that continues through one of the top bosses is the same through-hole,
     with the cutter extended by that boss height. A hole that meets a boss and
-    stops short is refused. Fillets stay refused.
+    stops short is refused. ``skip`` is the vertical corner rounds already
+    named as ``outline_fillet_r``. Any other partial cylinder stays refused.
     """
     U, V = _PROFILE_AXES[axis]
+    skip_ids = set(skip)
     cyl_regs = []
     outward_regs = []
     for r in regions:
+        if id(r) in skip_ids:
+            continue
         s = r.surface
         if not isinstance(s, Cylinder) or not len(r.faces):
             continue
@@ -1205,6 +1335,9 @@ def profile_parameters(feats: dict, tol: float) -> list[tuple[str, float, str]]:
         ("extrude_len", _nice(pr["length"], tol), f"length along {ax}"),
         ("extrude_0", _nice(pr["origin"], tol), f"start along {ax}"),
     ]
+    if pr.get("fillet_r"):
+        P.append(("outline_fillet_r", _nice(pr["fillet_r"], tol),
+                  "radius of every vertical corner"))
     for i, d in enumerate(feats.get("bosses") or [], 1):
         n = f"boss_{i}"
         P.append((f"{n}_d", _nice(d["d"], tol), "diameter at the top face"))
@@ -1244,6 +1377,285 @@ def _cap_faces(m, cluster, axis):
     for pl, _coord, region in cluster:
         ids.extend(int(i) for i in region.faces)
     return ids
+
+
+def _vertical_fillets(m, cylinders, tol, origin, length):
+    """Partial Z cylinders that can be the vertical corners of one extrusion.
+
+    A nearly full turn is a hole. A fragment on that same axis is part of the
+    hole. Pieces of one round are merged, and the round has to run the height
+    of the extrusion.
+    """
+    full = []
+    parts = []
+    for region in cylinders:
+        surface = region.surface
+        if not isinstance(surface, Cylinder) or region.area < _min_area(m):
+            continue
+        if _principal_axis(surface.axis) != 2:
+            continue
+        span = _partial_span(m, surface, region.faces)
+        point = np.asarray(surface.point, float)
+        if span is None or span >= np.radians(250.0):
+            full.append((float(point[0]), float(point[1]), float(surface.radius)))
+            continue
+        if span < np.radians(8.0):
+            continue
+        verts = m.vertices[np.unique(m.faces[region.faces])]
+        parts.append({
+            "radius": float(surface.radius),
+            "x": float(point[0]),
+            "y": float(point[1]),
+            "span": float(span),
+            "area": float(region.area),
+            "z0": float(verts[:, 2].min()),
+            "z1": float(verts[:, 2].max()),
+            "ids": [id(region)],
+        })
+    gap = _eps(tol, 0.35)
+    kept = []
+    for part in parts:
+        if any(math.hypot(part["x"] - fx, part["y"] - fy) <= gap and abs(part["radius"] - fr) <= gap
+               for fx, fy, fr in full):
+            continue
+        kept.append(part)
+    kept.sort(key=lambda item: -item["area"])
+    merged = []
+    near = max(4.0 * tol, 0.4)
+    for part in kept:
+        for group in merged:
+            if (math.hypot(group["x"] - part["x"], group["y"] - part["y"]) <= near
+                    and abs(group["radius"] - part["radius"]) <= near
+                    and group["span"] + part["span"] <= np.radians(210.0)):
+                area = group["area"] + part["area"]
+                group["x"] = (group["x"] * group["area"] + part["x"] * part["area"]) / area
+                group["y"] = (group["y"] * group["area"] + part["y"] * part["area"]) / area
+                group["radius"] = (group["radius"] * group["area"] + part["radius"] * part["area"]) / area
+                group["span"] += part["span"]
+                group["area"] = area
+                group["z0"] = min(group["z0"], part["z0"])
+                group["z1"] = max(group["z1"], part["z1"])
+                group["ids"].extend(part["ids"])
+                break
+        else:
+            merged.append(dict(part))
+    zgap = max(6.0 * tol, 0.55)
+    out = []
+    for group in merged:
+        if group["span"] < np.radians(12.0) or group["span"] > np.radians(200.0):
+            continue
+        if group["z0"] > float(origin) + zgap or group["z1"] < float(origin + length) - zgap:
+            continue
+        out.append(group)
+    return out
+
+
+def _line_side(line, x, y) -> float:
+    a, b, c = line
+    return a * x + b * y - c
+
+
+def _corner_of_fillet(fillet, lines, tol):
+    """Sharp corner where the two walls tangent to ``fillet`` meet.
+
+    The walls are shifted so each is exactly the fillet radius from the
+    centre. A noisy plane would otherwise miss the corner by a millimetre.
+    """
+    fx, fy, fr = float(fillet["x"]), float(fillet["y"]), float(fillet["radius"])
+    tol_d = max(4.0 * tol, 0.45)
+    scored = []
+    for line in lines:
+        signed = _line_side(line, fx, fy)
+        err = abs(abs(signed) - fr)
+        if err <= tol_d:
+            scored.append((err, line, signed))
+    if len(scored) < 2:
+        return None
+    scored.sort(key=lambda item: item[0])
+    pair = None
+    for i in range(len(scored)):
+        for j in range(i + 1, len(scored)):
+            a1, b1, _c1 = scored[i][1]
+            a2, b2, _c2 = scored[j][1]
+            if abs(a1 * b2 - a2 * b1) >= 0.2:
+                pair = (scored[i], scored[j])
+                break
+        if pair is not None:
+            break
+    if pair is None:
+        return None
+    corrected = []
+    for _err, line, signed in pair:
+        a, b, _c = line
+        sign = 1.0 if signed >= 0.0 else -1.0
+        corrected.append((a, b, a * fx + b * fy - sign * fr))
+    return _intersect(corrected[0], corrected[1])
+
+
+def _ordered_fillet_corners(mesh, face_ids, fillets, lines, U, V, tol):
+    """Sharp corners in boundary order, one per fillet on the outer loop."""
+    loops = _loops(mesh, face_ids)
+    if not loops or not fillets:
+        return None
+    best = None
+    for loop in loops:
+        xy = _project(mesh.vertices[np.asarray(loop, int)], U, V)
+        area = abs(_shoelace([(float(p[0]), float(p[1])) for p in xy]))
+        if best is None or area > best[0]:
+            best = (area, xy)
+    if best is None:
+        return None
+    band = max(4.0 * tol, 0.45)
+    seq = []
+    for p in best[1]:
+        hit, hit_err = None, None
+        for i, fil in enumerate(fillets):
+            err = abs(math.hypot(float(p[0]) - fil["x"], float(p[1]) - fil["y"]) - fil["radius"])
+            if err <= band and (hit_err is None or err < hit_err):
+                hit, hit_err = i, err
+        if hit is None:
+            continue
+        if not seq or seq[-1] != hit:
+            seq.append(hit)
+    if len(seq) >= 2 and seq[0] == seq[-1]:
+        seq.pop()
+    if len(seq) != len(fillets) or len(set(seq)) != len(fillets):
+        return None
+    corners = []
+    for index in seq:
+        hit = _corner_of_fillet(fillets[index], lines, tol)
+        if hit is None:
+            return None
+        corners.append(hit)
+    return corners
+
+
+def _average_outline(low, high, tol):
+    """Mean of two outlines, trying the reverse winding of ``high``."""
+    if low is None:
+        return high
+    if high is None:
+        return low
+    lim = _eps(tol, 0.4)
+    best = None
+    for candidate in (high, list(reversed(high))):
+        hit = _align_error(low, candidate)
+        if hit is None:
+            continue
+        if best is None or hit[0] < best[0]:
+            best = hit
+    if best is None or best[0] > lim:
+        return None
+    return best[1]
+
+
+def _rebuild_fillet_outline(m, low, high, axis, wall_planes, fillets, U, V, tol):
+    """Sharp outline from the fillet centres when the wall intersections drift."""
+    lines = []
+    for wall in wall_planes:
+        line = _wall_line(wall, U, V)
+        if line is not None:
+            lines.append(line)
+    if len(lines) < 3:
+        return None
+    low_pts = _ordered_fillet_corners(m, _cap_faces(m, low, axis), fillets, lines, U, V, tol)
+    high_pts = _ordered_fillet_corners(m, _cap_faces(m, high, axis), fillets, lines, U, V, tol)
+    averaged = _average_outline(low_pts, high_pts, tol)
+    if not averaged or len(averaged) < 3:
+        return None
+    outline = _nice_loop(_drop_collinear(averaged, tol), tol)
+    if len(outline) < 3 or abs(_shoelace(outline)) < 1e-3:
+        return None
+    return outline
+
+
+def _assign_outline_fillets(outline, fillets, tol):
+    """One shared radius when every corner owns one of ``fillets``.
+
+    Returns ``(radius, region ids)`` or ``(None, empty)``. Radii that do not
+    agree stay unnamed: there is no per-corner parameter.
+    """
+    if not fillets or len(fillets) != len(outline):
+        return None, set()
+    radii = [float(item["radius"]) for item in fillets]
+    med = float(np.median(radii))
+    if med <= max(2.0 * tol, 0.05):
+        return None, set()
+    if max(abs(radius - med) for radius in radii) > max(4.0 * tol, 0.35):
+        return None, set()
+    pts = [(float(p[0]), float(p[1])) for p in outline]
+    unused = list(fillets)
+    limit = max(8.0 * tol, 0.6)
+    # Noise pulls the tangent triangles into the wall, so the fitted arc is
+    # shorter than the corner turn. The centre still has to sit on that corner.
+    span_tol = np.radians(55.0)
+    for i, corner in enumerate(pts):
+        got = _fillet_center_at(pts[i - 1], corner, pts[(i + 1) % len(pts)], med)
+        if got is None:
+            return None, set()
+        center, theta = got
+        best_i, best_d = None, None
+        for j, cand in enumerate(unused):
+            dist = math.hypot(cand["x"] - center[0], cand["y"] - center[1])
+            if best_d is None or dist < best_d:
+                best_i, best_d = j, dist
+        if best_i is None or best_d > limit or abs(unused[best_i]["span"] - abs(theta)) > span_tol:
+            return None, set()
+        unused.pop(best_i)
+    ids = set()
+    for item in fillets:
+        ids.update(item["ids"])
+    return med, ids
+
+
+def _matched_outline(m, low, high, axis, wall_planes, U, V, tol, round_corners, boss_preview):
+    """Sharp outline, cutouts, and curve loops shared by the two end caps."""
+    low_poly = _polygons_from_cap(
+        m, _cap_faces(m, low, axis), wall_planes, U, V, tol, round_corners)
+    high_poly = _polygons_from_cap(
+        m, _cap_faces(m, high, axis), wall_planes, U, V, tol, round_corners)
+    curve_extra: list = []
+    if boss_preview:
+        # Boss footprints and a hole that continues through a boss are curves
+        # on one end only. The polygonal outline still has to match.
+        low_p, low_c = _loops_of(low_poly)
+        high_p, high_c = _loops_of(high_poly)
+        matched = _same_loops(low_p, high_p, tol) if low_p and high_p else None
+        if matched is None and low_p:
+            outline_try = _nice_loop(_drop_collinear(low_p[0][2], tol), tol)
+            cut_try = []
+            for _area, _kind, pts in low_p[1:]:
+                loop = _nice_loop(_drop_collinear(pts, tol), tol)
+                if len(loop) >= 3 and abs(_shoelace(loop)) > 1e-3:
+                    cut_try.append(loop)
+            if len(outline_try) >= 3 and _bosses_outside(boss_preview, outline_try, cut_try, tol):
+                raise _Reject("a boss is partly outside the extruded outline", 6)
+        curve_extra = list(low_c or []) + list(high_c or [])
+    else:
+        matched = _same_loops(low_poly, high_poly, tol)
+    if matched is None:
+        # one end can be a single triangle fan that still yields the outline;
+        # accept it when the other end agrees, otherwise say so
+        raise _Reject(
+            "the two ends do not have the same outline, so this is not one straight extrusion",
+            5,
+        )
+    if matched[0][0] != "polygon":
+        raise _Reject("the end face is not bounded by straight walls", 3)
+    outline = _nice_loop(_drop_collinear(matched[0][1], tol), tol)
+    if len(outline) < 3 or abs(_shoelace(outline)) < 1e-3:
+        raise _Reject("the outline area is zero", 3)
+    cutouts = []
+    curve_loops = []
+    for kind, pts in matched[1:]:
+        if kind == "polygon":
+            loop = _nice_loop(_drop_collinear(pts, tol), tol)
+            if len(loop) >= 3 and abs(_shoelace(loop)) > 1e-3:
+                cutouts.append(loop)
+        else:
+            curve_loops.append(pts)
+    curve_loops.extend(curve_extra)
+    return outline, cutouts, curve_loops
 
 
 def _along(m, regions, tol, axis: int) -> dict:
@@ -1359,49 +1771,51 @@ def _along(m, regions, tol, axis: int) -> dict:
     if len(wall_planes) < 3:
         raise _Reject("not enough side walls to form an outline", 2)
     U, V = _PROFILE_AXES[axis]
-    low_poly = _polygons_from_cap(m, _cap_faces(m, low, axis), wall_planes, U, V, tol)
-    high_poly = _polygons_from_cap(m, _cap_faces(m, high, axis), wall_planes, U, V, tol)
-    curve_extra: list = []
-    if boss_preview:
-        # Boss footprints and a hole that continues through a boss are curves
-        # on one end only. The polygonal outline still has to match.
-        low_p, low_c = _loops_of(low_poly)
-        high_p, high_c = _loops_of(high_poly)
-        matched = _same_loops(low_p, high_p, tol) if low_p and high_p else None
-        if matched is None and low_p:
-            outline_try = _nice_loop(_drop_collinear(low_p[0][2], tol), tol)
-            cut_try = []
-            for _area, _kind, pts in low_p[1:]:
-                loop = _nice_loop(_drop_collinear(pts, tol), tol)
-                if len(loop) >= 3 and abs(_shoelace(loop)) > 1e-3:
-                    cut_try.append(loop)
-            if len(outline_try) >= 3 and _bosses_outside(boss_preview, outline_try, cut_try, tol):
-                raise _Reject("a boss is partly outside the extruded outline", 6)
-        curve_extra = list(low_c or []) + list(high_c or [])
-    else:
-        matched = _same_loops(low_poly, high_poly, tol)
-    if matched is None:
-        # one end can be a single triangle fan that still yields the outline;
-        # accept it when the other end agrees, otherwise say so
-        raise _Reject(
-            "the two ends do not have the same outline, so this is not one straight extrusion",
-            5,
-        )
-    if matched[0][0] != "polygon":
-        raise _Reject("the end face is not bounded by straight walls", 3)
-    outline = _nice_loop(_drop_collinear(matched[0][1], tol), tol)
-    if len(outline) < 3 or abs(_shoelace(outline)) < 1e-3:
-        raise _Reject("the outline area is zero", 3)
-    cutouts = []
-    curve_loops = []
-    for kind, pts in matched[1:]:
-        if kind == "polygon":
-            loop = _nice_loop(_drop_collinear(pts, tol), tol)
-            if len(loop) >= 3 and abs(_shoelace(loop)) > 1e-3:
-                cutouts.append(loop)
-        else:
-            curve_loops.append(pts)
-    curve_loops.extend(curve_extra)
+    # Vertical rounds are cylinder patches, not arcs stored in the outline.
+    # The walls still meet at the sharp corner. One shared radius on every
+    # corner of a Z extrusion becomes outline_fillet_r. Anything else keeps
+    # the old refusal.
+    fillets = _vertical_fillets(m, cylinders, tol, origin, length) if axis == 2 else []
+    modes = (True, False) if fillets else (False,)
+    chosen = None
+    fail = None
+    for round_corners in modes:
+        try:
+            outline, cutouts, curve_loops = _matched_outline(
+                m, low, high, axis, wall_planes, U, V, tol, round_corners, boss_preview)
+        except _Reject as exc:
+            fail = exc
+            outline = cutouts = curve_loops = None
+        radius, fillet_ids = (None, set())
+        if round_corners:
+            # Prefer the cap polygon. When its corners do not match the rounds
+            # (noise pulls a wall intersection), rebuild each corner from the
+            # fillet centre, which stays put.
+            if outline is not None:
+                radius, fillet_ids = _assign_outline_fillets(outline, fillets, tol)
+            if radius is None:
+                rebuilt = _rebuild_fillet_outline(
+                    m, low, high, axis, wall_planes, fillets, U, V, tol)
+                if rebuilt is not None:
+                    radius, fillet_ids = _assign_outline_fillets(rebuilt, fillets, tol)
+                    if radius is not None:
+                        if outline is None:
+                            outline, cutouts, curve_loops = rebuilt, [], []
+                        else:
+                            outline = rebuilt
+            if radius is None or outline is None:
+                continue
+        elif outline is None:
+            continue
+        chosen = (outline, cutouts, curve_loops, radius, fillet_ids)
+        break
+    if chosen is None:
+        if fillets and (fail is None or fail.rank < 6):
+            raise _Reject("a rounded edge is not part of an editable outline", 6)
+        if fail is not None:
+            raise fail
+        raise _Reject("a rounded edge is not part of an editable outline", 6)
+    outline, cutouts, curve_loops, fillet_radius, fillet_ids = chosen
     if boss_preview and _bosses_outside(boss_preview, outline, cutouts, tol):
         raise _Reject("a boss is partly outside the extruded outline", 6)
     # a round hole is a non-polygonal loop on a cylinder along the extrusion
@@ -1410,9 +1824,16 @@ def _along(m, regions, tol, axis: int) -> dict:
     axis_vec[axis] = 1.0
     cone_regions = [r for r in regions if isinstance(r.surface, Cone)]
     for pts in curve_loops:
-        cloud = np.array([p[0] * U + p[1] * V + origin * axis_vec for p in pts])
-        on_wall = any(_on_cylinder(cloud, r.surface, axis, tol) for r in axial)
-        on_mouth = any(_on_cone(cloud, r.surface, axis, tol) for r in cone_regions)
+        # A countersink mouth lies on an end face, not on the start plane.
+        # A hole wall is a cylinder, so the axial position does not matter.
+        on_wall = False
+        on_mouth = False
+        for z_face in (float(origin), float(origin + length)):
+            cloud = np.array([p[0] * U + p[1] * V + z_face * axis_vec for p in pts])
+            if any(_on_cylinder(cloud, r.surface, axis, tol) for r in axial):
+                on_wall = True
+            if any(_on_cone(cloud, r.surface, axis, tol) for r in cone_regions):
+                on_mouth = True
         if not on_wall and not on_mouth:
             raise _Reject(
                 "an opening in the outline is neither a straight cutout nor a round hole",
@@ -1434,6 +1855,24 @@ def _along(m, regions, tol, axis: int) -> dict:
                     break
             if used:
                 break
+        if not used and fillet_radius is not None:
+            # A rebuilt corner sits a few tenths off the noisy plane, and a
+            # chord of a round can be fitted as its own vertical plane.
+            loose = max(8.0 * tol, 0.6)
+            for loop in [outline, *cutouts]:
+                for i in range(len(loop)):
+                    p, q = loop[i], loop[(i + 1) % len(loop)]
+                    if (abs(a * p[0] + b * p[1] - c) <= loose
+                            and abs(a * q[0] + b * q[1] - c) <= loose):
+                        used = True
+                        break
+                if used:
+                    break
+            if not used:
+                for fil in fillets:
+                    if abs(a * fil["x"] + b * fil["y"] - c) <= float(fil["radius"]) + loose:
+                        used = True
+                        break
         if not used:
             raise _Reject("a side face is not part of the extruded outline", 4)
     # walls must run the full length (a step would end early). Coplanar regions share a plane.
@@ -1480,17 +1919,20 @@ def _along(m, regions, tol, axis: int) -> dict:
             hole_cones.append(region)
     try:
         holes, bosses = _cylinder_features(
-            m, regions, tol, axis, origin, length, outline, cutouts, hole_cones)
+            m, regions, tol, axis, origin, length, outline, cutouts, hole_cones, fillet_ids)
     except Unsupported as e:
         raise _Reject(str(e), 6) from e
+    profile = {
+        "axis": _AXIS_NAME[axis],
+        "origin": float(origin),
+        "length": float(length),
+        "outline": outline,
+        "cutouts": cutouts,
+    }
+    if fillet_radius is not None:
+        profile["fillet_r"] = float(fillet_radius)
     return {
-        "profile": {
-            "axis": _AXIS_NAME[axis],
-            "origin": float(origin),
-            "length": float(length),
-            "outline": outline,
-            "cutouts": cutouts,
-        },
+        "profile": profile,
         "holes": holes,
         "bosses": bosses,
         "pads": [],
@@ -1522,18 +1964,31 @@ def extract_extrusion(m: trimesh.Trimesh, regions, tol: float) -> dict:
     """Recognise one straight extrusion. Raises :class:`Unsupported` otherwise."""
     if any(r.surface is None for r in regions):
         raise Unsupported("part has unfitted (faceted) regions")
-    for r in regions:
-        s = r.surface
-        if isinstance(s, Sphere):
-            raise Unsupported("sphere faces are not supported yet")
-        if not isinstance(s, (Plane, Cylinder, Cone)):
-            raise Unsupported(f"{s.kind} faces are not supported yet")
-        if isinstance(s, (Cylinder, Cone)) and _principal_axis(s.axis) is None:
-            raise Unsupported("curved surface whose axis is not aligned with X, Y or Z")
-    failures = []
-    for axis in (0, 1, 2):
-        try:
-            return _along(m, regions, tol, axis)
-        except _Reject as e:
-            failures.append((axis, e))
-    raise Unsupported(_summarize(failures))
+    # A noisy fillet can come back as a tilted cone. If the vertices lie on a
+    # principal cylinder, use that for this fit and put the original surface
+    # back afterwards. A curve that is not that cylinder still refuses.
+    replaced = []
+    try:
+        for r in regions:
+            s = r.surface
+            if isinstance(s, Sphere):
+                raise Unsupported("sphere faces are not supported yet")
+            if not isinstance(s, (Plane, Cylinder, Cone)):
+                raise Unsupported(f"{s.kind} faces are not supported yet")
+            if isinstance(s, (Cylinder, Cone)) and _principal_axis(s.axis) is None:
+                pts = m.vertices[np.unique(m.faces[r.faces])] if len(r.faces) else np.zeros((0, 3))
+                cyl = fit_principal_cylinder(pts, tol)
+                if cyl is None:
+                    raise Unsupported("curved surface whose axis is not aligned with X, Y or Z")
+                replaced.append((r, s))
+                r.surface = cyl
+        failures = []
+        for axis in (0, 1, 2):
+            try:
+                return _along(m, regions, tol, axis)
+            except _Reject as e:
+                failures.append((axis, e))
+        raise Unsupported(_summarize(failures))
+    finally:
+        for region, old in replaced:
+            region.surface = old

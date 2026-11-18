@@ -33,7 +33,9 @@ Supported parts:
   diameter), ``slot_N_x``, ``slot_N_y``, and ``slot_N_angle`` (0 along +X,
   90 along +Y);
 * a straight extrusion of a 2D outline along X, Y, or Z, including a polygonal
-  through-opening in that outline and round through-holes;
+  through-opening in that outline and round through-holes. On a Z extrusion,
+  vertical corners that share one radius are ``outline_fillet_r`` and the
+  outline stays the sharp polygon;
 * a counterbored through-hole (a larger cylinder opening on one face, the
   smaller one continuing through);
 * a small boolean of those extrusions: the intersection of outlines extruded

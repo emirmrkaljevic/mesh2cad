@@ -22,7 +22,9 @@ A quarter-torus fillet on a vertical boss or hole is a revolved
 square-minus-quarter-circle: ``boss_N_fillet`` added at the base of a boss,
 ``hole_N_rim_r`` and ``hole_N_bot_rim_r`` cut from a hole rim, and
 ``hole_N_floor_r`` added back where a blind floor meets the wall. A straight
-extrusion is ``linear_extrude`` of ``polygon(outline)``.
+extrusion is ``linear_extrude`` of ``polygon(outline)``. Vertical corners of
+a Z extrusion that share one radius are ``offset`` around that sharp outline,
+sized by ``outline_fillet_r``.
 Several of those, cut, intersected, or stacked as partial-depth extrusions,
 are the same polygons under ``intersection`` / ``union`` / ``difference``,
 and a counterbored hole is a second cylinder. A face tilted to X, Y, and Z
@@ -45,8 +47,8 @@ from pathlib import Path
 
 import trimesh
 
-from .extrude import (profile_cbore_cutter, profile_csk_exprs, profile_cutter,
-                      profile_parameters, profile_point_lists)
+from .extrude import (outline_fillet_limit, profile_cbore_cutter, profile_csk_exprs,
+                      profile_cutter, profile_parameters, profile_point_lists)
 from .parametric import (Unsupported, axis_point_expr, boss_span, bracket_parameters,
                          bracket_profile_exprs, cbore_cut_span, chamfer_is_square,
                          deviation_problem, hole_cut_span, iter_bracket_holes,
@@ -542,7 +544,12 @@ def _profile_param_lines(feats: dict, tol: float) -> list[str]:
             continue
         if note:
             lines.append(f"// {note}")
-        lines.append(f"{name.ljust(width)} = {value!r};")
+        line = f"{name.ljust(width)} = {value!r};"
+        if name == "outline_fillet_r":
+            limit = outline_fillet_limit(outline)
+            if limit is not None and limit > value:
+                line += f" // {_slider(0.0, limit - 0.1, 0.1, value, floor_hi=True)}"
+        lines.append(line)
     for name, pts, note in lists:
         if note:
             lines.append(f"// {note}")
@@ -596,16 +603,27 @@ def _profile_param_lines(feats: dict, tol: float) -> list[str]:
 def _profile_model(feats: dict) -> list[str]:
     pr = feats["profile"]
     axis = pr["axis"]
-    cut_lines = []
+    if pr.get("fillet_r") and axis == "Z":
+        # Expand, then shrink with a round join, then the same the other way.
+        # The first pair rounds concave corners. The second rounds convex ones.
+        # The straight edges stay on the sharp outline. Cutouts stay square.
+        outer = (
+            "offset(r=outline_fillet_r) // outer corners\n"
+            "  offset(delta=-outline_fillet_r)\n"
+            "    offset(r=-outline_fillet_r) // inner corners\n"
+            "      offset(delta=outline_fillet_r)\n"
+            "        polygon(outline);"
+        )
+    else:
+        outer = "polygon(outline);"
     if pr["cutouts"]:
-        cut_lines.append("difference() {")
-        cut_lines.append("  polygon(outline);")
+        cut_lines = ["difference() {", _indent(outer, 1)]
         for i in range(1, len(pr["cutouts"]) + 1):
             cut_lines.append(f"  polygon(cutout_{i});")
         cut_lines.append("}")
+        profile_2d = "\n".join(cut_lines)
     else:
-        cut_lines.append("polygon(outline);")
-    profile_2d = "\n".join(cut_lines)
+        profile_2d = outer
     if axis == "Z":
         placed = "translate([0, 0, extrude_0])\n  linear_extrude(extrude_len)\n" + _indent(profile_2d, 2)
     elif axis == "Y":

@@ -65,6 +65,58 @@ def fit_plane(pts, weights=None) -> Plane:
     return Plane(n, float(n @ c))
 
 
+def fit_principal_cylinder(pts, tol: float) -> Cylinder | None:
+    """Cylinder on X, Y, or Z when ``pts`` lie on one within the fit tolerance.
+
+    A noisy vertical fillet is sometimes returned as a tilted cone. The
+    vertices still sit on the round. Face centres do not: they fall inside
+    the arc, so this fit uses the vertices.
+    """
+    pts = np.asarray(pts, float)
+    if len(pts) < 12:
+        return None
+    from scipy.optimize import least_squares
+
+    best = None
+    limit = max(4.0 * float(tol), 0.2)
+    span_need = max(8.0 * float(tol), 1.0)
+    for axis in range(3):
+        cols = [i for i in range(3) if i != axis]
+        uv = pts[:, cols]
+        if float(pts[:, axis].max() - pts[:, axis].min()) < span_need:
+            continue
+        c0 = uv.mean(axis=0)
+        r0 = float(np.mean(np.linalg.norm(uv - c0, axis=1)))
+        if not np.isfinite(r0) or r0 < 0.05:
+            continue
+
+        def residual(p, uv=uv):
+            return np.linalg.norm(uv - p[:2], axis=1) - p[2]
+
+        try:
+            sol = least_squares(
+                residual, np.array([c0[0], c0[1], max(r0, 0.5)]),
+                bounds=([-np.inf, -np.inf, 0.05], [np.inf, np.inf, 1.0e4]),
+                max_nfev=80,
+            )
+        except Exception:
+            continue
+        if not np.isfinite(sol.x).all() or float(sol.x[2]) <= 0.05:
+            continue
+        err = np.abs(residual(sol.x))
+        p90 = float(np.percentile(err, 90))
+        if p90 > limit:
+            continue
+        if best is None or p90 < best[0]:
+            center = np.zeros(3)
+            center[cols[0]] = float(sol.x[0])
+            center[cols[1]] = float(sol.x[1])
+            direction = np.zeros(3)
+            direction[axis] = 1.0
+            best = (p90, Cylinder(direction, center, float(sol.x[2])))
+    return None if best is None else best[1]
+
+
 def fit_cylinder(pts, normals) -> Cylinder | None:
     """Axis = direction most orthogonal to all normals; then circle fit."""
     if len(pts) < 6:

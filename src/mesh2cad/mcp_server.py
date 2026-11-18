@@ -79,7 +79,8 @@ def to_cadquery(input_path: str, output_path: str | None = None, tol: float | No
     outline along X, Y, or Z (straight round bosses on the top face of a Z
     extrusion are boss_N_d, boss_N_h, boss_N_x, boss_N_y; a vertical countersink
     on that Z extrusion is hole_N_csk_d and hole_N_csk_angle, and a counterbore
-    is hole_N_cbore_d and hole_N_cbore_depth), and a small boolean of those extrusions
+    is hole_N_cbore_d and hole_N_cbore_depth; vertical corners of that Z extrusion
+    that share one radius are outline_fillet_r), and a small boolean of those extrusions
     (intersection, or one minus a cut along another axis) with round
     through-holes, counterbores, and a few planar clips.
     Each dimension is a named parameter (e.g. hole_1_d = 6.0, extrude_len): edit
@@ -112,7 +113,7 @@ def to_openscad(input_path: str, output_path: str | None = None, tol: float | No
     hole_grid_1_nx, hole_circle_1_n, hole_circle_1_r), a straight
     obround through-slot along Z (slot_1_len, slot_1_w, slot_1_angle), a quarter-torus
     fillet on a vertical boss or hole (boss_N_fillet, hole_N_rim_r,
-    hole_N_floor_r), a straight extrusion of a 2D outline (straight round bosses on the top face of a Z extrusion are boss_N_d, boss_N_h, boss_N_x, boss_N_y; a vertical countersink on that Z extrusion is hole_N_csk_d and hole_N_csk_angle), and a small boolean
+    hole_N_floor_r), a straight extrusion of a 2D outline (straight round bosses on the top face of a Z extrusion are boss_N_d, boss_N_h, boss_N_x, boss_N_y; a vertical countersink on that Z extrusion is hole_N_csk_d and hole_N_csk_angle; vertical corners of that Z extrusion that share one radius are outline_fillet_r), and a small boolean
     of those extrusions. Parameter names match the CadQuery script
     (hole_1_d, hole_row_1_n, hole_circle_1_r, slot_1_len, boss_1_h, fillet_r, edge_fillet_r, leg_x, base_hole_1_d, boss_1_fillet, extrude_len, ...). Edit one and
     render in OpenSCAD. Returns the parameters, whether the openscad CLI
@@ -145,7 +146,7 @@ def to_freecad(input_path: str, output_path: str | None = None, tol: float | Non
     hole_grid_1_nx, hole_circle_1_n, hole_circle_1_r), a straight
     obround through-slot along Z (slot_1_len, slot_1_w, slot_1_angle), a quarter-torus
     fillet on a vertical boss or hole (boss_N_fillet, hole_N_rim_r,
-    hole_N_floor_r), a straight extrusion of a 2D outline (straight round bosses on the top face of a Z extrusion are boss_N_d, boss_N_h, boss_N_x, boss_N_y; a vertical countersink on that Z extrusion is hole_N_csk_d and hole_N_csk_angle), and a small boolean
+    hole_N_floor_r), a straight extrusion of a 2D outline (straight round bosses on the top face of a Z extrusion are boss_N_d, boss_N_h, boss_N_x, boss_N_y; a vertical countersink on that Z extrusion is hole_N_csk_d and hole_N_csk_angle; vertical corners of that Z extrusion that share one radius are outline_fillet_r), and a small boolean
     of those extrusions. Parameter names match the CadQuery script
     (hole_1_d, hole_row_1_n, hole_circle_1_r, slot_1_len, boss_1_h, fillet_r, edge_fillet_r, leg_x, base_hole_1_d, boss_1_fillet, extrude_len, ...). Edit one and run the
     macro in FreeCAD, or with freecadcmd. Returns the parameters, whether
