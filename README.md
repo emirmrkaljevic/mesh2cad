@@ -21,6 +21,8 @@ A STEP file is the solid. When the fit is exact, a hole is one cylindrical face,
 
 Four printer parts, with the STEP files and the generated scripts, are in the [example gallery](https://huggingface.co/spaces/mesh2cad/mesh2cad).
 
+Hackaday wrote about it: [Mesh2Cad Automates Re-Modelling](https://hackaday.com/2026/11/19/mesh2cad-automates-re-modelling/).
+
 ## Install
 
 ```
