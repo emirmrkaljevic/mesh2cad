@@ -11,6 +11,8 @@ import shutil
 
 import pytest
 
+from marks import sweep
+
 pytest.importorskip("cadquery")
 import cadquery as cq  # noqa: E402
 
@@ -171,7 +173,7 @@ def test_row_of_four_is_one_pattern():
     assert abs(solid.volume) == pytest.approx(block - 4 * math.pi * 9 * 6, rel=0.01)
 
 
-@pytest.mark.parametrize("seed", [0, 1, 2])
+@pytest.mark.parametrize("seed", sweep([0, 1, 2]))
 def test_row_survives_005_mm_noise(seed):
     ref, res, code, q = _export(plate_row(), sigma=0.05, seed=seed)
     assert q["max_deviation"] <= max(4 * res.tol, 0.1)
@@ -207,7 +209,7 @@ def test_grid_is_one_pattern():
     assert abs(solid.volume) == pytest.approx(block - 6 * math.pi * 2.5 ** 2 * 6, rel=0.01)
 
 
-@pytest.mark.parametrize("seed", [0, 1, 2])
+@pytest.mark.parametrize("seed", sweep([0, 1, 2]))
 def test_grid_survives_005_mm_noise(seed):
     ref, res, code, q = _export(plate_grid(), sigma=0.05, seed=seed)
     assert q["max_deviation"] <= max(4 * res.tol, 0.1)

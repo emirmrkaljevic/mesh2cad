@@ -21,7 +21,13 @@ Changelog = "https://github.com/emirmrkaljevic/mesh2cad/releases"
 [project.optional-dependencies]
 mcp = ["mcp"]
 cadquery = ["cadquery"]
-dev = ["pytest", "cadquery", "mcp"]
+dev = ["pytest", "pytest-xdist", "cadquery", "mcp"]
 
 [project.scripts]
 mesh2cad = "mesh2cad.cli:main"
+
+[tool.pytest.ini_options]
+addopts = ["-m", "not slow"]
+markers = [
+    "slow: extra noise levels and seeds from an exhaustive sweep (pytest -m slow)",
+]

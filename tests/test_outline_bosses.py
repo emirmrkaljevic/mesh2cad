@@ -5,6 +5,8 @@ import shutil
 
 import pytest
 
+from marks import sweep
+
 pytest.importorskip("cadquery")
 import cadquery as cq  # noqa: E402
 
@@ -79,8 +81,8 @@ def _refuse(solid):
     return str(caught.value)
 
 
-@pytest.mark.parametrize("seed", [0, 1, 2])
-@pytest.mark.parametrize("sigma", [0.0, 0.05])
+@pytest.mark.parametrize("seed", sweep([0, 1, 2]))
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05]))
 def test_cadquery_bosses_on_an_extruded_outline(sigma, seed):
     ref, mesh, tol = _plate_mesh(sigma, seed)
     res = convert_mesh(mesh, tol=tol, with_report=False)
@@ -101,8 +103,8 @@ def test_cadquery_bosses_on_an_extruded_outline(sigma, seed):
 
 
 @needs_openscad
-@pytest.mark.parametrize("seed", [0, 1, 2])
-@pytest.mark.parametrize("sigma", [0.0, 0.05])
+@pytest.mark.parametrize("seed", sweep([0, 1, 2]))
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05]))
 def test_openscad_bosses_on_an_extruded_outline(sigma, seed, tmp_path):
     ref, mesh, tol = _plate_mesh(sigma, seed)
     res = convert_mesh(mesh, tol=tol, with_report=False)
@@ -118,8 +120,8 @@ def test_openscad_bosses_on_an_extruded_outline(sigma, seed, tmp_path):
     assert against["volume_error_pct"] < 0.5
 
 
-@pytest.mark.parametrize("seed", [0, 1, 2])
-@pytest.mark.parametrize("sigma", [0.0, 0.05])
+@pytest.mark.parametrize("seed", sweep([0, 1, 2]))
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05]))
 def test_freecad_macro_fuses_bosses_on_an_extruded_outline(sigma, seed):
     """The macro is written when the same gate passes.
 

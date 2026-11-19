@@ -3,6 +3,8 @@ import numpy as np
 import cadquery as cq
 import pytest
 
+from marks import sweep
+
 from mesh2cad.convert import convert_mesh
 from mesh2cad.io import add_noise
 from parts import FILLET_RADIUS, FILLETS, ROUNDED, ROUNDED_RADIUS, to_mesh
@@ -17,8 +19,8 @@ def _radii(res):
             if getattr(r.surface, "kind", None) == "cylinder"]
 
 
-@pytest.mark.parametrize("seed", [0, 1, 2])
-@pytest.mark.parametrize("sigma", [0.0, 0.05])
+@pytest.mark.parametrize("seed", sweep([0, 1, 2]))
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05]))
 @pytest.mark.parametrize("name", list(FILLETS))
 def test_fillet_roundtrip(name, sigma, seed):
     ref = to_mesh(FILLETS[name]())
@@ -36,7 +38,7 @@ def test_fillet_roundtrip(name, sigma, seed):
     assert r["volume_error_pct"] < 0.5
 
 
-@pytest.mark.parametrize("seed", [0, 1, 2])
+@pytest.mark.parametrize("seed", sweep([0, 1, 2]))
 @pytest.mark.parametrize("name", list(FILLETS))
 def test_fillet_high_noise_stays_valid(name, seed):
     """0.2 mm is past the noise these rounds survive reliably.
@@ -92,8 +94,8 @@ def _tangent(regions, tol=1e-3):
         assert hits == 3
 
 
-@pytest.mark.parametrize("seed", [0, 1, 2])
-@pytest.mark.parametrize("sigma", [0.0, 0.05, 0.2])
+@pytest.mark.parametrize("seed", sweep([0, 1, 2]))
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05, 0.2]))
 def test_rounded_box_roundtrip(sigma, seed):
     """Every edge filleted: 6 planes, 12 cylinders, 8 sphere octants, all tangent."""
     ref = to_mesh(ROUNDED["rounded_box"]())

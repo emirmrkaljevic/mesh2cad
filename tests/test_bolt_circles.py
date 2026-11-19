@@ -11,6 +11,8 @@ import shutil
 
 import pytest
 
+from marks import sweep
+
 pytest.importorskip("cadquery")
 import cadquery as cq  # noqa: E402
 
@@ -237,8 +239,8 @@ def test_missing_hole_stays_individual():
     assert sorted(diameters) == pytest.approx([HOLE_D] * 5 + [BORE_D], abs=0.05)
 
 
-@pytest.mark.parametrize("sigma", [0.05, 0.2])
-@pytest.mark.parametrize("seed", [0, 1, 2])
+@pytest.mark.parametrize("sigma", sweep([0.05, 0.2]))
+@pytest.mark.parametrize("seed", sweep([0, 1, 2]))
 def test_circle_survives_noise(sigma, seed):
     ref, res, code, q = _export(plate_circle4(), sigma=sigma, seed=seed)
     assert q["max_deviation"] <= max(4 * res.tol, 0.1)

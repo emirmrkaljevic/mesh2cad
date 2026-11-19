@@ -4,6 +4,8 @@ import re
 import shutil
 
 import pytest
+
+from marks import sweep
 import trimesh
 
 pytest.importorskip("cadquery")
@@ -60,7 +62,7 @@ def _fit(fn, sigma):
     return ref, res
 
 
-@pytest.mark.parametrize("sigma", [0.0, 0.05])
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05]))
 def test_cadquery_intersection(sigma):
     ref, res = _fit(orthogonal_intersection, sigma)
     code, q = to_cadquery(res.mesh, res.regions, res.tol)
@@ -81,7 +83,7 @@ def test_cadquery_intersection(sigma):
     assert against["volume_error_pct"] < 0.5
 
 
-@pytest.mark.parametrize("sigma", [0.0, 0.05])
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05]))
 def test_cadquery_cut_extrusion(sigma):
     ref, res = _fit(cut_block, sigma)
     code, q = to_cadquery(res.mesh, res.regions, res.tol)
@@ -102,7 +104,7 @@ def test_cadquery_cut_extrusion(sigma):
     assert against["max_deviation"] < (0.05 if sigma == 0.0 else 0.3)
 
 
-@pytest.mark.parametrize("sigma", [0.0, 0.05])
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05]))
 def test_cadquery_counterbore(sigma):
     ref, res = _fit(counterbored_plate, sigma)
     code, q = to_cadquery(res.mesh, res.regions, res.tol)
@@ -263,7 +265,7 @@ def _z_bands(params):
     return bands
 
 
-@pytest.mark.parametrize("sigma", [0.0, 0.05])
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05]))
 def test_cadquery_stacked_extrusion(sigma):
     ref, res = _fit(_stepped_shelf, sigma)
     code, q = to_cadquery(res.mesh, res.regions, res.tol)
@@ -394,7 +396,7 @@ def test_wall_outline_closes_a_hole_breakout():
 
 
 @needs_openscad
-@pytest.mark.parametrize("sigma", [0.0, 0.05])
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05]))
 @pytest.mark.parametrize("fn", [orthogonal_intersection, cut_block, counterbored_plate, _stepped_shelf])
 def test_openscad_csg(fn, sigma, tmp_path):
     ref, res = _fit(fn, sigma)

@@ -1,6 +1,8 @@
 """Self-test: cadquery part -> STL -> noise -> mesh2cad -> compare to truth."""
 import pytest
 
+from marks import sweep
+
 from mesh2cad.convert import convert_mesh
 from mesh2cad.io import add_noise
 from parts import PLANAR, to_mesh
@@ -8,8 +10,8 @@ from parts import PLANAR, to_mesh
 EXPECTED_FACES = {"cube": 6, "l_bracket": 8, "stepped_block": 11}
 
 
-@pytest.mark.parametrize("seed", [0, 1, 2])
-@pytest.mark.parametrize("sigma", [0.0, 0.05, 0.2])
+@pytest.mark.parametrize("seed", sweep([0, 1, 2]))
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05, 0.2]))
 @pytest.mark.parametrize("name", list(PLANAR))
 def test_planar_roundtrip(name, sigma, seed):
     ref = to_mesh(PLANAR[name]())
@@ -29,8 +31,8 @@ CURVED_FACES = {"plate_with_hole": {"plane": 6, "cylinder": 1}, "boss": {"plane"
                 "ribbed_plate": {"plane": 10, "cylinder": 2}}
 
 
-@pytest.mark.parametrize("seed", [0, 1, 2])
-@pytest.mark.parametrize("sigma", [0.0, 0.05, 0.2])
+@pytest.mark.parametrize("seed", sweep([0, 1, 2]))
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05, 0.2]))
 @pytest.mark.parametrize("name", list(CURVED))
 def test_cylinder_roundtrip(name, sigma, seed):
     ref = to_mesh(CURVED[name]())
@@ -49,8 +51,8 @@ SPHERE_FACES = {"spherical_dome": {"plane": 6, "sphere": 1},
                 "spherical_pocket": {"plane": 6, "sphere": 1}}
 
 
-@pytest.mark.parametrize("seed", [0, 1, 2])
-@pytest.mark.parametrize("sigma", [0.0, 0.05, 0.2])
+@pytest.mark.parametrize("seed", sweep([0, 1, 2]))
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05, 0.2]))
 @pytest.mark.parametrize("name", list(SPHERES))
 def test_sphere_roundtrip(name, sigma, seed):
     ref = to_mesh(SPHERES[name]())
@@ -67,7 +69,7 @@ def test_sphere_roundtrip(name, sigma, seed):
     assert r["volume_error_pct"] < 0.5
 
 
-@pytest.mark.parametrize("sigma", [0.0, 0.2])
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.2]))
 def test_spherical_zone(sigma):
     """Sphere clipped by two parallel planes (two circular boundaries)."""
     ref = to_mesh(spherical_zone())
@@ -94,11 +96,17 @@ CONE_FACES = {"countersunk_plate": {"plane": 6, "cylinder": 1, "cone": 1},
 # (see test_inexact_countersink_fallback_is_solid).
 # Seed 0 does recover and is checked on its own. Narrow chamfers and the wide
 # drafted wall are exact at every noise level.
-CONE_CASES = [(n, s) for n in CONES for s in (0.0, 0.05, 0.2)
+def _cone_case(name, sigma):
+    if sigma == 0.0:
+        return (name, sigma)
+    return pytest.param(name, sigma, marks=pytest.mark.slow)
+
+
+CONE_CASES = [_cone_case(n, s) for n in CONES for s in (0.0, 0.05, 0.2)
               if not (s == 0.2 and n == "countersunk_plate")]
 
 
-@pytest.mark.parametrize("seed", [0, 1])
+@pytest.mark.parametrize("seed", sweep([0, 1]))
 @pytest.mark.parametrize("name,sigma", CONE_CASES)
 def test_cone_roundtrip(name, sigma, seed):
     ref = to_mesh(CONES[name]())

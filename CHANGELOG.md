@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- CI runs faster.
+
 ## 0.31.0 - 2026-11-18
 
 - Parametric CadQuery, OpenSCAD, and FreeCAD export write one radius on every vertical corner of a single Z extrusion. The name is `outline_fillet_r`. The `outline` list stays the sharp polygon, where the side walls meet. Convex and concave corners use that same radius. CadQuery extrudes the polygon and calls `.edges("|Z").fillet(outline_fillet_r)` before cutting holes. OpenSCAD rounds the profile with `offset`. FreeCAD calls `makeFillet` on the edges parallel to Z. `mesh2cad edit`, `mesh2cad params`, and the MCP tools `list_params` / `edit_params` list and edit the radius. An edit that makes the rounds meet, or that pushes a hole or a boss into a round, is refused and nothing is written.

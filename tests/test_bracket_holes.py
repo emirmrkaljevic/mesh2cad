@@ -10,6 +10,8 @@ import shutil
 
 import pytest
 
+from marks import sweep
+
 pytest.importorskip("cadquery")
 from mesh2cad.cadquery_code import to_cadquery  # noqa: E402
 from mesh2cad.cli import main  # noqa: E402
@@ -129,8 +131,8 @@ def _run(export, res, passed, gate, layout, sigma, seed):
 
 
 @pytest.mark.parametrize("layout", ["both", "base", "leg"])
-@pytest.mark.parametrize("seed", [0, 1, 2])
-@pytest.mark.parametrize("sigma", [0.0, 0.05, 0.2])
+@pytest.mark.parametrize("seed", sweep([0, 1, 2]))
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05, 0.2]))
 def test_cadquery_bracket_holes(layout, sigma, seed):
     res, _tol = _case(layout, sigma, seed)
     code = _run(to_cadquery, res, _CQ_PASS[layout], _CQ_GATE[layout], layout, sigma, seed)
@@ -143,8 +145,8 @@ def test_cadquery_bracket_holes(layout, sigma, seed):
 
 @needs_openscad
 @pytest.mark.parametrize("layout", ["both", "base", "leg"])
-@pytest.mark.parametrize("seed", [0, 1, 2])
-@pytest.mark.parametrize("sigma", [0.0, 0.05, 0.2])
+@pytest.mark.parametrize("seed", sweep([0, 1, 2]))
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05, 0.2]))
 def test_openscad_bracket_holes(layout, sigma, seed):
     res, _tol = _case(layout, sigma, seed)
     code = _run(to_openscad, res, _OS_PASS[layout], _OS_GATE[layout], layout, sigma, seed)
@@ -161,8 +163,8 @@ def test_openscad_bracket_holes(layout, sigma, seed):
 
 @needs_freecad
 @pytest.mark.parametrize("layout", ["both", "base", "leg"])
-@pytest.mark.parametrize("seed", [0, 1, 2])
-@pytest.mark.parametrize("sigma", [0.0, 0.05, 0.2])
+@pytest.mark.parametrize("seed", sweep([0, 1, 2]))
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05, 0.2]))
 def test_freecad_bracket_holes(layout, sigma, seed):
     res, _tol = _case(layout, sigma, seed)
     code = _run(to_freecad, res, _CQ_PASS[layout], _CQ_GATE[layout], layout, sigma, seed)

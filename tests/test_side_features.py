@@ -5,6 +5,8 @@ import shutil
 
 import pytest
 
+from marks import sweep
+
 pytest.importorskip("cadquery")
 from mesh2cad.cadquery_code import check as cq_check  # noqa: E402
 from mesh2cad.cadquery_code import run_script, to_cadquery  # noqa: E402
@@ -82,7 +84,7 @@ def _expect_side_features(params, tol=0.05):
     return through, blind, boss
 
 
-@pytest.mark.parametrize("sigma", [0.0, 0.05])
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05]))
 def test_cadquery_side_features(sigma):
     ref, res = _convert(sigma)
     code, q = to_cadquery(res.mesh, res.regions, res.tol)
@@ -134,7 +136,7 @@ def test_angled_axis_is_refused():
 
 
 @needs_openscad
-@pytest.mark.parametrize("sigma", [0.0, 0.05])
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05]))
 def test_openscad_side_features(sigma, tmp_path):
     ref, res = _convert(sigma)
     code, q = to_openscad(res.mesh, res.regions, res.tol)
