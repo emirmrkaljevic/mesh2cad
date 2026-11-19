@@ -4,6 +4,8 @@ import shutil
 
 import pytest
 
+from marks import sweep
+
 pytest.importorskip("cadquery")
 from mesh2cad.cadquery_code import to_cadquery  # noqa: E402
 from mesh2cad.cli import main  # noqa: E402
@@ -57,7 +59,7 @@ def _gen(name, sigma=0.0, fn=None):
 
 
 @needs_openscad
-@pytest.mark.parametrize("sigma", [0.0, 0.05])
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05]))
 @pytest.mark.parametrize("name", list(PARTS))
 def test_script_reproduces_part(name, sigma, tmp_path):
     ref, code, q = _gen(name, sigma)
@@ -83,7 +85,7 @@ def test_parameters_match_cadquery(name):
 
 
 @needs_openscad
-@pytest.mark.parametrize("seed", [1, 2])
+@pytest.mark.parametrize("seed", sweep([1, 2]))
 def test_recovered_chamfer_exports_openscad(seed, tmp_path):
     ref = to_mesh(chamfered_boss())
     res = convert_mesh(add_noise(ref, 0.05, seed=seed), tol=0.05, with_report=False)
@@ -116,7 +118,7 @@ def test_edit_hole_diameter_changes_the_hole(tmp_path):
 
 
 @needs_openscad
-@pytest.mark.parametrize("sigma", [0.0, 0.05])
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05]))
 @pytest.mark.parametrize("name,fn,radius", [
     ("filleted_plate", filleted_plate, 5.0),
     ("filleted_box", filleted_box, 2.0),
@@ -189,8 +191,8 @@ def test_blind_hole(tmp_path):
 
 
 @needs_openscad
-@pytest.mark.parametrize("seed", [0, 1, 2])
-@pytest.mark.parametrize("sigma", [0.0, 0.05, 0.2])
+@pytest.mark.parametrize("seed", sweep([0, 1, 2]))
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05, 0.2]))
 def test_edge_fillet_is_a_parameter(sigma, seed):
     ref = to_mesh(rounded_box())
     tol = max(sigma, 0.01)
@@ -217,8 +219,8 @@ def _holed_fillet(sigma, seed):
 
 
 @needs_openscad
-@pytest.mark.parametrize("seed", [0, 1, 2])
-@pytest.mark.parametrize("sigma", [0.0, 0.05, 0.2])
+@pytest.mark.parametrize("seed", sweep([0, 1, 2]))
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05, 0.2]))
 def test_hole_on_a_filleted_box(sigma, seed):
     mesh, tol = _holed_fillet(sigma, seed)
     res = convert_mesh(mesh, tol=tol, with_report=False)
@@ -245,8 +247,8 @@ def _bossed_fillet(sigma, seed):
 
 
 @needs_openscad
-@pytest.mark.parametrize("seed", [0, 1, 2])
-@pytest.mark.parametrize("sigma", [0.0, 0.05, 0.2])
+@pytest.mark.parametrize("seed", sweep([0, 1, 2]))
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05, 0.2]))
 def test_boss_on_a_filleted_box(sigma, seed):
     mesh, tol = _bossed_fillet(sigma, seed)
     res = convert_mesh(mesh, tol=tol, with_report=False)
@@ -277,8 +279,8 @@ _BRACKET_PASS = {(0.0, 0), (0.0, 1), (0.0, 2), (0.05, 0), (0.05, 2)}
 
 
 @needs_openscad
-@pytest.mark.parametrize("seed", [0, 1, 2])
-@pytest.mark.parametrize("sigma", [0.0, 0.05, 0.2])
+@pytest.mark.parametrize("seed", sweep([0, 1, 2]))
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05, 0.2]))
 def test_bracket_fillet_is_a_script(sigma, seed):
     """L-bracket, vertical edges including the inner corner. The usual gate decides."""
     mesh, tol = _bracket_mesh(sigma, seed)

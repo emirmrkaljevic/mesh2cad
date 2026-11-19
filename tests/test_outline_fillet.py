@@ -5,6 +5,8 @@ import shutil
 
 import pytest
 
+from marks import sweep
+
 pytest.importorskip("cadquery")
 import cadquery as cq  # noqa: E402
 
@@ -83,8 +85,8 @@ def _expect_plate(code, near):
     return params
 
 
-@pytest.mark.parametrize("seed", [0, 1, 2])
-@pytest.mark.parametrize("sigma", [0.0, 0.05])
+@pytest.mark.parametrize("seed", sweep([0, 1, 2]))
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05]))
 def test_cadquery_outline_fillet(sigma, seed):
     ref, mesh, tol = _mesh(filleted_t_plate, sigma, seed)
     res = convert_mesh(mesh, tol=tol, with_report=False)
@@ -105,8 +107,8 @@ def test_cadquery_outline_fillet(sigma, seed):
 
 
 @needs_openscad
-@pytest.mark.parametrize("seed", [0, 1, 2])
-@pytest.mark.parametrize("sigma", [0.0, 0.05])
+@pytest.mark.parametrize("seed", sweep([0, 1, 2]))
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05]))
 def test_openscad_outline_fillet(sigma, seed, tmp_path):
     ref, mesh, tol = _mesh(filleted_t_plate, sigma, seed)
     res = convert_mesh(mesh, tol=tol, with_report=False)
@@ -127,8 +129,8 @@ def test_openscad_outline_fillet(sigma, seed, tmp_path):
     assert against["volume_error_pct"] < 0.5
 
 
-@pytest.mark.parametrize("seed", [0, 1, 2])
-@pytest.mark.parametrize("sigma", [0.0, 0.05])
+@pytest.mark.parametrize("seed", sweep([0, 1, 2]))
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05]))
 def test_freecad_macro_fillets_outline_corners(sigma, seed):
     """The macro is written when the same gate passes.
 
@@ -150,7 +152,7 @@ def test_freecad_macro_fillets_outline_corners(sigma, seed):
 
 @needs_freecad
 @pytest.mark.parametrize("seed", [0])
-@pytest.mark.parametrize("sigma", [0.0, 0.05])
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05]))
 def test_freecad_outline_fillet_deviation(sigma, seed, tmp_path):
     from mesh2cad.freecad_code import check as fc_check
 
@@ -213,8 +215,8 @@ def test_sharp_t_is_not_given_a_fillet():
     assert "edges(\"|Z\").fillet" not in code
 
 
-@pytest.mark.parametrize("seed", [0, 1, 2])
-@pytest.mark.parametrize("sigma", [0.0, 0.05])
+@pytest.mark.parametrize("seed", sweep([0, 1, 2]))
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05]))
 def test_cadquery_fillet_with_boss_and_countersink(sigma, seed):
     ref, mesh, tol = _mesh(filleted_t_with_boss_and_countersink, sigma, seed)
     res = convert_mesh(mesh, tol=tol, with_report=False)
@@ -244,8 +246,8 @@ def test_cadquery_fillet_with_boss_and_countersink(sigma, seed):
 
 
 @needs_openscad
-@pytest.mark.parametrize("seed", [0, 1, 2])
-@pytest.mark.parametrize("sigma", [0.0, 0.05])
+@pytest.mark.parametrize("seed", sweep([0, 1, 2]))
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05]))
 def test_openscad_fillet_with_boss_and_countersink(sigma, seed, tmp_path):
     ref, mesh, tol = _mesh(filleted_t_with_boss_and_countersink, sigma, seed)
     res = convert_mesh(mesh, tol=tol, with_report=False)

@@ -9,6 +9,8 @@ import shutil
 
 import pytest
 
+from marks import sweep
+
 pytest.importorskip("cadquery")
 from mesh2cad.cadquery_code import to_cadquery  # noqa: E402
 from mesh2cad.cli import main  # noqa: E402
@@ -94,7 +96,7 @@ def _against(kind, sigma):
 
 
 @needs_freecad
-@pytest.mark.parametrize("sigma", [0.0, 0.05])
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05]))
 @pytest.mark.parametrize("name", list(BOX))
 def test_script_reproduces_part(name, sigma, tmp_path):
     ref, res = _fit(BOX[name], sigma)
@@ -178,7 +180,7 @@ def test_profile_and_boolean_text():
 
 
 @needs_freecad
-@pytest.mark.parametrize("sigma", [0.0, 0.05])
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05]))
 @pytest.mark.parametrize("name,fn,radius", [
     ("filleted_plate", filleted_plate, 5.0),
     ("filleted_box", filleted_box, 2.0),
@@ -218,8 +220,8 @@ def test_hole_on_a_filleted_box_macro_cuts_after_the_fillet():
 
 
 @needs_freecad
-@pytest.mark.parametrize("seed", [0, 1, 2])
-@pytest.mark.parametrize("sigma", [0.0, 0.05, 0.2])
+@pytest.mark.parametrize("seed", sweep([0, 1, 2]))
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05, 0.2]))
 def test_hole_on_a_filleted_box(sigma, seed):
     mesh, tol = _holed_fillet(sigma, seed)
     res = convert_mesh(mesh, tol=tol, with_report=False)
@@ -256,8 +258,8 @@ def test_boss_on_a_filleted_box_macro_fuses_after_the_fillet():
 
 
 @needs_freecad
-@pytest.mark.parametrize("seed", [0, 1, 2])
-@pytest.mark.parametrize("sigma", [0.0, 0.05, 0.2])
+@pytest.mark.parametrize("seed", sweep([0, 1, 2]))
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05, 0.2]))
 def test_boss_on_a_filleted_box(sigma, seed):
     mesh, tol = _bossed_fillet(sigma, seed)
     res = convert_mesh(mesh, tol=tol, with_report=False)
@@ -285,8 +287,8 @@ def test_edge_fillet_macro_names_the_radius():
 
 
 @needs_freecad
-@pytest.mark.parametrize("seed", [0, 1, 2])
-@pytest.mark.parametrize("sigma", [0.0, 0.05, 0.2])
+@pytest.mark.parametrize("seed", sweep([0, 1, 2]))
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05, 0.2]))
 def test_edge_fillet_is_a_parameter(sigma, seed):
     ref = to_mesh(rounded_box())
     tol = max(sigma, 0.01)
@@ -303,7 +305,7 @@ def test_edge_fillet_is_a_parameter(sigma, seed):
 
 
 @needs_freecad
-@pytest.mark.parametrize("sigma", [0.0, 0.05])
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05]))
 def test_side_features(sigma, tmp_path):
     ref, res = _fit(side_hole_boss, sigma)
     code, q = to_freecad(res.mesh, res.regions, res.tol)
@@ -316,7 +318,7 @@ def test_side_features(sigma, tmp_path):
 
 
 @needs_freecad
-@pytest.mark.parametrize("sigma", [0.0, 0.05])
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05]))
 @pytest.mark.parametrize("fn", [l_profile_y, slanted_outline, slotted_plate])
 def test_extrusion(fn, sigma, tmp_path):
     ref, res = _fit(fn, sigma)
@@ -330,7 +332,7 @@ def test_extrusion(fn, sigma, tmp_path):
 
 
 @needs_freecad
-@pytest.mark.parametrize("sigma", [0.0, 0.05])
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05]))
 @pytest.mark.parametrize("fn,kind", [
     (orthogonal_intersection, "csg"),
     (cut_block, "csg"),
@@ -443,8 +445,8 @@ def test_bracket_fillet_is_a_script():
 
 
 @needs_freecad
-@pytest.mark.parametrize("seed", [0, 1, 2])
-@pytest.mark.parametrize("sigma", [0.0, 0.05, 0.2])
+@pytest.mark.parametrize("seed", sweep([0, 1, 2]))
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05, 0.2]))
 def test_bracket_fillet_matches_the_mesh(sigma, seed):
     mesh, tol = _bracket_mesh(sigma, seed)
     res = convert_mesh(mesh, tol=tol, with_report=False)

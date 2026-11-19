@@ -3,6 +3,8 @@ import re
 
 import pytest
 
+from marks import sweep
+
 pytest.importorskip("cadquery")
 from mesh2cad.cadquery_code import Unsupported, check, run_script, to_cadquery  # noqa: E402
 from mesh2cad.cli import main  # noqa: E402
@@ -38,7 +40,7 @@ def _gen(name, sigma=0.0):
     return ref, code
 
 
-@pytest.mark.parametrize("sigma", [0.0, 0.05])
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05]))
 @pytest.mark.parametrize("name", list(PARTS))
 def test_script_reproduces_part(name, sigma):
     ref, code = _gen(name, sigma)
@@ -49,7 +51,7 @@ def test_script_reproduces_part(name, sigma):
         assert _params(code)[k] == pytest.approx(v, abs=0.5 if ("angle" in k or "deg" in k) else 0.05)
 
 
-@pytest.mark.parametrize("seed", [1, 2])
+@pytest.mark.parametrize("seed", sweep([1, 2]))
 def test_recovered_chamfer_exports_cadquery(seed):
     """A chamfer brought back by narrow-cone recovery still exports CadQuery.
 
@@ -80,7 +82,7 @@ def test_edit_parameter_changes_part():
     assert v0 - v1 == pytest.approx(expect, rel=0.01)
 
 
-@pytest.mark.parametrize("sigma", [0.0, 0.05])
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05]))
 @pytest.mark.parametrize("name,fn,radius", [
     ("filleted_plate", filleted_plate, 5.0),
     ("filleted_box", filleted_box, 2.0),
@@ -114,8 +116,8 @@ def test_editing_fillet_radius_changes_volume():
     assert v0 - v1 == pytest.approx(expect, rel=0.02)
 
 
-@pytest.mark.parametrize("seed", [0, 1, 2])
-@pytest.mark.parametrize("sigma", [0.0, 0.05, 0.2])
+@pytest.mark.parametrize("seed", sweep([0, 1, 2]))
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05, 0.2]))
 def test_edge_fillet_is_a_parameter(sigma, seed):
     """All twelve edges, one radius. The usual gate decides whether it is written."""
     ref = to_mesh(rounded_box())
@@ -159,8 +161,8 @@ def _holed_fillet(sigma, seed):
     return mesh, tol
 
 
-@pytest.mark.parametrize("seed", [0, 1, 2])
-@pytest.mark.parametrize("sigma", [0.0, 0.05, 0.2])
+@pytest.mark.parametrize("seed", sweep([0, 1, 2]))
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05, 0.2]))
 def test_hole_on_a_filleted_box(sigma, seed):
     """Through-hole after the fillet. The corner spheres are edge_fillet_r."""
     mesh, tol = _holed_fillet(sigma, seed)
@@ -190,8 +192,8 @@ def _bossed_fillet(sigma, seed):
     return mesh, tol
 
 
-@pytest.mark.parametrize("seed", [0, 1, 2])
-@pytest.mark.parametrize("sigma", [0.0, 0.05, 0.2])
+@pytest.mark.parametrize("seed", sweep([0, 1, 2]))
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05, 0.2]))
 def test_boss_on_a_filleted_box(sigma, seed):
     """Boss after the fillet. The corner spheres stay edge_fillet_r."""
     mesh, tol = _bossed_fillet(sigma, seed)
@@ -236,8 +238,8 @@ def _bracket_mesh(sigma, seed):
 _BRACKET_PASS = {(0.0, 0), (0.0, 1), (0.0, 2), (0.05, 0), (0.05, 2)}
 
 
-@pytest.mark.parametrize("seed", [0, 1, 2])
-@pytest.mark.parametrize("sigma", [0.0, 0.05, 0.2])
+@pytest.mark.parametrize("seed", sweep([0, 1, 2]))
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05, 0.2]))
 def test_bracket_fillet_is_a_script(sigma, seed):
     """L-bracket, vertical edges including the inner corner. The usual gate decides."""
     mesh, tol = _bracket_mesh(sigma, seed)

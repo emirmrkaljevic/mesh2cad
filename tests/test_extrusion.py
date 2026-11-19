@@ -5,6 +5,8 @@ import shutil
 
 import pytest
 
+from marks import sweep
+
 pytest.importorskip("cadquery")
 from mesh2cad.cadquery_code import check as cq_check  # noqa: E402
 from mesh2cad.cadquery_code import run_script, to_cadquery  # noqa: E402
@@ -56,7 +58,7 @@ def _fit(fn, sigma):
     return ref, res
 
 
-@pytest.mark.parametrize("sigma", [0.0, 0.05])
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05]))
 @pytest.mark.parametrize("fn,length,diameter,axis,outline", [
     (l_profile_y, 18.0, 6.0, "Y", L_OUTLINE),
     (slanted_outline, 12.0, 8.0, "Z", SLANT_OUTLINE),
@@ -78,7 +80,7 @@ def test_cadquery_extrusion(fn, length, diameter, axis, outline, sigma):
     assert against["volume_error_pct"] < 0.5
 
 
-@pytest.mark.parametrize("sigma", [0.0, 0.05])
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05]))
 def test_rectangular_cutout(sigma):
     ref, res = _fit(slotted_plate, sigma)
     code, q = to_cadquery(res.mesh, res.regions, res.tol)
@@ -129,7 +131,7 @@ def test_exporters_share_extrusion_parameters():
 
 
 @needs_openscad
-@pytest.mark.parametrize("sigma", [0.0, 0.05])
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05]))
 @pytest.mark.parametrize("fn,length,diameter", [
     (l_profile_y, 18.0, 6.0),
     (slanted_outline, 12.0, 8.0),
@@ -150,7 +152,7 @@ def test_openscad_extrusion(fn, length, diameter, sigma, tmp_path):
 
 
 @needs_openscad
-@pytest.mark.parametrize("sigma", [0.0, 0.05])
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05]))
 def test_openscad_rectangular_cutout(sigma, tmp_path):
     ref, res = _fit(slotted_plate, sigma)
     code, q = to_openscad(res.mesh, res.regions, res.tol)

@@ -3,6 +3,8 @@ import re
 
 import pytest
 
+from marks import sweep
+
 from mesh2cad.cadquery_code import check as cq_check
 from mesh2cad.cadquery_code import run_script, to_cadquery
 from mesh2cad.convert import convert_mesh
@@ -34,8 +36,8 @@ def _major(res):
     return [t["major"] for t in res.report.get("tori", [])]
 
 
-@pytest.mark.parametrize("seed", [0, 1, 2])
-@pytest.mark.parametrize("sigma", [0.0, 0.05])
+@pytest.mark.parametrize("seed", sweep([0, 1, 2]))
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05]))
 def test_boss_fillet_roundtrip(sigma, seed):
     ref = to_mesh(TORI["filleted_boss"]())
     tol = max(sigma, 0.01)
@@ -50,7 +52,7 @@ def test_boss_fillet_roundtrip(sigma, seed):
     assert r["volume_error_pct"] < 0.5
 
 
-@pytest.mark.parametrize("seed", [0, 1, 2])
+@pytest.mark.parametrize("seed", sweep([0, 1, 2]))
 def test_rounded_hole_clean(seed):
     ref = to_mesh(TORI["rounded_hole"]())
     res = convert_mesh(add_noise(ref, 0.0, seed=seed), tol=0.01, ref=ref)
@@ -83,7 +85,7 @@ def test_rounded_hole_moderate_noise():
     assert exact >= 2
 
 
-@pytest.mark.parametrize("seed", [0, 1, 2])
+@pytest.mark.parametrize("seed", sweep([0, 1, 2]))
 @pytest.mark.parametrize("name", ["filleted_boss", "rounded_hole"])
 def test_torus_high_noise_stays_valid(name, seed):
     """0.2 mm loses the round. The solid is still valid, with or without a torus."""
@@ -119,7 +121,7 @@ def test_both_hole_rims_clean():
     assert r["deviation"]["hausdorff"] < 0.08
 
 
-@pytest.mark.parametrize("seed", [0, 1, 2])
+@pytest.mark.parametrize("seed", sweep([0, 1, 2]))
 @pytest.mark.parametrize("name", ["filleted_blind_hole", "rounded_hole_both"])
 def test_other_tori_moderate_noise_stays_valid(name, seed):
     fn = filleted_blind_hole if name == "filleted_blind_hole" else rounded_hole_both

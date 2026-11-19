@@ -5,6 +5,8 @@ import shutil
 
 import pytest
 
+from marks import sweep
+
 pytest.importorskip("cadquery")
 import cadquery as cq  # noqa: E402
 
@@ -79,8 +81,8 @@ def _outline_ok(code, tol):
         assert any(abs(point[0] - x) <= tol and abs(point[1] - y) <= tol for x, y in got)
 
 
-@pytest.mark.parametrize("seed", [0, 1, 2])
-@pytest.mark.parametrize("sigma", [0.0, 0.05])
+@pytest.mark.parametrize("seed", sweep([0, 1, 2]))
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05]))
 @pytest.mark.parametrize("face", ["top", "bottom"])
 def test_cadquery_outline_countersink_and_counterbore(face, sigma, seed):
     ref, mesh, tol = _mesh(face, sigma, seed)
@@ -101,8 +103,8 @@ def test_cadquery_outline_countersink_and_counterbore(face, sigma, seed):
 
 
 @needs_openscad
-@pytest.mark.parametrize("seed", [0, 1, 2])
-@pytest.mark.parametrize("sigma", [0.0, 0.05])
+@pytest.mark.parametrize("seed", sweep([0, 1, 2]))
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05]))
 @pytest.mark.parametrize("face", ["top", "bottom"])
 def test_openscad_outline_countersink_and_counterbore(face, sigma, seed, tmp_path):
     ref, mesh, tol = _mesh(face, sigma, seed)
@@ -120,8 +122,8 @@ def test_openscad_outline_countersink_and_counterbore(face, sigma, seed, tmp_pat
     assert against["volume_error_pct"] < 0.5
 
 
-@pytest.mark.parametrize("seed", [0, 1, 2])
-@pytest.mark.parametrize("sigma", [0.0, 0.05])
+@pytest.mark.parametrize("seed", sweep([0, 1, 2]))
+@pytest.mark.parametrize("sigma", sweep([0.0, 0.05]))
 @pytest.mark.parametrize("face", ["top", "bottom"])
 def test_freecad_macro_cuts_outline_countersink_and_counterbore(face, sigma, seed):
     """The macro is written when the same gate passes.

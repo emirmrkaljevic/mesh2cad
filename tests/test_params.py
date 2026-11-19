@@ -3,6 +3,7 @@ import json
 import os
 import re
 import shutil
+import time
 import urllib.request
 from pathlib import Path
 
@@ -72,16 +73,32 @@ def _script(tmp, mesh, kind):
 
 
 def _prusa_stl(name):
+    """Download one Prusa STL. Workers can ask for the same file at once."""
     cache = Path(__file__).resolve().parents[1] / "benchmarks" / ".cache"
     cache.mkdir(parents=True, exist_ok=True)
     path = cache / f"{name}.stl"
-    if not path.is_file() or path.stat().st_size == 0:
-        url = (
-            "https://raw.githubusercontent.com/prusa3d/Original-Prusa-i3/"
-            f"{_PRUSA_PIN}/Printed-Parts/STL/{name}.stl"
-        )
-        urllib.request.urlretrieve(url, path)
-    return path
+    if path.is_file() and path.stat().st_size > 0:
+        return path
+    lock = cache / f"{name}.stl.lock"
+    url = (
+        "https://raw.githubusercontent.com/prusa3d/Original-Prusa-i3/"
+        f"{_PRUSA_PIN}/Printed-Parts/STL/{name}.stl"
+    )
+    while True:
+        if path.is_file() and path.stat().st_size > 0:
+            return path
+        try:
+            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            time.sleep(0.2)
+            continue
+        try:
+            if not path.is_file() or path.stat().st_size == 0:
+                urllib.request.urlretrieve(url, path)
+        finally:
+            os.close(fd)
+            lock.unlink(missing_ok=True)
+        return path
 
 
 def _blank_value(line):

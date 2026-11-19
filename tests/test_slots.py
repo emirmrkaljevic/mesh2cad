@@ -8,6 +8,8 @@ import re
 
 import pytest
 
+from marks import sweep
+
 pytest.importorskip("cadquery")
 import cadquery as cq  # noqa: E402
 
@@ -283,8 +285,8 @@ def test_unequal_ends_are_not_one_slot():
     assert "slot_" not in str(raised.value)
 
 
-@pytest.mark.parametrize("sigma", [0.05, 0.2])
-@pytest.mark.parametrize("seed", [0, 1, 2])
+@pytest.mark.parametrize("sigma", sweep([0.05, 0.2]))
+@pytest.mark.parametrize("seed", sweep([0, 1, 2]))
 def test_one_slot_survives_noise(sigma, seed):
     ref, res, code, q = _export(plate_one_slot(), sigma=sigma, seed=seed)
     assert q["max_deviation"] <= max(4 * res.tol, 0.1)
