@@ -4,6 +4,12 @@
 
 - CI runs faster.
 
+## 0.32.0 - 2026-11-19
+
+- A snapped fallback no longer pulls a vertex onto a fitted surface it does not lie on. The old projection dropped points on a noisy plate onto the opposite wall, about the plate thickness, and the sewn solid was several millimetres off the mesh. On an 80×50×6 mm plate with four R3.3 holes, Gaussian noise of 0.02 mm at tolerance 0.02 mm, the grid seed 0 hybrid had Hausdorff 6.038 mm. A row of the same holes, seed 1, sewed a negative volume. Both now stay outward solids close to the mesh.
+- The writer checks the signed volume before a STEP file is written. A reversed solid is flipped when that makes the volume positive. A snapped hybrid whose volume misses the mesh by more than 5%, or whose Hausdorff distance exceeds max(2 mm, 5% of the part size), is not written. The plain faceted solid is used instead. A solid that stays inside-out is not written.
+- The six Original Prusa i3 parts were converted again at v0.22.0 and at this version. y-belt-holder is exact on both: 210 planes and 4 cylinders, Hausdorff 0.1602 mm, volume error 0.092%. The other five match the same face counts as before. The sew sources are unchanged between those versions. A slow test locks all six.
+
 ## 0.31.0 - 2026-11-18
 
 - Parametric CadQuery, OpenSCAD, and FreeCAD export write one radius on every vertical corner of a single Z extrusion. The name is `outline_fillet_r`. The `outline` list stays the sharp polygon, where the side walls meet. Convex and concave corners use that same radius. CadQuery extrudes the polygon and calls `.edges("|Z").fillet(outline_fillet_r)` before cutting holes. OpenSCAD rounds the profile with `offset`. FreeCAD calls `makeFillet` on the edges parallel to Z. `mesh2cad edit`, `mesh2cad params`, and the MCP tools `list_params` / `edit_params` list and edit the radius. An edit that makes the rounds meet, or that pushes a hole or a boss into a round, is refused and nothing is written.

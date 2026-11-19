@@ -102,14 +102,24 @@ def snap_vertices(m: trimesh.Trimesh, regions: list[Region], tol: float, iters: 
             N[sel], D[sel] = n, np.einsum("ij,ij->i", n, q)
         xn = solve(x0, N, D, rv)
         xn[~touched] = x0[~touched]
-        # guard against ill-conditioned (near-parallel) solves
-        bad = np.linalg.norm(xn - x0, axis=1) > 4 * tol + 1e-9
+        # guard against ill-conditioned (near-parallel) solves. A single
+        # surface projection is the fallback only when the vertex already
+        # lies on that surface. Projecting onto the first region otherwise
+        # drops a top-face vertex onto the opposite wall (about the plate
+        # thickness) and the sewn solid comes back inside-out or several
+        # millimetres off the mesh.
+        limit = 4 * tol + 1e-9
+        bad = np.linalg.norm(xn - x0, axis=1) > limit
         if bad.any():
             first = {}
             for v, i in zip(rv, rr):
                 first.setdefault(v, i)
             for v in np.where(bad)[0]:
-                xn[v] = regions[first[v]].surface.project(x0[v][None])[0]
+                proj = regions[first[v]].surface.project(x0[v][None])[0]
+                if float(np.linalg.norm(proj - x0[v])) <= limit:
+                    xn[v] = proj
+                else:
+                    xn[v] = x0[v]
         done = np.abs(xn - x).max() < 1e-10
         x = xn
         if done:
@@ -221,9 +231,40 @@ def is_valid(shape: TopoDS_Shape) -> bool:
     return bool(BRepCheck_Analyzer(shape).IsValid())
 
 
+def signed_volume(shape: TopoDS_Shape) -> float:
+    """Signed solid volume. Negative means the shell is inside-out."""
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+    props = GProp_GProps()
+    BRepGProp.VolumeProperties_s(shape, props)
+    return float(props.Mass())
+
+
+def orient_solid(shape: TopoDS_Shape):
+    """Return ``shape`` with a positive signed volume.
+
+    A reversed solid is the same geometry with the shell turned outward.
+    None means the shape is empty, invalid, or stays non-positive after
+    that flip, and the caller must not write it.
+    """
+    if shape is None or shape.IsNull() or not is_valid(shape):
+        return None
+    volume = signed_volume(shape)
+    if volume > 0.0:
+        return shape
+    if volume < 0.0:
+        flipped = shape.Reversed()
+        if is_valid(flipped) and signed_volume(flipped) > 0.0:
+            return flipped
+    return None
+
+
 def write_step(shape: TopoDS_Shape, path: str) -> None:
+    oriented = orient_solid(shape)
+    if oriented is None:
+        raise RuntimeError(f"STEP write refused: solid is not positively oriented ({path})")
     w = STEPControl_Writer()
-    w.Transfer(shape, STEPControl_AsIs)
+    w.Transfer(oriented, STEPControl_AsIs)
     if w.Write(str(path)) != IFSelect_RetDone:
         raise RuntimeError(f"STEP write failed: {path}")
 

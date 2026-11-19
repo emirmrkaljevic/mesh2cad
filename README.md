@@ -36,11 +36,11 @@ Python 3.10 or newer. That install is the command line tool and STEP export. Ope
 ## Quick start
 
 ```
-mesh2cad convert bracket.stl --cadquery bracket.py
-mesh2cad edit bracket.py --set hole_1_d=8 --in-place -o bracket.step
+mesh2cad convert plate.stl --cadquery plate.py
+mesh2cad edit plate.py --set hole_grid_1_d=8 --in-place -o plate.step
 ```
 
-The first command writes `bracket.py`. Diameters, thicknesses, and positions are names at the top of the file. The second sets `hole_1_d` to 8 mm, rewrites the script, and writes `bracket.step`. Every other byte of the file stays as it was.
+The first command writes `plate.py`. Diameters, thicknesses, and positions are names at the top of the file. A four-hole grid is `hole_grid_1_d`. The second sets that diameter to 8 mm, rewrites the script, and writes `plate.step`. Every other byte of the file stays as it was.
 
 `mesh2cad edit bracket.py --set base_x=+2` adds 2 mm to the current length. A leading `+` or `-` is a change from the current number, not how you set a negative value. `mesh2cad params bracket.py` prints each name, its value, and the unit when there is one.
 

@@ -32,6 +32,32 @@ def _exact(m, regions, tol):
     return shape
 
 
+def _accept_fallback(shape, mesh: trimesh.Trimesh, tol: float, *, check_deviation: bool):
+    """Keep a sewn fallback only when it is an outward solid close to ``mesh``.
+
+    A hybrid can be BRepCheck-valid and still be inside-out, or several
+    millimetres off the input after a bad snap. Reverse it when that restores
+    a positive volume. Otherwise drop it so the caller can sew the raw mesh.
+    The 5% volume gate is the same one the exact path already uses. The
+    Hausdorff gate is only for the snapped hybrid: a plain faceted sew of the
+    input triangles matches the mesh by construction.
+    """
+    shape = brep.orient_solid(shape) if shape is not None else None
+    if shape is None:
+        return None
+    vm = abs(float(mesh.volume)) if mesh.is_volume else 0.0
+    vol = brep.signed_volume(shape)
+    if vm > 0.0 and abs(vol - vm) > 0.05 * vm:
+        return None
+    if check_deviation:
+        from .report import deviation, shape_to_mesh
+        out = shape_to_mesh(shape, 0.01 * float(mesh.scale))
+        limit = max(2.0, 0.05 * float(mesh.scale))
+        if deviation(mesh, out, n=2000)["hausdorff"] > limit:
+            return None
+    return shape
+
+
 def convert_mesh(m: trimesh.Trimesh, tol: float | None = None, cylinders: bool = True,
                  spheres: bool = True, cones: bool = True, angle_deg: float = 20.0, ref: trimesh.Trimesh | None = None,
                  with_report: bool = True) -> Result:
@@ -52,16 +78,28 @@ def convert_mesh(m: trimesh.Trimesh, tol: float | None = None, cylinders: bool =
         tol, regions = first
         # Sew with a tight tolerance: the mesh is already closed, and a sew
         # tolerance on the order of the noise welds distinct vertices together.
-        shape = _faceted_solid(m, brep.snap_vertices(m, regions, tol), lin_tol=max(tol * 0.05, 1e-6))
+        hybrid = _faceted_solid(m, brep.snap_vertices(m, regions, tol), lin_tol=max(tol * 0.05, 1e-6))
+        shape = _accept_fallback(hybrid, m, tol, check_deviation=True)
         method = "faceted-hybrid"
         if shape is None:
             # raw triangles are already coincident, so a broken unify is usually
             # just inside-out faces and ShapeFix can put them back
-            shape = _faceted_solid(m, m.vertices, lin_tol=1e-6, repair_unify=True)
+            plain = _faceted_solid(m, m.vertices, lin_tol=1e-6, repair_unify=True)
+            shape = _accept_fallback(plain, m, tol, check_deviation=False)
             method = "faceted"
         if shape is None:
-            shape = brep.build_solid(m, m.vertices, sew_tol=1e-6)
+            raw = brep.build_solid(m, m.vertices, sew_tol=1e-6)
+            shape = _accept_fallback(raw, m, tol, check_deviation=False)
             method = "faceted"
+        if shape is None:
+            # every oriented candidate was empty; keep the raw sew so the
+            # report can still name an invalid solid instead of crashing
+            shape = raw
+            method = "faceted"
+    else:
+        oriented = brep.orient_solid(shape)
+        if oriented is not None:
+            shape = oriented
     valid = brep.is_valid(shape)
     r = rep.build_report(m, shape, regions, valid, ref=ref) if with_report else {}
     if r:
