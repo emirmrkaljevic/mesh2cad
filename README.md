@@ -73,9 +73,20 @@ The tools are `convert`, `analyze`, `report`, `to_cadquery`, `to_openscad`, `to_
 
 ## Docs
 
-[Install](docs/install.md) is the extras and the OpenSCAD and FreeCAD programs. [CLI](docs/cli.md) is every command. [CadQuery](docs/cadquery.md), [OpenSCAD](docs/openscad.md), and [FreeCAD](docs/freecad.md) are the parameter lists and the checks. [Parameters](docs/parameters.md) is `params` and `edit`. [MCP](docs/mcp.md) is the tool reference. [How it works](docs/how-it-works.md), [Limits](docs/limits.md), [Benchmarks](docs/benchmarks.md), and [Real parts](docs/real-parts.md) are the fit, the refusals, and the numbers. [Development](docs/development.md) is how to run the tests. The [changelog](CHANGELOG.md) is the version history.
-
-Shorter pages on the project site: [overview](docs/index.html), [STL to STEP](docs/stl-to-step.html), [STL to OpenSCAD and CadQuery](docs/stl-to-openscad.html), and [FAQ](docs/faq.html).
+- [Install: extras, OpenSCAD and FreeCAD](docs/install.md)
+- [CLI reference: every command and flag](docs/cli.md)
+- [CadQuery scripts: parameters and the check](docs/cadquery.md)
+- [OpenSCAD scripts](docs/openscad.md)
+- [FreeCAD macros](docs/freecad.md)
+- [Editing a parameter: `params` and `edit`](docs/parameters.md)
+- [MCP server: tools and arguments](docs/mcp.md)
+- [How it works: the fitting pipeline](docs/how-it-works.md)
+- [Limits: what is fitted and what is refused](docs/limits.md)
+- [Benchmarks: synthetic noise tests](docs/benchmarks.md)
+- [Real parts: Prusa printer parts](docs/real-parts.md)
+- [Development: tests and demo images](docs/development.md)
+- [Changelog](CHANGELOG.md)
+- [Project site with an overview and FAQ](https://emirmrkaljevic.github.io/mesh2cad/)
 
 A mesh that converts badly can go in a [GitHub issue](https://github.com/emirmrkaljevic/mesh2cad/issues/new/choose). There is a template for an STL that fails.
 
