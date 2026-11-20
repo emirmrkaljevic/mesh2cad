@@ -1,6 +1,6 @@
 # MCP server
 
-mesh2cad speaks MCP over stdio. Install the extra, then launch it:
+Part of [mesh2cad](../README.md). mesh2cad speaks MCP over stdio. Install the extra, then launch it:
 
 ```
 pip install "mesh2cad[mcp]"

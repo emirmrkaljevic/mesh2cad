@@ -1,6 +1,6 @@
 # Command line
 
-`mesh2cad` converts a mesh, prints a fidelity report, lists parameters in a script it wrote, or edits one of those parameters and rebuilds the solid. `mesh2cad --version` prints the version.
+Part of [mesh2cad](../README.md). `mesh2cad` converts a mesh, prints a fidelity report, lists parameters in a script it wrote, or edits one of those parameters and rebuilds the solid. `mesh2cad --version` prints the version.
 
 Input meshes are STL, OBJ, or PLY. Open the STEP file in FreeCAD, Fusion, Onshape, or any other CAD tool. When the fit is exact, the faces are planes, cylinders, and fillets you can select and dimension. `report.md` says how close the result is to the mesh. When a fit is bad, STEP output falls back to a faceted solid instead of guessing.
 

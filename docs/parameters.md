@@ -1,6 +1,6 @@
 # Editing a parameter
 
-These are the `params` and `edit` commands, the names they accept, and the edits they refuse.
+Part of [mesh2cad](../README.md). These are the `params` and `edit` commands, the names they accept, and the edits they refuse.
 
 `params` and `edit` close the loop on a script mesh2cad already wrote. They do not fit a mesh.
 

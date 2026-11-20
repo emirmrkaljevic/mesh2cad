@@ -1,6 +1,6 @@
 # Benchmarks
 
-These rows are STEP fidelity on synthetic parts. A cadquery solid is tessellated, noise is added, mesh2cad converts it, and the result is compared with the true solid. Parametric script checks are not in this table. They are in [CadQuery](cadquery.md), [OpenSCAD](openscad.md), [FreeCAD](freecad.md), and [Limits](limits.md). Real printed parts are in [Real parts](real-parts.md).
+Part of [mesh2cad](../README.md). These rows are STEP fidelity on synthetic parts. A cadquery solid is tessellated, noise is added, mesh2cad converts it, and the result is compared with the true solid. Parametric script checks are not in this table. They are in [CadQuery](cadquery.md), [OpenSCAD](openscad.md), [FreeCAD](freecad.md), and [Limits](limits.md). Real printed parts are in [Real parts](real-parts.md).
 
 Ground-truth cadquery parts → tessellated + subdivided (≤ 2 mm edges) → Gaussian vertex noise → mesh2cad → compared with the truth. 3 seeds, worst case shown (`python benchmarks/run.py`); the same cases run in CI. Numbers are **STEP / B-rep fidelity** (Hausdorff, RMS, volume, face counts). Parametric OpenSCAD, CadQuery, and FreeCAD export are verified separately when you pass `--openscad` / `--cadquery` / `--freecad` (or the MCP `to_openscad` / `to_cadquery` / `to_freecad` tools); they are not rows in this table.
 

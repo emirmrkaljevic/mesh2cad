@@ -1,6 +1,6 @@
 # CadQuery scripts
 
-For a part mesh2cad understands, `mesh2cad convert part.stl --cadquery part.py` writes a Python script whose dimensions are named parameters. This page is the parameter list, the measured examples, and the check that runs before the file is written. OpenSCAD and FreeCAD use the same names.
+Part of [mesh2cad](../README.md). For a part mesh2cad understands, `mesh2cad convert part.stl --cadquery part.py` writes a Python script whose dimensions are named parameters. This page is the parameter list, the measured examples, and the check that runs before the file is written. OpenSCAD and FreeCAD use the same names.
 
 For simple prismatic parts mesh2cad can also write a **CadQuery Python script** where every dimension is a named parameter, so you change a number and re-run instead of editing B-rep faces:
 ```

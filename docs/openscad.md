@@ -1,6 +1,6 @@
 # OpenSCAD scripts
 
-The same parts as the [CadQuery scripts](cadquery.md) can be written as OpenSCAD. Names and values match. This page is the generated script, what each feature becomes in OpenSCAD, and the check against the mesh.
+Part of [mesh2cad](../README.md). The same parts as the [CadQuery scripts](cadquery.md) can be written as OpenSCAD. Names and values match. This page is the generated script, what each feature becomes in OpenSCAD, and the check against the mesh.
 
 The same parts can be written as OpenSCAD, which is what the 3D-printing Customizer on Thingiverse and Printables edits. Names and values match the CadQuery script. `--openscad` and `--cadquery` can be combined, and `-o` still writes STEP.
 ```

@@ -1,6 +1,6 @@
 # Real parts
 
-All 6 tested Original Prusa i3 MK3S parts convert to exact STEP, and all 6 also to an editable CadQuery, OpenSCAD, or FreeCAD script.
+Part of [mesh2cad](../README.md). All 6 tested Original Prusa i3 MK3S parts convert to exact STEP, and all 6 also to an editable CadQuery, OpenSCAD, or FreeCAD script.
 
 The [benchmark table](benchmarks.md) subdivides every edge to ≤ 2 mm, so a planar face is many triangles. An STL written by a CAD tool is the other way around: long triangles, very uneven size, no noise. `python benchmarks/real_parts.py` downloads six printed parts from the Original Prusa i3 MK3S, converts them at the default tolerance, and tries `--cadquery`, `--openscad`, and `--freecad` on each. The files are Prusa Research's, GPL-2.0, from [prusa3d/Original-Prusa-i3](https://github.com/prusa3d/Original-Prusa-i3) at commit `529e5ad` (`Printed-Parts/STL/<name>.stl`). They are cached under `benchmarks/.cache` and are not part of this repository. CI does not run the script (it needs the network). A coarse, unsubdivided cadquery mesh of the same kind is what `tests/test_coarse.py` checks.
 

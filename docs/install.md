@@ -1,6 +1,6 @@
 # Install
 
-mesh2cad needs Python 3.10 or newer. The library is Python, on top of OpenCascade (`cadquery-ocp`), and pip installs that with the package. The command line tool and STEP export are in the base install. The MCP server and the CadQuery runner are extras. OpenSCAD and FreeCAD are separate programs, not Python packages.
+Part of [mesh2cad](../README.md). mesh2cad needs Python 3.10 or newer. The library is Python, on top of OpenCascade (`cadquery-ocp`), and pip installs that with the package. The command line tool and STEP export are in the base install. The MCP server and the CadQuery runner are extras. OpenSCAD and FreeCAD are separate programs, not Python packages.
 
 ```
 pip install mesh2cad              # CLI + STEP
